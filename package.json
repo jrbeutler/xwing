@@ -1,0 +1,21 @@
+{
+  "name": "xwing-tactics",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test -w @xw/engine",
+    "typecheck": "tsc -p packages/engine && tsc -p apps/web",
+    "dev": "npm run dev -w @xw/web",
+    "build": "npm run build -w @xw/web"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  }
+}

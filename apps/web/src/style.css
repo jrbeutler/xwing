@@ -1,0 +1,35 @@
+:root {
+  --bg: #05070d; --panel: rgba(12, 18, 32, 0.92); --line: #24324f; --text: #dbe4f5; --muted: #8796b3;
+  --blue: #4aa3ff; --white: #f2f5fa; --red: #ff5a5a; --p1: #57c7ff; --p2: #ff9f43; --accent: #7cf0c5;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+#viewport { position: fixed; inset: 0; }
+#hud { position: fixed; top: 12px; left: 16px; display: flex; gap: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+#hud span { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; }
+#panel { position: fixed; top: 12px; right: 12px; width: 360px; max-height: calc(100% - 24px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+#log { position: fixed; left: 16px; bottom: 12px; width: 420px; max-height: 32%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 12px; color: var(--muted); }
+#log div { padding: 1px 0; } #log .hl { color: var(--text); }
+h2 { margin: 0 0 8px; font-size: 15px; } h3 { margin: 0; font-size: 14px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.card.done { border-color: var(--accent); }
+.stats { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+.dial { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.dial button, .opt { background: #0d1526; border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 6px 4px; cursor: pointer; font-size: 13px; }
+.dial button:hover, .opt:hover { border-color: var(--accent); }
+.dial button.sel { background: #12332b; border-color: var(--accent); }
+.dial .blue { color: var(--blue); } .dial .white { color: var(--white); } .dial .red { color: var(--red); }
+.dial button:disabled { opacity: .25; cursor: not-allowed; }
+.opt { display: block; width: 100%; text-align: left; margin-bottom: 6px; padding: 8px 10px; }
+.go { width: 100%; padding: 10px; border-radius: 8px; border: none; background: var(--accent); color: #04120d; font-weight: 700; cursor: pointer; }
+.go:disabled { background: #2a3550; color: var(--muted); cursor: not-allowed; }
+.label { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(5, 8, 15, .75); border: 1px solid var(--line); white-space: nowrap; pointer-events: none; text-align: center; }
+.label .p1 { color: var(--p1); } .label .p2 { color: var(--p2); }
+.label .pips { letter-spacing: 1px; } .label .sh { color: var(--blue); } .label .hu { color: #ffd166; } .label .st { color: var(--red); }
+.float { font-weight: 700; font-size: 14px; text-shadow: 0 0 4px #000; pointer-events: none; }
+.p1c { color: var(--p1); } .p2c { color: var(--p2); }
+@media (max-width: 800px) {
+  #panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 45%; border-radius: 10px 10px 0 0; }
+  #log { display: none; }
+}
