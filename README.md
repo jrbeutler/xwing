@@ -12,6 +12,7 @@ npm install
 npm run dev        # http://localhost:5173
 npm test           # engine unit tests
 npm run typecheck
+npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts (apps/web/dist/artifact.html)
 ```
 
 ## How to play
