@@ -22,6 +22,8 @@ npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts 
 3. **Engagement:** ships fire from highest to lowest initiative. Enemies you can shoot get a **red ring**. Hover one to see range and dice, click to fire, or press **Hold fire** under your ship (Esc).
 4. Destroy the enemy squadron, or have more hull and shields left after round 12.
 
+**Watching combat:** every shot plays out on the board. Bolts that land hit the target and misses streak past. A blue bubble means shields took it; sparks and a shake mean hull damage. A banner spells out the result (HIT, CRITICAL HIT, EVADED, MISS) and turns red when your ship is the target. Health markers drop the moment a shot lands, and a recap of the round's shots appears when the next round starts. **1×/2×** sets animation speed; tap or click the board to skip the current animation.
+
 Drag to orbit the camera; scroll to zoom.
 
 **On a phone:** the board fills the screen with a slim bar at the bottom (a rail on the right when sideways). Tap a ship chip or a ship, then drag on the board: the ghost appears just above your finger, and lifting your finger sets the move (Undo is in the bar). Taps work for everything else: dots, ringed enemies, and the bar's buttons. One finger plays; two fingers pinch to zoom and pan. The camera follows the ship you're working with; **Overview** shows the whole table. **Details** opens full stats and the dial; tap the log line at the top for the full battle log.

@@ -28,6 +28,17 @@ viewBtn.id = 'viewbtn';
 viewBtn.setAttribute('aria-label', 'Toggle overview');
 document.getElementById('hud')!.appendChild(viewBtn);
 viewBtn.onclick = () => { userOverview = !userOverview; applyCamera(); };
+const speedBtn = document.createElement('button');
+speedBtn.id = 'speedbtn';
+speedBtn.setAttribute('aria-label', 'Animation speed');
+document.getElementById('hud')!.appendChild(speedBtn);
+const setSpeed = (v: number) => {
+  scene.speed = v;
+  speedBtn.textContent = `${v}×`;
+  try { localStorage.setItem('xw-speed', String(v)); } catch { /* storage unavailable */ }
+};
+speedBtn.onclick = () => setSpeed(scene.speed === 1 ? 2 : 1);
+try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setSpeed(1); }
 
 let state: GameState;
 let shown = 0; // index of the next log event to present
@@ -49,6 +60,9 @@ function newGame() {
   shown = 0;
   plan = {};
   logEl.innerHTML = '';
+  roundShots = [];
+  hideRecap();
+  disp = structuredClone(state.ships);
   scene.clearShips();
   scene.setObstacles(state.obstacles);
   scene.syncShips(state.ships);
@@ -91,63 +105,215 @@ async function pump() {
 // ---------------------------------------------------------------------------
 // Event presentation
 // ---------------------------------------------------------------------------
+// What the board currently shows. Events are applied to it one by one as they animate,
+// so health markers drop the moment a shot lands, not when the whole round is done.
+let disp: ShipState[] = [];
+const dispShip = (id: string) => disp.find((x) => x.id === id);
+const relabel = (id: string) => { const d = dispShip(id); if (d) scene.refreshLabel(d); };
+
+/** One-line summaries of this round's shots, shown as a recap when the next round starts. */
+let roundShots: string[] = [];
+let recapRound = 0;
+
+function logLine(e: GameEvent) {
+  const text = describe(e);
+  if (!text) return;
+  const div = document.createElement('div');
+  div.innerHTML = text;
+  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart') div.className = 'hl';
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+  ticker.innerHTML = text;
+}
+
 async function present() {
   while (shown < state.log.length) {
     const e = state.log[shown++];
-    const text = describe(e);
-    if (text) {
-      const div = document.createElement('div');
-      div.innerHTML = text;
-      if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart') div.className = 'hl';
-      logEl.appendChild(div);
-      logEl.scrollTop = logEl.scrollHeight;
-      ticker.innerHTML = text;
-    }
+    scene.skipping = false; // a tap skips one event's animation at a time
+    // Attack results are logged after the shots land, so the log never spoils the outcome.
+    const late = e.type === 'attack' || e.type === 'destroyed';
+    if (!late) logLine(e);
     await animate(e);
+    if (late) logLine(e);
   }
+  scene.skipping = false;
   scene.syncShips(state.ships);
+  disp = structuredClone(state.ships);
   roundEl.textContent = `Round ${state.round}`;
   phaseEl.textContent = state.phase;
 }
 
 async function animate(e: GameEvent) {
   switch (e.type) {
-    case 'phase': phaseEl.textContent = e.phase; return;
-    case 'roundStart': roundEl.textContent = `Round ${e.round}`; return;
-    case 'moved':
+    case 'phase':
+      phaseEl.textContent = e.phase;
+      if (e.phase === 'end') for (const d of disp) { d.focus = 0; d.evade = 0; relabel(d.id); }
+      return;
+    case 'roundStart':
+      roundEl.textContent = `Round ${e.round}`;
+      if (roundShots.length) showRecap(recapRound, roundShots);
+      roundShots = [];
+      recapRound = e.round;
+      return;
+    case 'moved': {
       scene.highlight(e.shipId);
       await scene.animatePath(e.shipId, e.path, e.final, 500 + e.path.length * 15);
+      const d = dispShip(e.shipId);
+      if (d) d.pose = e.final;
       if (e.partial) await scene.floatText(e.shipId, 'BUMP', 'p2c');
       return;
-    case 'action':
-      if (e.action.type === 'barrelRoll' || e.action.type === 'boost') {
-        const v = scene.ships.get(e.shipId);
-        if (v) {
-          const from = { x: v.root.position.x + 457, y: -v.root.position.z + 457, h: v.root.rotation.y };
-          await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 400);
-        }
-      }
-      return;
-    case 'attack': {
-      scene.highlight(e.attackerId);
-      await scene.laser(e.attackerId, e.defenderId, shipById(e.attackerId).owner === 'p1' ? 0xff3b3b : 0x3bff6b);
-      const dmg = e.shieldDamage + e.hullDamage;
-      await scene.floatText(e.defenderId, dmg ? `−${dmg}${e.crits ? ' ✸' : ''}` : 'MISS', dmg ? 'p2c' : 'p1c');
+    }
+    case 'stress': {
+      const d = dispShip(e.shipId);
+      if (d) { d.stress += e.delta; relabel(e.shipId); }
       return;
     }
-    case 'obstacleHit':
-      await scene.floatText(e.shipId, e.result === 'hit' || e.result === 'crit' ? 'ROCK −1' : 'ROCK', 'p2c');
+    case 'action': {
+      const d = dispShip(e.shipId);
+      if (e.action.type === 'barrelRoll' || e.action.type === 'boost') {
+        const from = d?.pose ?? e.action.to;
+        await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 400);
+        if (d) d.pose = e.action.to;
+      }
+      if (d) {
+        if (e.action.type === 'focus') d.focus++;
+        if (e.action.type === 'evade') d.evade++;
+        if (e.action.type === 'lock') d.lock = e.action.targetId;
+        relabel(e.shipId);
+      }
       return;
-    case 'destroyed':
+    }
+    case 'attack':
+      await showAttack(e);
+      return;
+    case 'obstacleHit': {
+      const hit = e.result === 'hit' || e.result === 'crit';
+      const d = dispShip(e.shipId);
+      if (hit && d) {
+        if (d.shields > 0) { d.shields--; void scene.shieldFlash(e.shipId); } else { d.hull--; void scene.sparks(e.shipId); void scene.shake(e.shipId); }
+        relabel(e.shipId);
+      }
+      await scene.floatText(e.shipId, hit ? 'ASTEROID −1' : 'ASTEROID', 'p2c');
+      return;
+    }
+    case 'destroyed': {
+      const name = shipById(e.shipId).name;
+      roundShots.push(`<b>${nameHtml(e.shipId)} destroyed</b>`);
+      showBanner(`<span class="who">${name}</span><b>DESTROYED</b>`, shipById(e.shipId).owner === HUMAN ? 'incoming big' : 'big');
       await scene.explode(e.shipId);
+      await scene.wait(500);
       return;
+    }
   }
 }
 
-function dice(faces: string[]) {
-  const sym: Record<string, string> = { hit: '✹', crit: '✸', focus: '◉', blank: '·', evade: '◆' };
-  return faces.map((f) => sym[f]).join('');
+type AttackEvent = Extract<GameEvent, { type: 'attack' }>;
+
+/** Plain-language outcome of an attack (no dice). */
+function attackOutcome(e: AttackEvent) {
+  const dmg = e.shieldDamage + e.hullDamage;
+  const rolled = e.attackFinal.filter((f) => f === 'hit' || f === 'crit').length;
+  const parts = [e.shieldDamage ? `${e.shieldDamage} shield` : '', e.hullDamage ? `${e.hullDamage} hull` : ''].filter(Boolean);
+  if (!dmg) return { word: rolled ? 'EVADED' : 'MISS', detail: rolled ? 'no damage' : 'all shots missed', cls: 'miss' };
+  if (e.crits > 0 && e.hullDamage > 0) return { word: 'CRITICAL HIT', detail: parts.join(' · '), cls: 'crit' };
+  return { word: 'HIT', detail: parts.join(' · '), cls: 'hit' };
 }
+
+async function showAttack(e: AttackEvent) {
+  const a = shipById(e.attackerId), d = shipById(e.defenderId);
+  const incoming = d.owner === HUMAN;
+  const color = a.owner === HUMAN ? 0xff4d4d : 0x52ff7a;
+  const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
+
+  // 1. Who shoots whom
+  scene.setRings({ [a.id]: GREEN, [d.id]: RED });
+  if (compact) framePoints([ap, dp], 150, 350);
+  scene.showLine(ap, dp, incoming ? RED : 0xffd166, `${a.name} → ${d.name}`);
+  await scene.wait(compact ? 650 : 450);
+  scene.clearOverlay();
+
+  // 2. Bolts: one per die rolled; the ones that got through hit, the rest streak past.
+  const landed = e.hits + e.crits;
+  const total = Math.max(landed, Math.min(5, e.attackFinal.length));
+  const order = Array.from({ length: total }, (_, i) => i < landed);
+  for (let i = order.length - 1; i > 0; i--) { const j = (i * 7 + 3) % (i + 1); [order[i], order[j]] = [order[j], order[i]]; }
+  const units = e.shieldDamage + e.hullDamage;
+  const target = dispShip(d.id);
+  let hitNo = 0;
+  const flights: Promise<void>[] = [];
+  for (let i = 0; i < order.length; i++) {
+    const hit = order[i];
+    const end = scene.boltEnd(a.id, d.id, hit, i);
+    if (!end) continue;
+    const n = hit ? hitNo++ : -1;
+    flights.push(scene.bolt(a.id, end, color).then(() => {
+      if (!hit) return;
+      const crit = n >= e.hits; // crits are applied after hits
+      if (n < e.shieldDamage) {
+        if (target) target.shields--;
+        void scene.shieldFlash(d.id);
+      } else if (n < units) {
+        if (target) target.hull--;
+        void scene.sparks(d.id, crit ? 0xffd27a : 0xffa040, crit ? 40 : 26, crit);
+        void scene.shake(d.id, crit ? 450 : 300, crit ? 5 : 3);
+      } else {
+        void scene.sparks(d.id); // overkill on a ship that is already finished
+      }
+      relabel(d.id);
+    }));
+    await scene.wait(110);
+  }
+  await Promise.all(flights);
+
+  // Spent tokens leave the labels
+  const ad = dispShip(a.id);
+  for (const t of e.spent) {
+    if (t === 'attacker:focus' && ad) ad.focus--;
+    if (t === 'attacker:lock' && ad) ad.lock = null;
+    if (t === 'defender:focus' && target) target.focus--;
+    if (t === 'defender:evade' && target) target.evade--;
+  }
+  relabel(a.id);
+  relabel(d.id);
+
+  // 3. Result
+  const o = attackOutcome(e);
+  if (o.cls === 'miss' && o.word === 'EVADED') void scene.dodge(d.id);
+  showBanner(`<span class="who">${a.name} → ${d.name}</span><b>${o.word}</b><span class="detail">${o.detail}</span>`,
+    `${o.cls}${incoming ? ' incoming' : ''}`);
+  roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);
+  await scene.wait(1100);
+}
+
+// ---------------------------------------------------------------------------
+// Banner + round recap
+// ---------------------------------------------------------------------------
+const banner = document.createElement('div');
+banner.id = 'banner';
+banner.setAttribute('role', 'status');
+banner.setAttribute('aria-live', 'polite');
+document.body.appendChild(banner);
+let bannerTimer = 0;
+function showBanner(html: string, cls: string) {
+  banner.className = cls;
+  banner.innerHTML = html;
+  void banner.offsetWidth; // restart the pop-in animation
+  banner.classList.add('show');
+  clearTimeout(bannerTimer);
+  bannerTimer = window.setTimeout(() => banner.classList.remove('show'), 1600 / scene.speed);
+}
+
+const recap = document.createElement('div');
+recap.id = 'recap';
+recap.hidden = true;
+document.body.appendChild(recap);
+function showRecap(round: number, lines: string[]) {
+  recap.innerHTML = `<div class="recap-head"><b>Round ${round} combat</b><button class="recap-close" aria-label="Close recap">Close</button></div>` +
+    lines.map((l) => `<div>${l}</div>`).join('');
+  recap.querySelector('.recap-close')!.addEventListener('click', hideRecap);
+  recap.hidden = false;
+}
+function hideRecap() { recap.hidden = true; }
 
 function describe(e: GameEvent): string | null {
   switch (e.type) {
@@ -159,11 +325,12 @@ function describe(e: GameEvent): string | null {
       return null;
     case 'stress': return e.delta > 0 ? `${nameHtml(e.shipId)} gains stress` : `${nameHtml(e.shipId)} clears stress`;
     case 'action': return e.action.type === 'none' ? null : `${nameHtml(e.shipId)} performs ${actionText(e.action)}`;
-    case 'obstacleHit': return `${nameHtml(e.shipId)} hits an asteroid: ${e.result}`;
-    case 'attack':
-      return `${nameHtml(e.attackerId)} → ${nameHtml(e.defenderId)} (r${e.range} ${e.arc}${e.obstructed ? ', obstructed' : ''}) ` +
-        `atk ${dice(e.attackRoll)}→${dice(e.attackFinal)} def ${dice(e.defenseRoll)}→${dice(e.defenseFinal)} ` +
-        `<b>${e.shieldDamage + e.hullDamage ? `${e.shieldDamage} shield, ${e.hullDamage} hull` : 'no damage'}</b>`;
+    case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
+    case 'attack': {
+      const o = attackOutcome(e);
+      return `${nameHtml(e.attackerId)} fires at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}): ` +
+        `<b>${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? `${o.word.toLowerCase()}, ${o.detail}` : o.word.toLowerCase()}</b>`;
+    }
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -362,6 +529,7 @@ function executePlan() {
   selected = null;
   candidate = null;
   lastCommit = null;
+  hideRecap();
   scene.setPlanned([]);
   scene.setMarkers([]);
   updateControls();
@@ -398,6 +566,7 @@ const canvas = scene.renderer.domElement;
 const touches = new Set<number>();
 let multi = false; // a two-finger camera gesture is in progress
 canvas.addEventListener('pointerdown', (e) => {
+  if (busy) scene.skipping = true; // tap the board to skip the current animation
   touches.add(e.pointerId);
   lastPointer = e.pointerType;
   updateControls();
@@ -512,15 +681,17 @@ function applyCamera(ms = 500) {
   }
   viewBtn.hidden = !pts;
   viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
-  if (pts && !userOverview) {
-    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-    const pad = 110; // room for bases and their (wide) labels around the outermost ships
-    scene.frameRect((x0 + x1) / 2, (y0 + y1) / 2,
-      Math.max(minHalf, (x1 - x0) / 2 + pad), Math.max(minHalf, (y1 - y0) / 2 + pad), uiInsets(), 0.35, ms);
-  } else {
-    scene.frameRect(457, 457, 465, 465, uiInsets(), 0.2, ms);
-  }
+  if (pts && !userOverview) framePoints(pts, minHalf, ms);
+  else scene.frameRect(457, 457, 465, 465, uiInsets(), 0.2, ms);
+}
+
+/** Frame a set of board points (with room for bases and labels) in the uncovered screen area. */
+function framePoints(pts: { x: number; y: number }[], minHalf: number, ms: number) {
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const pad = 110; // room for bases and their (wide) labels around the outermost ships
+  scene.frameRect((x0 + x1) / 2, (y0 + y1) / 2,
+    Math.max(minHalf, (x1 - x0) / 2 + pad), Math.max(minHalf, (y1 - y0) / 2 + pad), uiInsets(), 0.35, ms);
 }
 
 interface BarButton { label: string; cls?: string; disabled?: boolean; onClick: () => void }

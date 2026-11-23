@@ -100,3 +100,37 @@ html.compact .label .nm { display: none; }
 html.compact .label.sel .nm { display: inline; }
 html.compact .chips { display: none; }
 html.compact .ghost-label { font-size: 11px; }
+
+/* ---------- combat feedback: result banner, round recap, speed ---------- */
+#banner { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translate(-50%, -8px) scale(.96); opacity: 0; pointer-events: none; z-index: 6;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 220px; max-width: calc(100vw - 32px); padding: 10px 22px 12px; border-radius: 12px;
+  background: rgba(8, 12, 22, .9); border: 1px solid var(--line); box-shadow: 0 8px 30px rgba(0, 0, 0, .45); text-align: center; transition: opacity .18s ease, transform .18s ease; }
+#banner.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+#banner .who { font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+#banner b { font-size: 26px; letter-spacing: .08em; line-height: 1.1; }
+#banner .detail { font-size: 14px; color: var(--text); }
+#banner.hit b { color: #ffb347; }
+#banner.crit b { color: #ff6a3d; }
+#banner.crit { border-color: #ff6a3d; }
+#banner.miss b { color: #9fb3d6; }
+#banner.big b { color: #ffd166; font-size: 30px; }
+#banner.incoming { border-color: #a33a46; background: rgba(40, 10, 16, .92); }
+#banner.incoming .who { color: #ff9aa5; }
+@media (prefers-reduced-motion: reduce) { #banner { transition: none; } }
+
+#recap { position: fixed; z-index: 4; left: calc(16px + env(safe-area-inset-left, 0px)); top: calc(64px + env(safe-area-inset-top, 0px)); width: min(380px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+#recap[hidden] { display: none; }
+.recap-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+.recap-close { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 4px 10px; min-height: 32px; cursor: pointer; }
+#recap .hit { color: #ffb347; } #recap .crit { color: #ff6a3d; } #recap .miss { color: #9fb3d6; }
+#recap .p1c { color: var(--p1); } #recap .p2c { color: var(--p2); }
+
+#speedbtn { font: inherit; font-weight: 600; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+#speedbtn:hover { border-color: var(--accent); }
+
+html.compact #banner { top: calc(84px + env(safe-area-inset-top, 0px)); }
+html.compact.landscape #banner { left: calc((100vw - min(270px, 40vw)) / 2); }
+html.compact #recap { top: calc(84px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); width: auto; }
+html.compact.landscape #recap { right: calc(min(270px, 40vw) + 10px); }
+html.compact #speedbtn { padding: 4px 8px; min-height: 30px; }

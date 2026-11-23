@@ -451,16 +451,147 @@ export class BattleScene {
   clearOverlay() { clearGroup(this.overlay); }
 
   // ---------------- animations ----------------
+  /** Animation speed multiplier (2 = twice as fast). */
+  speed = 1;
+  /** While true, running and new tweens jump straight to their end (tap-to-skip). */
+  skipping = false;
+  private reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   tween(ms: number, fn: (t: number) => void): Promise<void> {
     return new Promise((resolve) => {
       const t0 = performance.now();
+      const dur = ms / this.speed;
       const step = () => {
-        const t = Math.min(1, (performance.now() - t0) / ms);
+        const t = this.skipping ? 1 : Math.min(1, (performance.now() - t0) / dur);
         fn(t);
         if (t < 1) requestAnimationFrame(step); else resolve();
       };
       requestAnimationFrame(step);
     });
+  }
+
+  /** A pause that respects speed and skipping. */
+  wait(ms: number): Promise<void> { return this.tween(ms, () => {}); }
+
+  private gunPoint(shipId: string): THREE.Vector3 | null {
+    const v = this.ships.get(shipId);
+    if (!v) return null;
+    const p = v.root.position.clone().setY(FLY_HEIGHT + 4);
+    // muzzle slightly ahead of the ship's nose
+    return p.add(new THREE.Vector3(Math.cos(v.root.rotation.y) * 14, 0, -Math.sin(v.root.rotation.y) * 14));
+  }
+
+  /** Where a bolt should end: on the target, or streaking past it for a miss. */
+  boltEnd(fromId: string, toId: string, hit: boolean, i: number): THREE.Vector3 | null {
+    const a = this.gunPoint(fromId), b = this.ships.get(toId);
+    if (!a || !b) return null;
+    const t = b.root.position.clone().setY(FLY_HEIGHT + 4);
+    if (hit) return t.add(new THREE.Vector3((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 10));
+    const dir = t.clone().sub(a).normalize();
+    const side = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar((i % 2 ? 1 : -1) * (26 + Math.random() * 14));
+    return t.add(side).add(dir.multiplyScalar(90)).setY(FLY_HEIGHT + 4 + (Math.random() - 0.5) * 10);
+  }
+
+  /** One glowing bolt flying from the attacker's nose to `end`. Resolves on arrival. */
+  async bolt(fromId: string, end: THREE.Vector3, color: number, ms = 170) {
+    const start = this.gunPoint(fromId);
+    if (!start) return;
+    const dir = end.clone().sub(start);
+    const len = 34;
+    const geo = new THREE.CylinderGeometry(2, 2, len, 8);
+    geo.rotateZ(Math.PI / 2); // along +X
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    const core = new THREE.Mesh(geo, mat);
+    const glow = new THREE.Mesh(new THREE.CylinderGeometry(5.5, 5.5, len * 1.2, 10).rotateZ(Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+    const g = new THREE.Group();
+    g.add(core, glow);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir.clone().normalize());
+    // muzzle flash at the attacker's nose
+    const muzzle = new THREE.Mesh(new THREE.SphereGeometry(7, 12, 8), new THREE.MeshBasicMaterial({ color, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+    muzzle.position.copy(start);
+    this.scene.add(muzzle);
+    void this.tween(160, (t) => { muzzle.scale.setScalar(1 + t); (muzzle.material as THREE.MeshBasicMaterial).opacity = 1 - t; })
+      .then(() => this.scene.remove(muzzle));
+    this.scene.add(g);
+    await this.tween(ms, (t) => g.position.lerpVectors(start, end, t));
+    this.scene.remove(g);
+    geo.dispose();
+  }
+
+  /** Blue bubble around a ship: its shields took the hit. */
+  async shieldFlash(shipId: string) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const r = 34;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x5ab8ff, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+    m.position.copy(v.root.position).setY(FLY_HEIGHT + 4);
+    this.scene.add(m);
+    await this.tween(380, (t) => { m.scale.setScalar(0.85 + t * 0.35); (m.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - t); });
+    this.scene.remove(m);
+  }
+
+  /** Burst of sparks: hull damage (bigger for a critical hit). */
+  async sparks(shipId: string, color = 0xffa040, count = 26, big = false) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const origin = v.root.position.clone().setY(FLY_HEIGHT + 4);
+    const pos = new Float32Array(count * 3);
+    const vel = Array.from({ length: count }, () => new THREE.Vector3().randomDirection().multiplyScalar((big ? 90 : 55) * (0.4 + Math.random())));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color, size: big ? 7 : 5, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const pts = new THREE.Points(geo, mat);
+    this.scene.add(pts);
+    let flash: THREE.Mesh | null = null;
+    if (big) {
+      flash = new THREE.Mesh(new THREE.SphereGeometry(16, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffe0a0, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+      flash.position.copy(origin);
+      this.scene.add(flash);
+    }
+    await this.tween(big ? 650 : 480, (t) => {
+      vel.forEach((vv, i) => pos.set([origin.x + vv.x * t, origin.y + vv.y * t, origin.z + vv.z * t], i * 3));
+      geo.attributes.position.needsUpdate = true;
+      mat.opacity = 1 - t;
+      if (flash) { flash.scale.setScalar(1 + t * 2.5); (flash.material as THREE.MeshBasicMaterial).opacity = 1 - t; }
+    });
+    this.scene.remove(pts);
+    if (flash) this.scene.remove(flash);
+    geo.dispose();
+  }
+
+  /** Jolt the model (hull hit). */
+  async shake(shipId: string, ms = 300, amp = 3) {
+    const v = this.ships.get(shipId);
+    if (!v || this.reducedMotion) return;
+    const base = v.model.position.clone();
+    await this.tween(ms, (t) => {
+      const k = amp * (1 - t);
+      v.model.position.set(base.x + (Math.random() - 0.5) * k * 2, base.y + (Math.random() - 0.5) * k, base.z + (Math.random() - 0.5) * k * 2);
+    });
+    v.model.position.copy(base);
+  }
+
+  /** Quick sideways jink: the target evaded everything. */
+  async dodge(shipId: string) {
+    const v = this.ships.get(shipId);
+    if (!v || this.reducedMotion) return;
+    const base = v.model.position.clone();
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    await this.tween(420, (t) => {
+      const k = Math.sin(t * Math.PI);
+      v.model.position.set(base.x, base.y, base.z + dir * 12 * k); // model-local Z = sideways
+      v.model.rotation.x = dir * -0.6 * k;
+    });
+    v.model.position.copy(base);
+    v.model.rotation.x = 0;
+  }
+
+  /** Refresh one ship's label from a (displayed) ship state. */
+  refreshLabel(s: ShipState) {
+    const v = this.ships.get(s.id);
+    if (v) this.updateLabel(v, s);
   }
 
   async animatePath(shipId: string, path: Pose[], final: Pose, ms = 900) {
@@ -480,20 +611,6 @@ export class BattleScene {
     });
     v.model.rotation.x = 0;
     placeObject(v.root, final);
-  }
-
-  async laser(fromId: string, toId: string, color: number) {
-    const a = this.ships.get(fromId), b = this.ships.get(toId);
-    if (!a || !b) return;
-    const p = a.root.position.clone().setY(FLY_HEIGHT + 4);
-    const q = b.root.position.clone().setY(FLY_HEIGHT + 4);
-    for (let i = 0; i < 3; i++) {
-      const off = new THREE.Vector3((Math.random() - 0.5) * 8, 0, (Math.random() - 0.5) * 8);
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, q.clone().add(off)]), new THREE.LineBasicMaterial({ color, transparent: true }));
-      this.scene.add(line);
-      await this.tween(110, (t) => ((line.material as THREE.LineBasicMaterial).opacity = 1 - t));
-      this.scene.remove(line);
-    }
   }
 
   async floatText(shipId: string, html: string, cls: string) {
