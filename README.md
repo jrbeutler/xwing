@@ -30,3 +30,11 @@ packages/engine   Deterministic rules engine (pure TS, no rendering) + tests
 apps/web          Three.js client
 docs/DESIGN.md    Design document
 ```
+
+## Screenshots
+
+| Planning (maneuver preview) | Attack targeting |
+|---|---|
+| ![Planning](docs/screenshots/02-desktop-maneuver-preview.png) | ![Attack](docs/screenshots/05-desktop-attack-choice.png) |
+
+More in [docs/screenshots](docs/screenshots), including phone emulation (the layout is not mobile-ready yet).
