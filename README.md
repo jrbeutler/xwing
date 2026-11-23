@@ -24,6 +24,8 @@ npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts 
 
 Drag to orbit the camera; scroll to zoom.
 
+**On a phone:** the board fills the screen with a slim bar at the bottom (a rail on the right when sideways). Tap a ship chip or a ship, then drag on the board: the ghost appears just above your finger, and lifting your finger sets the move (Undo is in the bar). Taps work for everything else: dots, ringed enemies, and the bar's buttons. One finger plays; two fingers pinch to zoom and pan. The camera follows the ship you're working with; **Overview** shows the whole table. **Details** opens full stats and the dial; tap the log line at the top for the full battle log.
+
 ## Layout
 
 ```

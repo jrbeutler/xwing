@@ -114,6 +114,8 @@ export class BattleScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 0, 60);
     this.controls.enableDamping = true;
+    // Touch: one finger is reserved for playing (steering, tapping); two fingers pinch-zoom and pan.
+    this.controls.touches = { ONE: null as unknown as THREE.TOUCH, TWO: THREE.TOUCH.DOLLY_PAN };
     this.controls.maxPolarAngle = 1.35;
     this.controls.minDistance = 200;
     this.controls.maxDistance = 2200;
@@ -240,7 +242,7 @@ export class BattleScene {
   updateLabel(v: ShipView, s: ShipState) {
     const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : ''].join('');
     v.label.element.innerHTML =
-      `<div class="${s.owner}">${s.name} <b>${s.initiative}</b></div>` +
+      `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +
       `${s.stress ? `<span class="st"> ⚠${s.stress}</span>` : ''} ${tokens}</div>`;
   }
@@ -259,6 +261,7 @@ export class BattleScene {
     for (const [id, v] of this.ships) {
       const c = colors[id];
       v.ring.visible = c !== undefined;
+      v.label.element.classList.toggle('sel', c !== undefined);
       if (c !== undefined) (v.ring.material as THREE.MeshBasicMaterial).color.setHex(c);
     }
   }
@@ -364,6 +367,52 @@ export class BattleScene {
     const hit = new THREE.Vector3();
     if (!this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return null;
     return { x: hit.x + HALF, y: -hit.z + HALF };
+  }
+
+  // ---------------- camera framing ----------------
+  private camTween = 0;
+
+  /** Glide the camera to a new target/position (instant when reduced motion is preferred). */
+  flyTo(target: THREE.Vector3, position: THREE.Vector3, ms = 500) {
+    const id = ++this.camTween;
+    const t0 = this.controls.target.clone(), p0 = this.camera.position.clone();
+    if (ms <= 0 || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      this.controls.target.copy(target);
+      this.camera.position.copy(position);
+      return;
+    }
+    void this.tween(ms, (t) => {
+      if (id !== this.camTween) return; // a newer flight took over
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      this.controls.target.lerpVectors(t0, target, e);
+      this.camera.position.lerpVectors(p0, position, e);
+    });
+  }
+
+  /** The original desktop view of the whole table. */
+  resetView(ms = 500) {
+    this.flyTo(new THREE.Vector3(0, 0, 60), new THREE.Vector3(0, 1080, 640), ms);
+  }
+
+  /**
+   * Frame a rectangle of the board (centre cx, cy; half sizes hw, hh in mm) inside the part of
+   * the screen not covered by UI (insets in CSS px). `tilt` is the camera's angle from vertical.
+   */
+  frameRect(cx: number, cy: number, hw: number, hh: number,
+    insets: { top: number; right: number; bottom: number; left: number }, tilt = 0.3, ms = 500) {
+    const w = this.host.clientWidth, h = this.host.clientHeight;
+    const availW = Math.max(120, w - insets.left - insets.right);
+    const availH = Math.max(120, h - insets.top - insets.bottom);
+    const tv = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
+    const th = tv * (w / h);
+    const d = 1.08 * Math.max(hw / (th * (availW / w)), (hh * Math.cos(tilt)) / (tv * (availH / h)));
+    const mmPerPx = (2 * d * tv) / h;
+    const target = toV3(cx, cy, 0);
+    // Shift the look-at point so the framed area sits in the middle of the uncovered region.
+    target.x += ((insets.right - insets.left) / 2) * mmPerPx;
+    target.z += (((insets.bottom - insets.top) / 2) * mmPerPx) / Math.cos(tilt);
+    const pos = target.clone().add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
+    this.flyTo(target, pos, ms);
   }
 
   /** Screen (client) coordinates of a board point; used by tests and tutorials. */

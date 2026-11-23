@@ -29,10 +29,6 @@ h2 { margin: 0 0 8px; font-size: 15px; } h3 { margin: 0; font-size: 14px; }
 .label .pips { letter-spacing: 1px; } .label .sh { color: var(--blue); } .label .hu { color: #ffd166; } .label .st { color: var(--red); }
 .float { font-weight: 700; font-size: 14px; text-shadow: 0 0 4px #000; pointer-events: none; }
 .p1c { color: var(--p1); } .p2c { color: var(--p2); }
-@media (max-width: 800px) {
-  #panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 45%; border-radius: 10px 10px 0 0; }
-  #log { display: none; }
-}
 .card { cursor: pointer; }
 .card.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
 .planned { font-size: 13px; margin-bottom: 6px; }
@@ -50,3 +46,57 @@ details .dial { margin-top: 6px; }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 .chip.skip { color: var(--muted); }
 .chip.hold { color: var(--red); border-color: #5a2a33; }
+
+/* ---------- shared: desktop hides the phone-only pieces ---------- */
+#ticker, #viewbtn { display: none; }
+html:not(.compact) #panel .bar { display: none; }
+.bar .blue, .ticker .blue, #ticker .blue { color: var(--blue); }
+.bar .red, #ticker .red { color: var(--red); }
+#ticker .p1c { color: var(--p1); } #ticker .p2c { color: var(--p2); }
+
+/* ---------- phones and small tablets (html.compact, set from JS) ---------- */
+html.compact #hud { top: calc(8px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); gap: 6px; font-size: 11px; align-items: center; }
+html.compact #hud span { padding: 4px 8px; }
+html.compact #viewbtn { display: inline-block; font: inherit; text-transform: none; letter-spacing: 0; background: var(--panel); color: var(--accent); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; min-height: 30px; cursor: pointer; }
+html.compact #viewbtn[hidden] { display: none; }
+
+html.compact #ticker { display: block; position: fixed; top: calc(44px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); text-align: left; font: 12px/1.3 system-ui, sans-serif; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+html.compact #ticker:empty { display: none; }
+html.compact #log { display: none; }
+html.compact #log.open { display: block; z-index: 5; top: calc(78px + env(safe-area-inset-top, 0px)); bottom: auto; left: calc(10px + env(safe-area-inset-left, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); width: auto; max-height: 45%; }
+
+/* the panel becomes a bottom bar (upright) or a side rail (sideways) */
+html.compact #panel { padding: 10px 12px; border-radius: 14px 14px 0 0; background: #0b111e; }
+html.compact.portrait #panel { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 75%; padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); border-width: 1px 0 0; }
+html.compact.landscape #panel { top: 0; bottom: 0; right: 0; left: auto; width: min(270px, 40vw); max-height: none; border-radius: 0; border-width: 0 0 0 1px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+html.compact.landscape #ticker { right: calc(min(270px, 40vw) + 10px); }
+html.compact.landscape #log.open { right: calc(min(270px, 40vw) + 10px); max-height: 60%; }
+html.compact #panel .detail { display: none; }
+html.compact #panel.expanded .detail { display: block; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+html.compact.portrait #panel.expanded .detail { max-height: 50vh; overflow: auto; }
+
+.bar-top { display: flex; align-items: center; gap: 8px; }
+.bar-status { flex: 1; min-width: 0; font-size: 14px; line-height: 1.3; }
+.bar-more { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 6px 10px; font-size: 12px; min-height: 36px; cursor: pointer; }
+.bar-ships { display: flex; gap: 6px; margin-top: 8px; }
+html.compact.landscape .bar-ships { flex-direction: column; }
+.sc { flex: 1 1 0; min-width: 0; min-height: 48px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; background: #0d1526; border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 6px 10px; font-size: 13px; cursor: pointer; text-align: left; }
+.sc i { font-style: normal; color: var(--muted); font-size: 11px; }
+.sc .sc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; font-weight: 600; }
+.sc .hint { margin: 0; font-size: 11px; }
+.sc.done { border-color: #2e6b5a; }
+.sc.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+.bar-buttons { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.bar-buttons button { flex: 1 1 0; min-width: 72px; min-height: 46px; border-radius: 10px; border: 1px solid var(--line); background: #0d1526; color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer; }
+.bar-buttons button.primary { background: #12332b; border-color: var(--accent); color: var(--accent); }
+.bar-buttons button.go-btn { background: var(--accent); border-color: var(--accent); color: #04120d; }
+.bar-buttons button.danger { color: var(--red); border-color: #5a2a33; }
+.bar-buttons button:disabled { background: #1a2338; border-color: var(--line); color: var(--muted); cursor: not-allowed; }
+.bar-buttons button:focus-visible, .sc:focus-visible, .bar-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* lighter board labels: name only on the selected/ringed ship */
+html.compact .label { font-size: 10px; padding: 1px 4px; }
+html.compact .label .nm { display: none; }
+html.compact .label.sel .nm { display: inline; }
+html.compact .chips { display: none; }
+html.compact .ghost-label { font-size: 11px; }

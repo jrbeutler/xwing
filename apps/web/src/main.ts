@@ -12,6 +12,22 @@ const panel = document.getElementById('panel')!;
 const logEl = document.getElementById('log')!;
 const roundEl = document.getElementById('round')!;
 const phaseEl = document.getElementById('phase')!;
+// The panel holds a compact bar (phones) and the full detail view (desktop, or the phone's pull-up sheet).
+const bar = document.createElement('div');
+bar.className = 'bar';
+const detail = document.createElement('div');
+detail.className = 'detail';
+panel.append(bar, detail);
+const ticker = document.createElement('button');
+ticker.id = 'ticker';
+ticker.setAttribute('aria-label', 'Show battle log');
+document.body.appendChild(ticker);
+ticker.onclick = () => logEl.classList.toggle('open');
+const viewBtn = document.createElement('button');
+viewBtn.id = 'viewbtn';
+viewBtn.setAttribute('aria-label', 'Toggle overview');
+document.getElementById('hud')!.appendChild(viewBtn);
+viewBtn.onclick = () => { userOverview = !userOverview; applyCamera(); };
 
 let state: GameState;
 let shown = 0; // index of the next log event to present
@@ -53,7 +69,9 @@ async function send(cmd: Command) {
 
 async function pump() {
   busy = true;
-  panel.innerHTML = '<p class="hint">Resolving…</p>';
+  detail.innerHTML = '<p class="hint">Resolving…</p>';
+  setBar({ status: '<span class="hint">Resolving…</span>' });
+  applyCamera();
   try {
     for (;;) {
       await present();
@@ -83,6 +101,7 @@ async function present() {
       if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart') div.className = 'hl';
       logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
+      ticker.innerHTML = text;
     }
     await animate(e);
   }
@@ -167,6 +186,12 @@ function actionText(a: ActionChoice): string {
 // Decision panels
 // ---------------------------------------------------------------------------
 function render() {
+  userOverview = false;
+  renderDecision();
+  applyCamera();
+}
+
+function renderDecision() {
   scene.clearGhost();
   scene.clearOverlay();
   scene.clearChips();
@@ -175,9 +200,11 @@ function render() {
   if (state.phase === 'over' || !d) {
     scene.highlight(null);
     const won = state.winner === HUMAN;
-    panel.innerHTML = `<h2>${state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat'}</h2>
+    const title = state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat';
+    detail.innerHTML = `<h2>${title}</h2>
       <p class="hint">Battle ended in round ${state.round}.</p><button class="go" id="again">New battle</button>`;
     document.getElementById('again')!.onclick = newGame;
+    setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [{ label: 'New battle', cls: 'primary', onClick: newGame }] });
     return;
   }
   if (d.kind === 'planning') {
@@ -253,6 +280,7 @@ function selectShip(id: string | null) {
   }
   updateControls();
   renderPlanning();
+  applyCamera();
 }
 
 function refreshBoard() {
@@ -262,6 +290,7 @@ function refreshBoard() {
       .filter((s) => plan[s.id] !== undefined && s.id !== selected)
       .map((s) => ({ size: sizeOf(s), poses: ghostPoses(s, plan[s.id]), color: DIFF_COLOR[maneuverOf(s, plan[s.id]).difficulty] })),
   );
+  planningBar();
   const cand = document.getElementById('cand');
   if (!selected) {
     scene.setMarkers([]);
@@ -295,13 +324,16 @@ function refreshBoard() {
   }
 }
 
-function candidateAt(pt: { x: number; y: number } | null) {
-  if (!selected || !pt) return;
+function candidateAt(p: P) {
+  if (!selected) return;
   const s = shipById(selected);
-  let best: SnapGroup | null = null, bestD = SNAP_RADIUS;
+  const pt = scene.boardPoint(p.clientX, p.clientY);
+  let best: SnapGroup | null = null, bestD = Infinity;
   for (const g of snapGroups(s)) {
-    const d = Math.hypot(g.pos.x - pt.x, g.pos.y - pt.y);
-    if (d < bestD) { bestD = d; best = g; }
+    // Nearest on screen wins; accept it within a finger-sized radius or SNAP_RADIUS on the table.
+    const d = screenDist(p, g.pos.x, g.pos.y);
+    const near = d < fingerPx(p) || (pt !== null && Math.hypot(g.pos.x - pt.x, g.pos.y - pt.y) < SNAP_RADIUS);
+    if (near && d < bestD) { bestD = d; best = g; }
   }
   const same = best && candidate && candidate.group[0] === best.idx[0];
   if (!same) candidate = best ? { group: best.idx, flip: 0 } : null;
@@ -316,6 +348,7 @@ function flip() {
 
 function commit() {
   if (!selected || !candidate) return;
+  lastCommit = { shipId: selected, prev: plan[selected] };
   plan[selected] = candidate.group[candidate.flip];
   const next = myShips().find((s) => plan[s.id] === undefined);
   selectShip(next ? next.id : null);
@@ -328,6 +361,7 @@ function executePlan() {
   plan = {};
   selected = null;
   candidate = null;
+  lastCommit = null;
   scene.setPlanned([]);
   scene.setMarkers([]);
   updateControls();
@@ -339,44 +373,81 @@ function executePlan() {
 // dispatch to it. Mouse previews on hover, touch previews while dragging, and a
 // click/tap (no drag) commits.
 // ---------------------------------------------------------------------------
+/** The pointer position a mode works with (touch drags are lifted above the finger). */
+type P = { clientX: number; clientY: number; pointerType: string };
 interface BoardMode {
-  hover?(e: PointerEvent): void;
-  click(e: PointerEvent): void;
+  press?(p: P): void;
+  hover?(p: P): void;
+  click(p: P): void;
+  release?(p: P): void;
   key?(e: KeyboardEvent): void;
 }
 let mode: BoardMode | null = null;
 
+/** Touch previews are aimed this far above the finger so the finger does not hide the ghost. */
+const FINGER_OFFSET = 64;
+const lift = (e: PointerEvent): P =>
+  e.pointerType === 'mouse' ? e : { clientX: e.clientX, clientY: e.clientY - FINGER_OFFSET, pointerType: e.pointerType };
+const fingerPx = (p: P) => (p.pointerType === 'mouse' ? 0 : 56);
+const screenDist = (p: P, x: number, y: number) => {
+  const q = scene.screenPoint(x, y);
+  return Math.hypot(q.x - p.clientX, q.y - p.clientY);
+};
+
 const canvas = scene.renderer.domElement;
+const touches = new Set<number>();
+let multi = false; // a two-finger camera gesture is in progress
 canvas.addEventListener('pointerdown', (e) => {
+  touches.add(e.pointerId);
   lastPointer = e.pointerType;
   updateControls();
+  if (touches.size > 1) { multi = true; if (pointerDown) pointerDown.moved = true; return; }
+  multi = false;
   pointerDown = { x: e.clientX, y: e.clientY, moved: false };
-  if (!busy && mode && e.pointerType !== 'mouse') mode.hover?.(e);
+  if (!busy && mode && e.pointerType !== 'mouse') { mode.press?.(e); mode.hover?.(lift(e)); }
 });
 canvas.addEventListener('pointermove', (e) => {
-  if (pointerDown && Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y) > 6) pointerDown.moved = true;
-  if (busy || !mode) return;
-  if (e.pointerType === 'mouse' ? !pointerDown : !!pointerDown) mode.hover?.(e);
+  if (pointerDown && Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y) > 8) pointerDown.moved = true;
+  if (busy || !mode || multi) return;
+  if (e.pointerType === 'mouse' ? !pointerDown : !!pointerDown) mode.hover?.(lift(e));
 });
 canvas.addEventListener('pointerup', (e) => {
+  touches.delete(e.pointerId);
   const down = pointerDown;
   pointerDown = null;
-  if (busy || !mode || !down || down.moved) return; // a drag: camera move (mouse) or preview (touch)
+  if (multi) { if (touches.size === 0) multi = false; return; }
+  if (busy || !mode || !down) return;
+  if (down.moved) {
+    // Mouse drag = camera move. Touch drag = steering; lifting the finger may commit.
+    if (e.pointerType !== 'mouse') mode.release?.(lift(e));
+    return;
+  }
   mode.click(e);
+});
+canvas.addEventListener('pointercancel', (e) => {
+  touches.delete(e.pointerId);
+  pointerDown = null;
+  if (touches.size === 0) multi = false;
 });
 addEventListener('keydown', (e) => { if (!busy && mode) mode.key?.(e); });
 
 const planningMode: BoardMode = {
-  hover(e) { if (selected) candidateAt(scene.boardPoint(e.clientX, e.clientY)); },
-  click(e) {
-    const picked = scene.pickShip(e.clientX, e.clientY);
+  press(p) {
+    // Pressing on another of your ships selects it, so you can drag straight out of it.
+    const picked = scene.pickShip(p.clientX, p.clientY);
+    if (picked && picked !== selected && shipById(picked).owner === HUMAN) selectShip(picked);
+  },
+  hover(p) { if (selected) candidateAt(p); },
+  click(p) {
+    const picked = scene.pickShip(p.clientX, p.clientY);
     const mine = picked && shipById(picked).owner === HUMAN ? picked : null;
     if (mine && mine !== selected) return selectShip(mine);
     if (selected) {
-      candidateAt(scene.boardPoint(e.clientX, e.clientY));
+      candidateAt(p);
       if (candidate) commit(); else selectShip(null);
     }
   },
+  release() { if (selected && candidate) commit(); },
   key(e) {
     if (e.key === 'f' || e.key === 'F') flip();
     if (e.key === 'Escape') selectShip(null);
@@ -384,9 +455,144 @@ const planningMode: BoardMode = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Phone layout: a compact bar (bottom when upright, side rail when sideways),
+// a camera that frames the uncovered part of the screen, and a log ticker.
+// ---------------------------------------------------------------------------
+let compact = false;
+let userOverview = false;
+let lastCommit: { shipId: string; prev: number | undefined } | null = null;
+
+function updateLayout() {
+  const c = Math.min(innerWidth, innerHeight) < 560 || innerWidth < 760;
+  const portrait = innerHeight >= innerWidth;
+  const root = document.documentElement.classList;
+  root.toggle('compact', c);
+  root.toggle('portrait', c && portrait);
+  root.toggle('landscape', c && !portrait);
+  if (c !== compact) {
+    compact = c;
+    panel.classList.remove('expanded');
+    logEl.classList.remove('open');
+    if (!c) scene.resetView();
+    if (state && !busy) renderDecision();
+  }
+  applyCamera(250);
+}
+addEventListener('resize', () => updateLayout());
+
+/** Screen area covered by UI, so the camera can frame what is left. */
+function uiInsets() {
+  const r = panel.getBoundingClientRect();
+  const top = Math.max(ticker.getBoundingClientRect().bottom, 40) + 6;
+  return innerHeight >= innerWidth
+    ? { top, bottom: innerHeight - r.top + 6, left: 0, right: 0 }
+    : { top: 44, bottom: 0, left: 0, right: innerWidth - r.left + 6 };
+}
+
+function applyCamera(ms = 500) {
+  if (!compact || !state) return;
+  const d = state.pending;
+  // Points of interest for the current decision; null = show the whole table.
+  let pts: { x: number; y: number }[] | null = null;
+  let minHalf = 150;
+  if (!busy && d) {
+    if (d.kind === 'planning' && selected) {
+      const s = shipById(selected);
+      const fx = Math.cos(s.pose.h), fy = Math.sin(s.pose.h);
+      pts = [{ x: s.pose.x + fx * 110, y: s.pose.y + fy * 110 }];
+      minHalf = 190;
+    }
+    if (d.kind === 'action') {
+      const s = shipById(d.shipId);
+      pts = [s.pose, ...d.options.flatMap((o) => (o.type === 'lock' ? [shipById(o.targetId).pose] : []))];
+      minHalf = 130;
+    }
+    if (d.kind === 'attack') pts = [shipById(d.shipId).pose, ...d.targets.map((t) => shipById(t.targetId).pose)];
+  }
+  viewBtn.hidden = !pts;
+  viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
+  if (pts && !userOverview) {
+    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const pad = 110; // room for bases and their (wide) labels around the outermost ships
+    scene.frameRect((x0 + x1) / 2, (y0 + y1) / 2,
+      Math.max(minHalf, (x1 - x0) / 2 + pad), Math.max(minHalf, (y1 - y0) / 2 + pad), uiInsets(), 0.35, ms);
+  } else {
+    scene.frameRect(457, 457, 465, 465, uiInsets(), 0.2, ms);
+  }
+}
+
+interface BarButton { label: string; cls?: string; disabled?: boolean; onClick: () => void }
+function setBar(o: { status: string; ships?: HTMLElement; buttons?: BarButton[] }) {
+  bar.innerHTML = `<div class="bar-top"><div class="bar-status">${o.status}</div>
+    <button class="bar-more" aria-label="Show details">Details</button></div>`;
+  bar.querySelector('.bar-more')!.addEventListener('click', () => panel.classList.toggle('expanded'));
+  if (o.ships) bar.appendChild(o.ships);
+  if (o.buttons?.length) {
+    const row = document.createElement('div');
+    row.className = 'bar-buttons';
+    for (const b of o.buttons) {
+      const el = document.createElement('button');
+      el.className = b.cls ?? '';
+      el.innerHTML = b.label;
+      el.disabled = !!b.disabled;
+      el.onclick = b.onClick;
+      row.appendChild(el);
+    }
+    bar.appendChild(row);
+  }
+}
+
+const shortMove = (s: ShipState, i: number) => {
+  const m = maneuverOf(s, i);
+  return `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span>`;
+};
+
+function undoCommit() {
+  if (!lastCommit) return;
+  const { shipId, prev } = lastCommit;
+  if (prev === undefined) delete plan[shipId]; else plan[shipId] = prev;
+  lastCommit = null;
+  selectShip(shipId);
+}
+
+function planningBar() {
+  if (!compact) return;
+  const mine = myShips();
+  const ships = document.createElement('div');
+  ships.className = 'bar-ships';
+  for (const s of mine) {
+    const b = document.createElement('button');
+    b.className = 'sc' + (s.id === selected ? ' active' : '') + (plan[s.id] !== undefined ? ' done' : '');
+    b.innerHTML = `<span class="sc-name">${s.name.split(' ')[0]} <i>${s.initiative}</i></span>
+      <span class="sc-move">${plan[s.id] !== undefined ? shortMove(s, plan[s.id]) : '<span class="hint">not set</span>'}</span>`;
+    b.onclick = () => selectShip(s.id);
+    ships.appendChild(b);
+  }
+  const buttons: BarButton[] = [];
+  let status: string;
+  if (!selected) {
+    status = mine.every((s) => plan[s.id] !== undefined) ? 'All moves set.' : 'Tap a ship to plan its move.';
+  } else {
+    const s = shipById(selected);
+    if (candidate) {
+      const i = candidate.group[candidate.flip];
+      status = `<b>${s.name.split(' ')[0]}</b>: ${maneuverName(s, i)}`;
+      if (candidate.group.length > 1) buttons.push({ label: 'Flip', onClick: flip });
+      if (plan[s.id] !== i) buttons.push({ label: 'Set', cls: 'primary', onClick: commit });
+    } else {
+      status = `<b>${s.name.split(' ')[0]}</b>: drag on the board to steer`;
+    }
+  }
+  if (lastCommit) buttons.unshift({ label: 'Undo', onClick: undoCommit });
+  buttons.push({ label: 'Execute', cls: 'go-btn', disabled: mine.some((s) => plan[s.id] === undefined), onClick: executePlan });
+  setBar({ status, ships, buttons });
+}
+
 function renderPlanning() {
   const mine = myShips();
-  panel.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
+  detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click to set it. <b>F</b> flips between moves that end in the same spot (e.g. straight / K-turn). Blue clears stress, red adds it.</p>`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
@@ -402,14 +608,14 @@ function renderPlanning() {
       card.appendChild(cand);
     }
     card.appendChild(dialFallback(s));
-    panel.appendChild(card);
+    detail.appendChild(card);
   }
   const go = document.createElement('button');
   go.className = 'go';
   go.textContent = 'Reveal dials & execute';
   go.disabled = mine.some((s) => plan[s.id] === undefined);
   go.onclick = executePlan;
-  panel.appendChild(go);
+  detail.appendChild(go);
   refreshBoard();
 }
 
@@ -475,19 +681,33 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     if (cand?.type === 'lock') {
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR.lock, `Lock ${shipById(cand.targetId).name}`);
     } else scene.clearOverlay();
+    const who = `<b>${s.name.split(' ')[0]}</b>`;
+    const boardHint = spots.length || locks.length ? 'tap a dot or ringed enemy, or pick below' : 'pick an action';
+    const btns: BarButton[] = simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
+    if (cand && cand.type !== 'none' && cand.type !== 'focus' && cand.type !== 'evade') {
+      const c = cand;
+      btns.unshift({ label: 'Do it', cls: 'primary', onClick: () => choose(c) });
+    }
+    setBar({ status: cand ? `${who}: ${actionText(cand)}` : `${who}: ${boardHint}`, buttons: btns });
   };
-  const pick = (e: PointerEvent): ActionChoice | null => {
-    const picked = scene.pickShip(e.clientX, e.clientY);
+  const pick = (p: P): ActionChoice | null => {
+    const picked = scene.pickShip(p.clientX, p.clientY);
     const lock = locks.find((l) => l.targetId === picked);
     if (lock) return lock;
-    const pt = scene.boardPoint(e.clientX, e.clientY);
-    if (!pt) return null;
-    let best: Spot | null = null, bestD = ACTION_SNAP;
+    const pt = scene.boardPoint(p.clientX, p.clientY);
+    let best: Spot | null = null, bestD = Infinity;
     for (const o of spots) {
-      const d = Math.hypot(o.to.x - pt.x, o.to.y - pt.y);
-      if (d < bestD) { bestD = d; best = o; }
+      const d = screenDist(p, o.to.x, o.to.y);
+      const near = d < fingerPx(p) || (pt !== null && Math.hypot(o.to.x - pt.x, o.to.y - pt.y) < ACTION_SNAP);
+      if (near && d < bestD) { bestD = d; best = o; }
     }
-    return best;
+    if (best) return best;
+    // Touch: also accept a tap near a lockable enemy's base.
+    for (const l of locks) {
+      const t = shipById(l.targetId).pose;
+      if (screenDist(p, t.x, t.y) < fingerPx(p)) return l;
+    }
+    return null;
   };
   mode = {
     hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
@@ -503,7 +723,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     spots.some((o) => o.type === 'boost') ? 'a <b style="color:#9be37c">green</b> dot to boost' : '',
     locks.length ? 'click a <b style="color:#ffd166">ringed enemy</b> to lock it' : '',
   ].filter(Boolean);
-  panel.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the buttons under the ship.</p>`;
+  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the buttons under the ship.</p>`;
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
@@ -511,7 +731,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     b.onmouseenter = () => { cand = o; show(); };
     b.onmouseleave = () => { cand = null; show(); };
     b.onclick = () => choose(o);
-    panel.appendChild(b);
+    detail.appendChild(b);
   }
   show();
 }
@@ -532,19 +752,24 @@ function renderAttack(shipId: string, targets: Target[]) {
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(targets.map((t) => [t.targetId, RED])) });
     if (cand) scene.showLine(s.pose, shipById(cand.targetId).pose, RED, targetText(cand));
     else scene.clearOverlay();
+    const c = cand;
+    const btns: BarButton[] = [];
+    if (c) btns.push({ label: 'Fire', cls: 'primary', onClick: () => fire(c) });
+    btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+    setBar({ status: c ? targetText(c) : `<b>${s.name.split(' ')[0]}</b>: tap a red-ringed enemy`, buttons: btns });
   };
-  const pick = (e: PointerEvent): Target | null => {
-    const picked = scene.pickShip(e.clientX, e.clientY);
+  const pick = (p: P): Target | null => {
+    const picked = scene.pickShip(p.clientX, p.clientY);
     const hit = targets.find((t) => t.targetId === picked);
     if (hit) return hit;
     // Small models are fiddly to hit, so also accept a click near a target's base.
-    const pt = scene.boardPoint(e.clientX, e.clientY);
-    if (!pt) return null;
-    let best: Target | null = null, bestD = 40;
+    const pt = scene.boardPoint(p.clientX, p.clientY);
+    let best: Target | null = null, bestD = Infinity;
     for (const t of targets) {
-      const p = shipById(t.targetId).pose;
-      const d = Math.hypot(p.x - pt.x, p.y - pt.y);
-      if (d < bestD) { bestD = d; best = t; }
+      const tp = shipById(t.targetId).pose;
+      const d = screenDist(p, tp.x, tp.y);
+      const near = d < fingerPx(p) || (pt !== null && Math.hypot(tp.x - pt.x, tp.y - pt.y) < 40);
+      if (near && d < bestD) { bestD = d; best = t; }
     }
     return best;
   };
@@ -555,7 +780,7 @@ function renderAttack(shipId: string, targets: Target[]) {
   };
   scene.showChips(s.pose, [{ label: 'Hold fire', cls: 'hold', onClick: () => fire(null) }]);
 
-  panel.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Click a <b style="color:#ff5a5a">red-ringed</b> enemy to fire.
+  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Click a <b style="color:#ff5a5a">red-ringed</b> enemy to fire.
     Range 1 adds an attack die; range 3 and obstruction add a defense die. Tokens are spent automatically.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
@@ -566,16 +791,17 @@ function renderAttack(shipId: string, targets: Target[]) {
     b.onmouseenter = () => { cand = t; show(); };
     b.onmouseleave = () => { cand = null; show(); };
     b.onclick = () => fire(t);
-    panel.appendChild(b);
+    detail.appendChild(b);
   }
   const hold = document.createElement('button');
   hold.className = 'opt';
   hold.textContent = 'Hold fire';
   hold.onclick = () => fire(null);
-  panel.appendChild(hold);
+  detail.appendChild(hold);
   show();
 }
 
+updateLayout();
 newGame();
 
 // Debug/test hook (also handy in the browser console).
