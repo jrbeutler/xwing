@@ -173,66 +173,252 @@ function render() {
     document.getElementById('again')!.onclick = newGame;
     return;
   }
-  if (d.kind === 'planning') return renderPlanning();
+  if (d.kind === 'planning') {
+    if (!selected || !shipById(selected) || shipById(selected).destroyed) {
+      const first = myShips().find((s) => plan[s.id] === undefined);
+      return selectShip(first ? first.id : null);
+    }
+    return renderPlanning();
+  }
+  scene.setPlanned([]);
+  scene.setMarkers([]);
   if (d.kind === 'action') return renderAction(d.shipId, d.options);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
 }
 
+// ---------------------------------------------------------------------------
+// Planning: fly the ship on the board. Select a ship, move the pointer, and the
+// ghost snaps to the nearest legal maneuver end position. Click/tap to commit.
+// ---------------------------------------------------------------------------
+const DIFF_COLOR = { blue: 0x4aa3ff, white: 0xe8eef8, red: 0xff5a5a } as const;
+const BEARING_NAME: Record<Bearing, string> = {
+  straight: 'straight', bankLeft: 'bank left', bankRight: 'bank right', turnLeft: 'turn left', turnRight: 'turn right',
+  kturn: 'K-turn', sloopLeft: 'loop left', sloopRight: 'loop right', trollLeft: 'roll left', trollRight: 'roll right',
+  stop: 'stop', reverseStraight: 'reverse', reverseBankLeft: 'reverse left', reverseBankRight: 'reverse right',
+};
+/** How far (mm) the pointer may be from a maneuver's end point and still snap to it. */
+const SNAP_RADIUS = 140;
+
+let selected: string | null = null;
+let candidate: { group: number[]; flip: number } | null = null;
+let lastPointer = 'mouse';
+let pointerDown: { x: number; y: number; moved: boolean } | null = null;
+
+interface SnapGroup { pos: { x: number; y: number }; idx: number[] }
+
+/** Legal maneuvers grouped by end position (e.g. 4 straight and 4 K-turn end in the same spot). */
+function snapGroups(s: ShipState): SnapGroup[] {
+  const dial = SHIP_TYPES[s.typeId].dial;
+  const groups: SnapGroup[] = [];
+  for (const i of legalDial(state, s)) {
+    const p = maneuverFinalPose(s.pose, sizeOf(s), dial[i]);
+    const g = groups.find((x) => Math.hypot(x.pos.x - p.x, x.pos.y - p.y) < 2);
+    if (g) g.idx.push(i); else groups.push({ pos: { x: p.x, y: p.y }, idx: [i] });
+  }
+  return groups;
+}
+
+const maneuverOf = (s: ShipState, i: number) => SHIP_TYPES[s.typeId].dial[i];
+const maneuverName = (s: ShipState, i: number) => {
+  const m = maneuverOf(s, i);
+  return `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}`;
+};
+const ghostPoses = (s: ShipState, i: number) => {
+  const m = maneuverOf(s, i);
+  return [...maneuverPath(s.pose, sizeOf(s), m).path, maneuverFinalPose(s.pose, sizeOf(s), m)];
+};
+const isPlanning = () => !busy && state.pending?.kind === 'planning' && state.pending.waitingOn.includes(HUMAN);
+const myShips = () => state.ships.filter((s) => s.owner === HUMAN && !s.destroyed);
+
+function updateControls() {
+  // On touch, dragging steers the ship, so the camera must not rotate while one is selected.
+  scene.controls.enableRotate = !(selected && lastPointer !== 'mouse');
+}
+
+function selectShip(id: string | null) {
+  selected = id;
+  candidate = null;
+  if (id && plan[id] !== undefined) {
+    const s = shipById(id);
+    const g = snapGroups(s).find((x) => x.idx.includes(plan[id]));
+    if (g) candidate = { group: g.idx, flip: g.idx.indexOf(plan[id]) };
+  }
+  updateControls();
+  renderPlanning();
+}
+
+function refreshBoard() {
+  scene.highlight(selected);
+  scene.setPlanned(
+    myShips()
+      .filter((s) => plan[s.id] !== undefined && s.id !== selected)
+      .map((s) => ({ size: sizeOf(s), poses: ghostPoses(s, plan[s.id]), color: DIFF_COLOR[maneuverOf(s, plan[s.id]).difficulty] })),
+  );
+  const cand = document.getElementById('cand');
+  if (!selected) {
+    scene.setMarkers([]);
+    scene.clearGhost();
+    if (cand) cand.innerHTML = '';
+    return;
+  }
+  const s = shipById(selected);
+  const groups = snapGroups(s);
+  scene.setMarkers(groups.map((g) => ({
+    ...g.pos,
+    color: DIFF_COLOR[maneuverOf(s, g.idx[0]).difficulty],
+    active: candidate?.group[0] === g.idx[0],
+  })));
+  if (!candidate) {
+    scene.clearGhost();
+    if (cand) cand.innerHTML = `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
+    return;
+  }
+  const i = candidate.group[candidate.flip];
+  const m = maneuverOf(s, i);
+  const alt = candidate.group.length > 1 ? candidate.group[(candidate.flip + 1) % candidate.group.length] : null;
+  const flipHint = alt !== null ? `<div class="hint">F / Flip: ${BEARING_NAME[maneuverOf(s, alt).bearing]}</div>` : '';
+  scene.showGhost(sizeOf(s), ghostPoses(s, i), DIFF_COLOR[m.difficulty], `${maneuverName(s, i)}${flipHint}`);
+  if (cand) {
+    cand.innerHTML = `<div class="cand-row"><span>${maneuverName(s, i)} <span class="hint">(${m.difficulty})</span></span>
+      ${alt !== null ? '<button class="opt mini" id="flip">Flip</button>' : ''}
+      <button class="opt mini confirm" id="confirm">Set</button></div>`;
+    document.getElementById('flip')?.addEventListener('click', flip);
+    document.getElementById('confirm')!.addEventListener('click', commit);
+  }
+}
+
+function candidateAt(pt: { x: number; y: number } | null) {
+  if (!selected || !pt) return;
+  const s = shipById(selected);
+  let best: SnapGroup | null = null, bestD = SNAP_RADIUS;
+  for (const g of snapGroups(s)) {
+    const d = Math.hypot(g.pos.x - pt.x, g.pos.y - pt.y);
+    if (d < bestD) { bestD = d; best = g; }
+  }
+  const same = best && candidate && candidate.group[0] === best.idx[0];
+  if (!same) candidate = best ? { group: best.idx, flip: 0 } : null;
+  refreshBoard();
+}
+
+function flip() {
+  if (!candidate || candidate.group.length < 2) return;
+  candidate.flip = (candidate.flip + 1) % candidate.group.length;
+  refreshBoard();
+}
+
+function commit() {
+  if (!selected || !candidate) return;
+  plan[selected] = candidate.group[candidate.flip];
+  const next = myShips().find((s) => plan[s.id] === undefined);
+  selectShip(next ? next.id : null);
+}
+
+function executePlan() {
+  const mine = myShips();
+  if (mine.some((s) => plan[s.id] === undefined)) return;
+  const dials = Object.fromEntries(mine.map((s) => [s.id, plan[s.id]]));
+  plan = {};
+  selected = null;
+  candidate = null;
+  scene.setPlanned([]);
+  scene.setMarkers([]);
+  updateControls();
+  send({ type: 'setDials', playerId: HUMAN, dials });
+}
+
+const canvas = scene.renderer.domElement;
+canvas.addEventListener('pointerdown', (e) => {
+  lastPointer = e.pointerType;
+  updateControls();
+  pointerDown = { x: e.clientX, y: e.clientY, moved: false };
+  if (isPlanning() && selected && e.pointerType !== 'mouse') candidateAt(scene.boardPoint(e.clientX, e.clientY));
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (pointerDown && Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y) > 6) pointerDown.moved = true;
+  if (!isPlanning() || !selected) return;
+  // Mouse previews on hover; touch previews while the finger drags.
+  if (e.pointerType === 'mouse' ? !pointerDown : !!pointerDown) candidateAt(scene.boardPoint(e.clientX, e.clientY));
+});
+canvas.addEventListener('pointerup', (e) => {
+  const down = pointerDown;
+  pointerDown = null;
+  if (!isPlanning() || !down || down.moved) return; // a drag: camera move (mouse) or steering preview (touch)
+  const picked = scene.pickShip(e.clientX, e.clientY);
+  const mine = picked && shipById(picked).owner === HUMAN ? picked : null;
+  if (mine && mine !== selected) return selectShip(mine);
+  if (selected) {
+    candidateAt(scene.boardPoint(e.clientX, e.clientY));
+    if (candidate) commit(); else selectShip(null);
+  }
+});
+addEventListener('keydown', (e) => {
+  if (!isPlanning()) return;
+  if (e.key === 'f' || e.key === 'F') flip();
+  if (e.key === 'Escape') selectShip(null);
+  if (e.key === 'Enter') { if (candidate) commit(); else executePlan(); }
+});
+
 function renderPlanning() {
-  scene.highlight(null);
-  const mine = state.ships.filter((s) => s.owner === HUMAN && !s.destroyed);
-  panel.innerHTML = `<h2>Planning</h2><p class="hint">Choose a maneuver for each ship. Hover to preview. Blue clears stress, red adds it.</p>`;
+  const mine = myShips();
+  panel.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
+    Click to set it. <b>F</b> flips between moves that end in the same spot (e.g. straight / K-turn). Blue clears stress, red adds it.</p>`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
-    const legal = new Set(legalDial(state, s));
     const card = document.createElement('div');
-    card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '');
+    card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
-      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${t.hull} · shields ${s.shields}/${t.shields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>`;
-    const dial = document.createElement('div');
-    dial.className = 'dial';
-    // Lay out like a physical dial: rows = speed, columns = bearing; reverse moves on their own row.
-    const COLS: Bearing[][] = [
-      ['sloopLeft', 'trollLeft', 'reverseBankLeft'], ['turnLeft'], ['bankLeft'],
-      ['straight', 'stop', 'reverseStraight'], ['bankRight'], ['turnRight'], ['sloopRight', 'trollRight', 'kturn', 'reverseBankRight'],
-    ];
-    const rowKey = (m: { bearing: Bearing; speed: number }) => (m.bearing.startsWith('reverse') ? -1 : m.speed);
-    const rows = [...new Set(t.dial.map(rowKey))].sort((a, b) => b - a);
-    const usedCols = COLS.map((c, ci) => (t.dial.some((m) => c.includes(m.bearing)) ? ci : -1)).filter((c) => c >= 0);
-    dial.style.gridTemplateColumns = `repeat(${usedCols.length}, 1fr)`;
-    for (const r of rows) {
-      for (const ci of usedCols) {
-        const i = t.dial.findIndex((m) => rowKey(m) === r && COLS[ci].includes(m.bearing));
-        if (i < 0) { dial.appendChild(document.createElement('span')); continue; }
-        const m = t.dial[i];
-        const b = document.createElement('button');
-        b.innerHTML = `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span>`;
-        b.title = `${maneuverLabel(m)} (${m.difficulty})`;
-        b.disabled = !legal.has(i);
-        if (plan[s.id] === i) b.classList.add('sel');
-        b.onmouseenter = () => {
-          scene.highlight(s.id);
-          const { path } = maneuverPath(s.pose, sizeOf(s), m);
-          scene.showGhost(sizeOf(s), [...path, maneuverFinalPose(s.pose, sizeOf(s), m)]);
-        };
-        b.onmouseleave = () => scene.clearGhost();
-        b.onclick = () => { plan[s.id] = i; renderPlanning(); };
-        dial.appendChild(b);
-      }
+      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${t.hull} · shields ${s.shields}/${t.shields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      <div class="planned">${plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
+    card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
+    if (s.id === selected) {
+      const cand = document.createElement('div');
+      cand.id = 'cand';
+      card.appendChild(cand);
     }
-    card.appendChild(dial);
+    card.appendChild(dialFallback(s));
     panel.appendChild(card);
   }
   const go = document.createElement('button');
   go.className = 'go';
   go.textContent = 'Reveal dials & execute';
   go.disabled = mine.some((s) => plan[s.id] === undefined);
-  go.onclick = () => {
-    const dials = Object.fromEntries(mine.map((s) => [s.id, plan[s.id]]));
-    plan = {};
-    send({ type: 'setDials', playerId: HUMAN, dials });
-  };
+  go.onclick = executePlan;
   panel.appendChild(go);
+  refreshBoard();
+}
+
+/** The classic dial grid, kept as a collapsed fallback. */
+function dialFallback(s: ShipState): HTMLElement {
+  const t = SHIP_TYPES[s.typeId];
+  const legal = new Set(legalDial(state, s));
+  const det = document.createElement('details');
+  det.innerHTML = '<summary class="hint">Show dial</summary>';
+  const dial = document.createElement('div');
+  dial.className = 'dial';
+  const COLS: Bearing[][] = [
+    ['sloopLeft', 'trollLeft', 'reverseBankLeft'], ['turnLeft'], ['bankLeft'],
+    ['straight', 'stop', 'reverseStraight'], ['bankRight'], ['turnRight'], ['sloopRight', 'trollRight', 'kturn', 'reverseBankRight'],
+  ];
+  const rowKey = (m: { bearing: Bearing; speed: number }) => (m.bearing.startsWith('reverse') ? -1 : m.speed);
+  const rows = [...new Set(t.dial.map(rowKey))].sort((a, b) => b - a);
+  const usedCols = COLS.map((c, ci) => (t.dial.some((m) => c.includes(m.bearing)) ? ci : -1)).filter((c) => c >= 0);
+  dial.style.gridTemplateColumns = `repeat(${usedCols.length}, 1fr)`;
+  for (const r of rows) {
+    for (const ci of usedCols) {
+      const i = t.dial.findIndex((m) => rowKey(m) === r && COLS[ci].includes(m.bearing));
+      if (i < 0) { dial.appendChild(document.createElement('span')); continue; }
+      const m = t.dial[i];
+      const b = document.createElement('button');
+      b.innerHTML = `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span>`;
+      b.title = `${maneuverLabel(m)} (${m.difficulty})`;
+      b.disabled = !legal.has(i);
+      if (plan[s.id] === i) b.classList.add('sel');
+      b.onclick = () => { selected = s.id; plan[s.id] = i; const next = myShips().find((x) => plan[x.id] === undefined); selectShip(next ? next.id : null); };
+      dial.appendChild(b);
+    }
+  }
+  det.appendChild(dial);
+  return det;
 }
 
 function renderAction(shipId: string, options: ActionChoice[]) {
@@ -276,3 +462,13 @@ function renderAttack(shipId: string, targets: { targetId: string; range: number
 }
 
 newGame();
+
+// Debug/test hook (also handy in the browser console).
+(window as unknown as { __xw: unknown }).__xw = {
+  scene,
+  get state() { return state; },
+  finalPose: (shipId: string, dialIndex: number) => {
+    const s = shipById(shipId);
+    return maneuverFinalPose(s.pose, sizeOf(s), SHIP_TYPES[s.typeId].dial[dialIndex]);
+  },
+};

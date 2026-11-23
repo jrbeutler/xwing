@@ -78,6 +78,12 @@ function baseMesh(size: number, color: number, arcs: string[]): THREE.Group {
   return g;
 }
 
+/** Empty a group, removing any HTML labels inside it (three only cleans up direct CSS2D children). */
+function clearGroup(g: THREE.Group) {
+  g.traverse((o) => { if (o instanceof CSS2DObject) o.element.remove(); });
+  g.clear();
+}
+
 export interface ShipView { root: THREE.Group; model: THREE.Group; label: CSS2DObject; ring: THREE.Mesh }
 
 export class BattleScene {
@@ -89,6 +95,8 @@ export class BattleScene {
   ships = new Map<string, ShipView>();
   ghost = new THREE.Group();
   overlay = new THREE.Group();
+  planned = new THREE.Group();
+  markers = new THREE.Group();
   private obstacleGroup = new THREE.Group();
 
   constructor(private host: HTMLElement) {
@@ -119,7 +127,7 @@ export class BattleScene {
 
     this.buildBoard();
     this.buildStars();
-    this.scene.add(this.obstacleGroup, this.ghost, this.overlay);
+    this.scene.add(this.obstacleGroup, this.ghost, this.overlay, this.planned, this.markers);
 
     addEventListener('resize', () => this.resize());
     this.resize();
@@ -245,38 +253,106 @@ export class BattleScene {
     for (const [id, v] of this.ships) v.ring.visible = id === shipId;
   }
 
-  showGhost(size: number, poses: Pose[], color = 0x7cf0c5) {
-    this.clearGhost();
-    if (!poses.length) return;
+  /** A ghost base at the end of a path, with the dashed path itself and an optional label. */
+  private ghostGroup(size: number, poses: Pose[], color: number, opacity = 1, label?: string): THREE.Group {
+    const out = new THREE.Group();
+    if (!poses.length) return out;
     const final = poses[poses.length - 1];
     const s = size / 2;
     const sq = new THREE.LineLoop(
       new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(s, 3, -s), new THREE.Vector3(-s, 3, -s), new THREE.Vector3(-s, 3, s), new THREE.Vector3(s, 3, s),
       ]),
-      new THREE.LineBasicMaterial({ color }),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity }),
     );
-    const fill = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, side: THREE.DoubleSide }));
+    const fill = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.2 * opacity, side: THREE.DoubleSide }));
     fill.rotation.x = -Math.PI / 2;
     fill.position.y = 2.5;
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(4, 10, 3), new THREE.MeshBasicMaterial({ color }));
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(4, 10, 3), new THREE.MeshBasicMaterial({ color, transparent: true, opacity }));
     nose.rotation.z = -Math.PI / 2;
     nose.position.set(s + 6, 3, 0);
     const g = new THREE.Group();
     g.add(sq, fill, nose);
     placeObject(g, final);
-    this.ghost.add(g);
+    out.add(g);
+    if (label) {
+      const el = document.createElement('div');
+      el.className = 'label ghost-label';
+      el.innerHTML = label;
+      const obj = new CSS2DObject(el);
+      obj.position.copy(toV3(final.x, final.y, 8));
+      obj.center.set(0.5, -0.6);
+      out.add(obj);
+    }
     if (poses.length > 1) {
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(poses.map((p) => toV3(p.x, p.y, 3))),
-        new THREE.LineDashedMaterial({ color, dashSize: 6, gapSize: 4 }),
+        new THREE.LineDashedMaterial({ color, dashSize: 6, gapSize: 4, transparent: true, opacity }),
       );
       line.computeLineDistances();
-      this.ghost.add(line);
+      out.add(line);
+    }
+    return out;
+  }
+
+  showGhost(size: number, poses: Pose[], color = 0x7cf0c5, label?: string) {
+    this.clearGhost();
+    this.ghost.add(this.ghostGroup(size, poses, color, 1, label));
+  }
+
+  clearGhost() { clearGroup(this.ghost); }
+
+  /** Persistent, dimmer ghosts for maneuvers already chosen this planning phase. */
+  setPlanned(items: { size: number; poses: Pose[]; color: number }[]) {
+    clearGroup(this.planned);
+    for (const it of items) this.planned.add(this.ghostGroup(it.size, it.poses, it.color, 0.45));
+  }
+
+  /** Small dots on the table showing every spot the selected ship can reach. */
+  setMarkers(points: { x: number; y: number; color: number; active?: boolean }[]) {
+    this.markers.clear();
+    for (const p of points) {
+      const m = new THREE.Mesh(
+        new THREE.CircleGeometry(p.active ? 5 : 3.5, 16),
+        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: p.active ? 1 : 0.55 }),
+      );
+      m.rotation.x = -Math.PI / 2;
+      m.position.copy(toV3(p.x, p.y, 0.6));
+      this.markers.add(m);
     }
   }
 
-  clearGhost() { this.ghost.clear(); }
+  private raycaster = new THREE.Raycaster();
+  private ndc(clientX: number, clientY: number) {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    return new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+  }
+
+  /** Board coordinates (mm) under the pointer, or null if it misses the table plane. */
+  boardPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+    this.raycaster.setFromCamera(this.ndc(clientX, clientY), this.camera);
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return null;
+    return { x: hit.x + HALF, y: -hit.z + HALF };
+  }
+
+  /** Screen (client) coordinates of a board point; used by tests and tutorials. */
+  screenPoint(x: number, y: number): { x: number; y: number } {
+    const v = toV3(x, y, 0).project(this.camera);
+    const r = this.renderer.domElement.getBoundingClientRect();
+    return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height };
+  }
+
+  /** Id of the ship model/base under the pointer, if any. */
+  pickShip(clientX: number, clientY: number): string | null {
+    this.raycaster.setFromCamera(this.ndc(clientX, clientY), this.camera);
+    let best: { id: string; d: number } | null = null;
+    for (const [id, v] of this.ships) {
+      const hits = this.raycaster.intersectObject(v.root, true).filter((h) => h.object !== v.ring);
+      if (hits.length && (!best || hits[0].distance < best.d)) best = { id, d: hits[0].distance };
+    }
+    return best?.id ?? null;
+  }
 
   showLine(a: Pose, b: Pose, color: number) {
     this.overlay.clear();

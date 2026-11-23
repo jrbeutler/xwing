@@ -33,3 +33,15 @@ h2 { margin: 0 0 8px; font-size: 15px; } h3 { margin: 0; font-size: 14px; }
   #panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 45%; border-radius: 10px 10px 0 0; }
   #log { display: none; }
 }
+.card { cursor: pointer; }
+.card.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+.planned { font-size: 13px; margin-bottom: 6px; }
+.planned .blue, .cand-row .blue, .ghost-label .blue { color: var(--blue); }
+.planned .red, .cand-row .red, .ghost-label .red { color: var(--red); }
+.cand-row { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
+.cand-row > span { flex: 1; }
+.opt.mini { display: inline-block; width: auto; margin: 0; padding: 5px 10px; }
+.opt.confirm { border-color: var(--accent); color: var(--accent); }
+details summary { cursor: pointer; margin-top: 4px; }
+details .dial { margin-top: 6px; }
+.ghost-label { font-size: 12px; }
