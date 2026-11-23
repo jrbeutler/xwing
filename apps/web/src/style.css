@@ -45,3 +45,8 @@ h2 { margin: 0 0 8px; font-size: 15px; } h3 { margin: 0; font-size: 14px; }
 details summary { cursor: pointer; margin-top: 4px; }
 details .dial { margin-top: 6px; }
 .ghost-label { font-size: 12px; }
+.chips { display: flex; gap: 6px; pointer-events: auto; }
+.chip { pointer-events: auto; background: rgba(13, 21, 38, .95); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip.skip { color: var(--muted); }
+.chip.hold { color: var(--red); border-color: #5a2a33; }

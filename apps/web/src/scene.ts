@@ -97,6 +97,7 @@ export class BattleScene {
   overlay = new THREE.Group();
   planned = new THREE.Group();
   markers = new THREE.Group();
+  chips = new THREE.Group();
   private obstacleGroup = new THREE.Group();
 
   constructor(private host: HTMLElement) {
@@ -127,7 +128,7 @@ export class BattleScene {
 
     this.buildBoard();
     this.buildStars();
-    this.scene.add(this.obstacleGroup, this.ghost, this.overlay, this.planned, this.markers);
+    this.scene.add(this.obstacleGroup, this.ghost, this.overlay, this.planned, this.markers, this.chips);
 
     addEventListener('resize', () => this.resize());
     this.resize();
@@ -250,8 +251,37 @@ export class BattleScene {
   }
 
   highlight(shipId: string | null) {
-    for (const [id, v] of this.ships) v.ring.visible = id === shipId;
+    this.setRings(shipId ? { [shipId]: 0x7cf0c5 } : {});
   }
+
+  /** Show a coloured ring under each listed ship (e.g. acting ship green, valid targets red). */
+  setRings(colors: Record<string, number>) {
+    for (const [id, v] of this.ships) {
+      const c = colors[id];
+      v.ring.visible = c !== undefined;
+      if (c !== undefined) (v.ring.material as THREE.MeshBasicMaterial).color.setHex(c);
+    }
+  }
+
+  /** Clickable HTML buttons floating just below a ship. */
+  showChips(pose: Pose, chips: { label: string; cls?: string; onClick: () => void }[]) {
+    this.clearChips();
+    if (!chips.length) return;
+    const el = document.createElement('div');
+    el.className = 'chips';
+    for (const c of chips) {
+      const b = document.createElement('button');
+      b.className = `chip ${c.cls ?? ''}`;
+      b.innerHTML = c.label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); c.onClick(); });
+      el.appendChild(b);
+    }
+    const obj = new CSS2DObject(el);
+    obj.position.copy(toV3(pose.x, pose.y, 0));
+    obj.center.set(0.5, -1.6); // sit well below the ship, clear of its label and preview labels
+    this.chips.add(obj);
+  }
+  clearChips() { clearGroup(this.chips); }
 
   /** A ghost base at the end of a path, with the dashed path itself and an optional label. */
   private ghostGroup(size: number, poses: Pose[], color: number, opacity = 1, label?: string): THREE.Group {
@@ -354,14 +384,22 @@ export class BattleScene {
     return best?.id ?? null;
   }
 
-  showLine(a: Pose, b: Pose, color: number) {
-    this.overlay.clear();
+  showLine(a: Pose, b: Pose, color: number, label?: string) {
+    this.clearOverlay();
     this.overlay.add(new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([toV3(a.x, a.y, FLY_HEIGHT + 4), toV3(b.x, b.y, FLY_HEIGHT + 4)]),
       new THREE.LineBasicMaterial({ color }),
     ));
+    if (label) {
+      const el = document.createElement('div');
+      el.className = 'label ghost-label';
+      el.innerHTML = label;
+      const obj = new CSS2DObject(el);
+      obj.position.copy(toV3((a.x + b.x) / 2, (a.y + b.y) / 2, FLY_HEIGHT + 4));
+      this.overlay.add(obj);
+    }
   }
-  clearOverlay() { this.overlay.clear(); }
+  clearOverlay() { clearGroup(this.overlay); }
 
   // ---------------- animations ----------------
   tween(ms: number, fn: (t: number) => void): Promise<void> {

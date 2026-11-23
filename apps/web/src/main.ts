@@ -42,6 +42,11 @@ function newGame() {
 /** Send a human command, then let the AI act until a human decision is needed. */
 async function send(cmd: Command) {
   if (busy) return;
+  mode = null;
+  scene.clearChips();
+  scene.clearGhost();
+  scene.clearOverlay();
+  scene.setMarkers([]);
   state = apply(state, cmd);
   await pump();
 }
@@ -164,6 +169,8 @@ function actionText(a: ActionChoice): string {
 function render() {
   scene.clearGhost();
   scene.clearOverlay();
+  scene.clearChips();
+  mode = null;
   const d = state.pending;
   if (state.phase === 'over' || !d) {
     scene.highlight(null);
@@ -176,8 +183,10 @@ function render() {
   if (d.kind === 'planning') {
     if (!selected || !shipById(selected) || shipById(selected).destroyed) {
       const first = myShips().find((s) => plan[s.id] === undefined);
+      mode = planningMode;
       return selectShip(first ? first.id : null);
     }
+    mode = planningMode;
     return renderPlanning();
   }
   scene.setPlanned([]);
@@ -227,7 +236,6 @@ const ghostPoses = (s: ShipState, i: number) => {
   const m = maneuverOf(s, i);
   return [...maneuverPath(s.pose, sizeOf(s), m).path, maneuverFinalPose(s.pose, sizeOf(s), m)];
 };
-const isPlanning = () => !busy && state.pending?.kind === 'planning' && state.pending.waitingOn.includes(HUMAN);
 const myShips = () => state.ships.filter((s) => s.owner === HUMAN && !s.destroyed);
 
 function updateControls() {
@@ -326,37 +334,55 @@ function executePlan() {
   send({ type: 'setDials', playerId: HUMAN, dials });
 }
 
+// ---------------------------------------------------------------------------
+// Board input. Each decision type installs a BoardMode; the canvas listeners just
+// dispatch to it. Mouse previews on hover, touch previews while dragging, and a
+// click/tap (no drag) commits.
+// ---------------------------------------------------------------------------
+interface BoardMode {
+  hover?(e: PointerEvent): void;
+  click(e: PointerEvent): void;
+  key?(e: KeyboardEvent): void;
+}
+let mode: BoardMode | null = null;
+
 const canvas = scene.renderer.domElement;
 canvas.addEventListener('pointerdown', (e) => {
   lastPointer = e.pointerType;
   updateControls();
   pointerDown = { x: e.clientX, y: e.clientY, moved: false };
-  if (isPlanning() && selected && e.pointerType !== 'mouse') candidateAt(scene.boardPoint(e.clientX, e.clientY));
+  if (!busy && mode && e.pointerType !== 'mouse') mode.hover?.(e);
 });
 canvas.addEventListener('pointermove', (e) => {
   if (pointerDown && Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y) > 6) pointerDown.moved = true;
-  if (!isPlanning() || !selected) return;
-  // Mouse previews on hover; touch previews while the finger drags.
-  if (e.pointerType === 'mouse' ? !pointerDown : !!pointerDown) candidateAt(scene.boardPoint(e.clientX, e.clientY));
+  if (busy || !mode) return;
+  if (e.pointerType === 'mouse' ? !pointerDown : !!pointerDown) mode.hover?.(e);
 });
 canvas.addEventListener('pointerup', (e) => {
   const down = pointerDown;
   pointerDown = null;
-  if (!isPlanning() || !down || down.moved) return; // a drag: camera move (mouse) or steering preview (touch)
-  const picked = scene.pickShip(e.clientX, e.clientY);
-  const mine = picked && shipById(picked).owner === HUMAN ? picked : null;
-  if (mine && mine !== selected) return selectShip(mine);
-  if (selected) {
-    candidateAt(scene.boardPoint(e.clientX, e.clientY));
-    if (candidate) commit(); else selectShip(null);
-  }
+  if (busy || !mode || !down || down.moved) return; // a drag: camera move (mouse) or preview (touch)
+  mode.click(e);
 });
-addEventListener('keydown', (e) => {
-  if (!isPlanning()) return;
-  if (e.key === 'f' || e.key === 'F') flip();
-  if (e.key === 'Escape') selectShip(null);
-  if (e.key === 'Enter') { if (candidate) commit(); else executePlan(); }
-});
+addEventListener('keydown', (e) => { if (!busy && mode) mode.key?.(e); });
+
+const planningMode: BoardMode = {
+  hover(e) { if (selected) candidateAt(scene.boardPoint(e.clientX, e.clientY)); },
+  click(e) {
+    const picked = scene.pickShip(e.clientX, e.clientY);
+    const mine = picked && shipById(picked).owner === HUMAN ? picked : null;
+    if (mine && mine !== selected) return selectShip(mine);
+    if (selected) {
+      candidateAt(scene.boardPoint(e.clientX, e.clientY));
+      if (candidate) commit(); else selectShip(null);
+    }
+  },
+  key(e) {
+    if (e.key === 'f' || e.key === 'F') flip();
+    if (e.key === 'Escape') selectShip(null);
+    if (e.key === 'Enter') { if (candidate) commit(); else executePlan(); }
+  },
+};
 
 function renderPlanning() {
   const mine = myShips();
@@ -421,44 +447,133 @@ function dialFallback(s: ShipState): HTMLElement {
   return det;
 }
 
+// ---------------------------------------------------------------------------
+// Actions on the board: click a spot to barrel roll / boost, click an enemy to
+// lock, or use the chips under the ship for Focus / Evade / Skip.
+// ---------------------------------------------------------------------------
+type Spot = Extract<ActionChoice, { type: 'barrelRoll' | 'boost' }>;
+type LockChoice = Extract<ActionChoice, { type: 'lock' }>;
+const ACTION_COLOR = { barrelRoll: 0x7cf0c5, boost: 0x9be37c, lock: 0xffd166 } as const;
+const GREEN = 0x7cf0c5, RED = 0xff5a5a;
+/** How far (mm) the pointer may be from a barrel roll / boost spot and still snap. */
+const ACTION_SNAP = 45;
+
 function renderAction(shipId: string, options: ActionChoice[]) {
   const s = shipById(shipId);
-  scene.highlight(shipId);
-  panel.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">Perform one action after moving.</p>`;
+  const spots = options.filter((o): o is Spot => o.type === 'barrelRoll' || o.type === 'boost');
+  const locks = options.filter((o): o is LockChoice => o.type === 'lock');
+  const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade'), { type: 'none' } as ActionChoice];
+  let cand: ActionChoice | null = null;
+  const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
+
+  const show = () => {
+    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(locks.map((l) => [l.targetId, ACTION_COLOR.lock])) });
+    scene.setMarkers(spots.map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
+    if (cand && (cand.type === 'barrelRoll' || cand.type === 'boost')) {
+      scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand));
+    } else scene.clearGhost();
+    if (cand?.type === 'lock') {
+      scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR.lock, `Lock ${shipById(cand.targetId).name}`);
+    } else scene.clearOverlay();
+  };
+  const pick = (e: PointerEvent): ActionChoice | null => {
+    const picked = scene.pickShip(e.clientX, e.clientY);
+    const lock = locks.find((l) => l.targetId === picked);
+    if (lock) return lock;
+    const pt = scene.boardPoint(e.clientX, e.clientY);
+    if (!pt) return null;
+    let best: Spot | null = null, bestD = ACTION_SNAP;
+    for (const o of spots) {
+      const d = Math.hypot(o.to.x - pt.x, o.to.y - pt.y);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    return best;
+  };
+  mode = {
+    hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
+    click(e) { const c = pick(e); if (c) choose(c); },
+    key(e) { if (e.key === 'Escape') choose({ type: 'none' }); },
+  };
+  scene.showChips(s.pose, simple.map((o) => ({
+    label: o.type === 'none' ? 'Skip' : actionText(o), cls: o.type === 'none' ? 'skip' : '', onClick: () => choose(o),
+  })));
+
+  const parts = [
+    spots.some((o) => o.type === 'barrelRoll') ? 'click a <b style="color:#7cf0c5">teal</b> dot to barrel roll' : '',
+    spots.some((o) => o.type === 'boost') ? 'a <b style="color:#9be37c">green</b> dot to boost' : '',
+    locks.length ? 'click a <b style="color:#ffd166">ringed enemy</b> to lock it' : '',
+  ].filter(Boolean);
+  panel.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the buttons under the ship.</p>`;
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
     b.textContent = actionText(o);
-    b.onmouseenter = () => {
-      if (o.type === 'barrelRoll' || o.type === 'boost') scene.showGhost(sizeOf(s), [s.pose, o.to]);
-      if (o.type === 'lock') scene.showLine(s.pose, shipById(o.targetId).pose, 0xffd166);
-    };
-    b.onmouseleave = () => { scene.clearGhost(); scene.clearOverlay(); };
-    b.onclick = () => send({ type: 'action', playerId: HUMAN, choice: o });
+    b.onmouseenter = () => { cand = o; show(); };
+    b.onmouseleave = () => { cand = null; show(); };
+    b.onclick = () => choose(o);
     panel.appendChild(b);
   }
+  show();
 }
 
-function renderAttack(shipId: string, targets: { targetId: string; range: number; arc: string; attack: number; obstructed: boolean; bullseye: boolean }[]) {
+// ---------------------------------------------------------------------------
+// Attacks on the board: valid targets get a red ring; click one to fire.
+// ---------------------------------------------------------------------------
+type Target = { targetId: string; range: number; arc: string; attack: number; obstructed: boolean; bullseye: boolean };
+const targetText = (t: Target) =>
+  `${shipById(t.targetId).name}: range ${t.range}, ${t.attack + (t.range <= 1 ? 1 : 0)} dice${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}`;
+
+function renderAttack(shipId: string, targets: Target[]) {
   const s = shipById(shipId);
-  scene.highlight(shipId);
-  panel.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Range 1 adds an attack die; range 3 and obstruction add a defense die. Tokens are spent automatically.</p>`;
+  let cand: Target | null = null;
+  const fire = (t: Target | null) => send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null });
+
+  const show = () => {
+    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(targets.map((t) => [t.targetId, RED])) });
+    if (cand) scene.showLine(s.pose, shipById(cand.targetId).pose, RED, targetText(cand));
+    else scene.clearOverlay();
+  };
+  const pick = (e: PointerEvent): Target | null => {
+    const picked = scene.pickShip(e.clientX, e.clientY);
+    const hit = targets.find((t) => t.targetId === picked);
+    if (hit) return hit;
+    // Small models are fiddly to hit, so also accept a click near a target's base.
+    const pt = scene.boardPoint(e.clientX, e.clientY);
+    if (!pt) return null;
+    let best: Target | null = null, bestD = 40;
+    for (const t of targets) {
+      const p = shipById(t.targetId).pose;
+      const d = Math.hypot(p.x - pt.x, p.y - pt.y);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
+  };
+  mode = {
+    hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
+    click(e) { const c = pick(e); if (c) fire(c); },
+    key(e) { if (e.key === 'Escape') fire(null); },
+  };
+  scene.showChips(s.pose, [{ label: 'Hold fire', cls: 'hold', onClick: () => fire(null) }]);
+
+  panel.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Click a <b style="color:#ff5a5a">red-ringed</b> enemy to fire.
+    Range 1 adds an attack die; range 3 and obstruction add a defense die. Tokens are spent automatically.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
     const b = document.createElement('button');
     b.className = 'opt';
-    b.innerHTML = `<b>${e.name}</b> — range ${t.range}, ${t.arc} arc, ${t.attack + (t.range <= 1 ? 1 : 0)} dice` +
+    b.innerHTML = `<b>${e.name}</b>: range ${t.range}, ${t.arc} arc, ${t.attack + (t.range <= 1 ? 1 : 0)} dice` +
       `${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
-    b.onmouseenter = () => scene.showLine(s.pose, e.pose, 0xff5a5a);
-    b.onmouseleave = () => scene.clearOverlay();
-    b.onclick = () => send({ type: 'attack', playerId: HUMAN, targetId: t.targetId });
+    b.onmouseenter = () => { cand = t; show(); };
+    b.onmouseleave = () => { cand = null; show(); };
+    b.onclick = () => fire(t);
     panel.appendChild(b);
   }
   const hold = document.createElement('button');
   hold.className = 'opt';
   hold.textContent = 'Hold fire';
-  hold.onclick = () => send({ type: 'attack', playerId: HUMAN, targetId: null });
+  hold.onclick = () => fire(null);
   panel.appendChild(hold);
+  show();
 }
 
 newGame();

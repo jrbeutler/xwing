@@ -17,8 +17,8 @@ npm run typecheck
 ## How to play
 
 1. **Planning: fly your ships on the board.** Click a ship. Dots appear at every spot it can reach (blue = easy, white = normal, red = adds stress). Move the pointer toward a spot and the ghost snaps to that maneuver: nudge left for a 1 bank, further out for a 2 bank, and so on. Click to set it, and the next ship is selected automatically. **F** (or the Flip button) switches between moves that end in the same spot, such as 4 straight and the 4 K-turn. **Esc** deselects; **Enter** sets the move, or executes once all are set. On touch: drag to steer, tap to set. The classic dial is still under "Show dial".
-2. **Activation:** ships move from lowest to highest initiative. After moving, choose an action (Focus, Evade, Lock, Barrel Roll, Boost). Hover an option to preview it.
-3. **Engagement:** ships fire from highest to lowest initiative. Pick a target in arc and in range 1–3.
+2. **Activation:** ships move from lowest to highest initiative. After moving, pick an action on the board: click a **teal dot** to barrel roll or a **green dot** to boost (the ghost previews it), click a **yellow-ringed enemy** to lock it, or use the **Focus / Evade / Skip** buttons under the ship. Esc skips.
+3. **Engagement:** ships fire from highest to lowest initiative. Enemies you can shoot get a **red ring**. Hover one to see range and dice, click to fire, or press **Hold fire** under your ship (Esc).
 4. Destroy the enemy squadron, or have more hull and shields left after round 12.
 
 Drag to orbit the camera; scroll to zoom.
