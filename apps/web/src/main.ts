@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, aiDecide, apply, attackOdds, autoDeploy, canDeployAt, createGame, generateAsteroids,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, type ActionChoice, type Pose, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, type ActionChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
@@ -310,8 +310,13 @@ async function animate(e: GameEvent) {
     case 'upgrade': {
       const d = dispShip(e.shipId);
       const u = d?.upgrades.find((x) => x.id === e.upgrade);
-      if (u) u.charges = 0;
-      await scene.floatText(e.shipId, `${UPGRADES[e.upgrade].name.toUpperCase()} SPENT`, 'p2c');
+      const name = UPGRADES[e.upgrade].name.toUpperCase();
+      if (e.what === 'spent') { if (u) u.charges = 0; await scene.floatText(e.shipId, `${name} SPENT`, 'p2c'); }
+      if (e.what === 'recovered') { if (u) u.charges++; await scene.floatText(e.shipId, `${name} READY`, 'talent-float'); }
+      if (e.what === 'used') {
+        if (d && e.upgrade === 'hotshot') { d.focus++; relabel(e.shipId); }
+        await scene.floatText(e.shipId, e.upgrade === 'hotshot' ? `${name} +FOCUS` : name, 'talent-float');
+      }
       return;
     }
     case 'destroyed': {
@@ -420,11 +425,22 @@ async function showAttack(e: AttackEvent) {
 
   // Spent tokens leave the labels
   const ad = dispShip(a.id);
+  // Talents the dice policy used: spend their charges on the board and say so over the ship.
+  const TALENT_USED: Record<string, [ShipState | undefined, string, string]> = {
+    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
+  };
   for (const t of e.spent) {
     if (t === 'attacker:focus' && ad) ad.focus--;
     if (t === 'attacker:lock' && ad) ad.lock = null;
     if (t === 'defender:focus' && target) target.focus--;
     if (t === 'defender:evade' && target) target.evade--;
+    const used = TALENT_USED[t];
+    if (used) {
+      const [ship, id, upgrade] = used;
+      const u = ship?.upgrades.find((x) => x.id === upgrade);
+      if (u && UPGRADES[upgrade].charges) u.charges--;
+      void scene.floatText(id, UPGRADES[upgrade].name.toUpperCase(), 'talent-float');
+    }
   }
   relabel(a.id);
   relabel(d.id);
@@ -482,7 +498,8 @@ function describe(e: GameEvent): string | null {
     case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
     case 'attack': {
       const o = attackOutcome(e);
-      return `${nameHtml(e.attackerId)} fires at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}): ` +
+      const talents = e.spent.map((t) => t.split(':')[1]).filter((t) => UPGRADES[t]).map((t) => UPGRADES[t].name);
+      return `${nameHtml(e.attackerId)} fires at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}): ` +
         `<b>${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? `${o.word.toLowerCase()}, ${o.detail}` : o.word.toLowerCase()}</b>`;
     }
     case 'damageCard': {
@@ -496,7 +513,12 @@ function describe(e: GameEvent): string | null {
       }
       return null;
     }
-    case 'upgrade': return `${nameHtml(e.shipId)}'s ${UPGRADES[e.upgrade].name} is spent`;
+    case 'upgrade': {
+      const n = UPGRADES[e.upgrade].name;
+      if (e.what === 'recovered') return `${nameHtml(e.shipId)}'s ${n} is ready again`;
+      if (e.what === 'used') return e.upgrade === 'hotshot' ? `${nameHtml(e.shipId)}: ${n} (gains focus)` : `${nameHtml(e.shipId)} uses ${n}`;
+      return `${nameHtml(e.shipId)}'s ${n} is spent`;
+    }
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -1156,7 +1178,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
 // ---------------------------------------------------------------------------
 // Attacks on the board: valid targets get a red ring; click one to fire.
 // ---------------------------------------------------------------------------
-type Target = { targetId: string; range: number; arc: string; attack: number; obstructed: boolean; bullseye: boolean };
+type Target = TargetInfo;
 const targetText = (t: Target) =>
   `${shipById(t.targetId).name}: range ${t.range}, ${t.attack + (t.range <= 1 ? 1 : 0)} dice${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}`;
 
