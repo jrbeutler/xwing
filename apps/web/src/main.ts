@@ -1,8 +1,12 @@
 import {
-  BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, aiDecide, apply, attackOdds, legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath, quickSkirmish,
-  viewFor, type ActionChoice, type Pose, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
+  legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
+  viewFor, type ActionChoice, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
+import { openSetup, type BattleSetup } from './setup';
+import { ICONS } from './icons';
+import type { RadialItem } from './scene';
 
 const HUMAN = 'p1';
 const AI = 'p2';
@@ -41,6 +45,9 @@ speedBtn.onclick = () => setSpeed(scene.speed === 1 ? 2 : 1);
 try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setSpeed(1); }
 
 let state: GameState;
+/** Where we are: building squads, placing ships, or fighting. */
+let stage: 'setup' | 'deploy' | 'battle' = 'setup';
+let lastSetup: BattleSetup | null = null;
 let shown = 0; // index of the next log event to present
 let plan: Record<string, number> = {};
 let busy = false;
@@ -55,18 +62,120 @@ const shipById = (id: string) => state.ships.find((s) => s.id === id)!;
 const sizeOf = (s: ShipState) => BASE_SIZE[SHIP_TYPES[s.typeId].size];
 const nameHtml = (id: string) => { const s = shipById(id); return `<span class="${s.owner}c">${s.name}</span>`; };
 
-function newGame() {
-  state = quickSkirmish((Math.random() * 1e9) | 0);
+/** Open the squad builder (keeping the last opponent when coming back from deployment). */
+function newGame(keep?: BattleSetup) {
+  stage = 'setup';
+  mode = null;
+  scene.setDeployZone(null);
+  hideRecap();
+  openSetup(startDeployment, keep);
+}
+
+// ---------------------------------------------------------------------------
+// Deployment: both squads are spread along their edges; the player may move theirs
+// within their setup area before the battle starts.
+// ---------------------------------------------------------------------------
+function startDeployment(setup: BattleSetup) {
+  lastSetup = setup;
+  stage = 'deploy';
+  const seed = (Math.random() * 1e9) | 0;
+  const near = autoDeploy(setup.player, 'near'), far = autoDeploy(setup.ai, 'far');
+  state = createGame({
+    seed,
+    players: [{ id: HUMAN, name: 'Coalition', faction: 'coalition' }, { id: AI, name: 'Syndicate', faction: 'syndicate' }],
+    squads: {
+      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: near[i] })),
+      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: far[i] })),
+    },
+    obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
+  });
   shown = 0;
   plan = {};
   logEl.innerHTML = '';
   roundShots = [];
-  hideRecap();
   disp = structuredClone(state.ships);
   scene.clearShips();
   scene.setObstacles(state.obstacles);
   scene.syncShips(state.ships);
+  scene.setDeployZone('near');
+  scene.setDevices([]);
+  roundEl.textContent = 'Setup';
+  phaseEl.textContent = 'deployment';
+  carrying = null;
+  mode = deployMode;
+  renderDeployment();
+  applyCamera();
+}
+
+/** The ship being moved during deployment, the last legal spot it had, and whether where it is now is legal. */
+let carrying: string | null = null;
+let carryFrom: Pose | null = null;
+let carryValid = true;
+const deployedOthers = (id: string) => state.ships.filter((x) => x.id !== id).map((x) => ({ pose: x.pose, size: sizeOf(x) }));
+
+function renderDeployment() {
+  const hint = compact ? 'Drag your ships along your edge.' : 'Click one of your ships to pick it up, move it, and click to put it down.';
+  detail.innerHTML = `<h2>Deployment</h2><p class="hint">${hint} Ships must sit inside your setup area (the lit strip) and not overlap.
+    The opponent has deployed along the far edge.</p>
+    <div class="row"><button class="opt mini" id="dp-auto">Auto-arrange</button><button class="opt mini" id="dp-back">Back to squad</button></div>
+    <button class="go" id="dp-go">Begin battle</button>`;
+  document.getElementById('dp-auto')!.onclick = autoArrange;
+  document.getElementById('dp-back')!.onclick = () => newGame(lastSetup ?? undefined);
+  document.getElementById('dp-go')!.onclick = beginBattle;
+  setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : 'Deploy: drag your ships, then begin', buttons: [
+    { label: 'Auto', onClick: autoArrange },
+    { label: 'Begin battle', cls: 'primary', onClick: beginBattle },
+  ] });
+}
+
+function autoArrange() {
+  if (!lastSetup) return;
+  const near = autoDeploy(lastSetup.player, 'near');
+  state.ships.filter((x) => x.owner === HUMAN).forEach((x, i) => { x.pose = near[i]; });
+  carrying = null;
+  scene.setRings({});
+  scene.syncShips(state.ships);
+}
+
+function beginBattle() {
+  if (stage !== 'deploy') return;
+  if (carrying) dropCarried();
+  stage = 'battle';
+  mode = null;
+  scene.setDeployZone(null);
+  scene.setRings({});
+  disp = structuredClone(state.ships);
   pump();
+}
+
+function moveCarried(p: P) {
+  if (!carrying) return;
+  const s = shipById(carrying);
+  const pt = scene.boardPoint(p.clientX, p.clientY);
+  if (!pt) return;
+  const half = sizeOf(s) / 2;
+  // Keep the base on the board and in the setup area; it may still overlap another ship (shown red).
+  const pose = { x: Math.min(914 - half, Math.max(half, pt.x)), y: Math.min(100 - half, Math.max(half, pt.y)), h: s.pose.h };
+  carryValid = canDeployAt(pose, sizeOf(s), 'near', deployedOthers(s.id));
+  s.pose = pose;
+  scene.syncShips(state.ships);
+  scene.setRings({ [s.id]: carryValid ? GREEN : RED });
+}
+
+function pickUp(id: string) {
+  carrying = id;
+  carryFrom = { ...shipById(id).pose };
+  carryValid = true;
+  scene.setRings({ [id]: GREEN });
+  renderDeployment();
+}
+
+function dropCarried() {
+  if (!carrying) return;
+  if (!carryValid && carryFrom) { shipById(carrying).pose = carryFrom; scene.syncShips(state.ships); }
+  carrying = null;
+  scene.setRings({});
+  renderDeployment();
 }
 
 /** Send a human command, then let the AI act until a human decision is needed. */
@@ -120,7 +229,7 @@ function logLine(e: GameEvent) {
   if (!text) return;
   const div = document.createElement('div');
   div.innerHTML = text;
-  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart' || (e.type === 'damageCard' && e.what === 'dealt')) div.className = 'hl';
+  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart' || e.type === 'deviceDetonated' || (e.type === 'damageCard' && e.what === 'dealt')) div.className = 'hl';
   logEl.appendChild(div);
   logEl.scrollTop = logEl.scrollHeight;
   ticker.innerHTML = text;
@@ -138,6 +247,7 @@ async function present() {
   }
   scene.skipping = false;
   scene.syncShips(state.ships);
+  scene.setDevices(state.devices);
   disp = structuredClone(state.ships);
   roundEl.textContent = `Round ${state.round}`;
   phaseEl.textContent = state.phase;
@@ -177,6 +287,10 @@ async function animate(e: GameEvent) {
         await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 400);
         if (d) d.pose = e.action.to;
       }
+      if (e.action.type === 'rotateArc') {
+        if (d) d.turretArc = e.action.to;
+        await scene.setTurret(e.shipId, e.action.to, 450);
+      }
       if (d) {
         if (e.action.type === 'focus') d.focus++;
         if (e.action.type === 'evade') d.evade++;
@@ -201,6 +315,40 @@ async function animate(e: GameEvent) {
     case 'damageCard':
       await showDamageCard(e);
       return;
+    case 'deviceDropped':
+      scene.highlight(e.shipId);
+      await scene.dropDevice(e.shipId, e.device);
+      { const u = dispShip(e.shipId)?.upgrades.find((x) => x.id === e.device.upgrade); if (u) u.charges--; }
+      return;
+    case 'deviceDetonated': {
+      const ion = UPGRADES[e.device.upgrade].device?.effect === 'ion';
+      showBanner(`<span class="who">${UPGRADES[e.device.upgrade].name}</span><b>${e.device.kind === 'mine' ? 'MINE!' : 'DETONATION'}</b>` +
+        `<span class="detail">${e.ships.length ? e.ships.map((h) => shipById(h.shipId).name).join(', ') : 'nobody caught'}</span>`,
+        e.ships.some((h) => shipById(h.shipId).owner === HUMAN) ? 'crit incoming' : 'crit');
+      await scene.detonate(e.device, ion);
+      for (const h of e.ships) {
+        const d = dispShip(h.shipId);
+        if (d) { d.shields -= h.shieldDamage; d.hull -= h.hullDamage; d.ion += h.ion ?? 0; relabel(h.shipId); }
+        if (h.shieldDamage) void scene.shieldFlash(h.shipId);
+        if (h.hullDamage) { void scene.sparks(h.shipId, 0xffa040, 30, true); void scene.shake(h.shipId); }
+        const dmg = h.shieldDamage + h.hullDamage;
+        void scene.floatText(h.shipId, h.ion ? `ION +${h.ion}` : dmg ? `−${dmg}` : 'NO DAMAGE', h.ion ? 'ion-float' : 'p2c');
+      }
+      await scene.wait(900);
+      return;
+    }
+    case 'upgrade': {
+      const d = dispShip(e.shipId);
+      const u = d?.upgrades.find((x) => x.id === e.upgrade);
+      const name = UPGRADES[e.upgrade].name.toUpperCase();
+      if (e.what === 'spent') { if (u) u.charges = 0; await scene.floatText(e.shipId, `${name} SPENT`, 'p2c'); }
+      if (e.what === 'recovered') { if (u) u.charges++; await scene.floatText(e.shipId, `${name} READY`, 'talent-float'); }
+      if (e.what === 'used') {
+        if (d && e.upgrade === 'hotshot') { d.focus++; relabel(e.shipId); }
+        await scene.floatText(e.shipId, e.upgrade === 'hotshot' ? `${name} +FOCUS` : name, 'talent-float');
+      }
+      return;
+    }
     case 'destroyed': {
       const name = shipById(e.shipId).name;
       roundShots.push(`<b>${nameHtml(e.shipId)} destroyed</b>`);
@@ -261,6 +409,8 @@ async function showAttack(e: AttackEvent) {
   const a = shipById(e.attackerId), d = shipById(e.defenderId);
   const incoming = d.owner === HUMAN;
   const color = a.owner === HUMAN ? 0xff4d4d : 0x52ff7a;
+  const ordnance = !!e.weapon;
+  const ionShot = !!e.weapon && UPGRADES[e.weapon].weapon?.effect === 'ion';
   const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
 
   // 1. Who shoots whom
@@ -286,7 +436,7 @@ async function showAttack(e: AttackEvent) {
     const end = scene.boltEnd(a.id, d.id, hit, i);
     if (!end) continue;
     const n = hit ? hitNo++ : -1;
-    flights.push(scene.bolt(a.id, end, color).then(() => {
+    flights.push(scene.bolt(a.id, end, ionShot ? 0x7fd8ff : color, ordnance ? 380 : 170, ordnance ? 'missile' : 'laser').then(() => {
       if (!hit) return;
       const crit = n >= e.hits; // crits are applied after hits
       if (n < e.shieldDamage) {
@@ -307,19 +457,37 @@ async function showAttack(e: AttackEvent) {
 
   // Spent tokens leave the labels
   const ad = dispShip(a.id);
+  // Talents the dice policy used: spend their charges on the board and say so over the ship.
+  const TALENT_USED: Record<string, [ShipState | undefined, string, string]> = {
+    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
+  };
   for (const t of e.spent) {
     if (t === 'attacker:focus' && ad) ad.focus--;
     if (t === 'attacker:lock' && ad) ad.lock = null;
     if (t === 'defender:focus' && target) target.focus--;
     if (t === 'defender:evade' && target) target.evade--;
+    const used = TALENT_USED[t];
+    if (used) {
+      const [ship, id, upgrade] = used;
+      const u = ship?.upgrades.find((x) => x.id === upgrade);
+      if (u && UPGRADES[upgrade].charges) u.charges--;
+      void scene.floatText(id, UPGRADES[upgrade].name.toUpperCase(), 'talent-float');
+    }
   }
   relabel(a.id);
   relabel(d.id);
+  // Ordnance spends a charge; ion weapons leave ion tokens.
+  if (e.weapon) { const u = ad?.upgrades.find((x) => x.id === e.weapon); if (u) u.charges--; }
+  if (e.ion && target) {
+    target.ion += e.ion;
+    relabel(d.id);
+    void scene.floatText(d.id, `ION +${e.ion}`, 'ion-float');
+  }
 
   // 3. Result
   const o = attackOutcome(e);
   if (o.cls === 'miss' && o.word === 'EVADED') void scene.dodge(d.id);
-  showBanner(`<span class="who">${a.name} → ${d.name}</span><b>${o.word}</b><span class="detail">${o.detail}</span>`,
+  showBanner(`<span class="who">${a.name} → ${d.name}${e.weapon ? ` · ${UPGRADES[e.weapon].name}` : ''}</span><b>${o.word}</b><span class="detail">${o.detail}</span>`,
     `${o.cls}${incoming ? ' incoming' : ''}`);
   roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);
   await scene.wait(1100);
@@ -369,7 +537,8 @@ function describe(e: GameEvent): string | null {
     case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
     case 'attack': {
       const o = attackOutcome(e);
-      return `${nameHtml(e.attackerId)} fires at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}): ` +
+      const talents = e.spent.map((t) => t.split(':')[1]).filter((t) => UPGRADES[t]).map((t) => UPGRADES[t].name);
+      return `${nameHtml(e.attackerId)} fires ${e.weapon ? `${UPGRADES[e.weapon].name} ` : ''}at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}): ` +
         `<b>${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? `${o.word.toLowerCase()}, ${o.detail}` : o.word.toLowerCase()}</b>`;
     }
     case 'damageCard': {
@@ -382,6 +551,18 @@ function describe(e: GameEvent): string | null {
         return `${nameHtml(e.shipId)}: ${c.title}${parts.length ? ` (${parts.join(', ')})` : ''}`;
       }
       return null;
+    }
+    case 'upgrade': {
+      const n = UPGRADES[e.upgrade].name;
+      if (e.what === 'recovered') return `${nameHtml(e.shipId)}'s ${n} is ready again`;
+      if (e.what === 'used') return e.upgrade === 'hotshot' ? `${nameHtml(e.shipId)}: ${n} (gains focus)` : `${nameHtml(e.shipId)} uses ${n}`;
+      return `${nameHtml(e.shipId)}'s ${n} is spent`;
+    }
+    case 'deviceDropped': { const n = UPGRADES[e.device.upgrade].name; return `${nameHtml(e.shipId)} drops ${/^[AEIOU]/.test(n) ? 'an' : 'a'} ${n}`; }
+    case 'deviceDetonated': {
+      const name = UPGRADES[e.device.upgrade].name;
+      if (!e.ships.length) return `${name} detonates: nobody in range`;
+      return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (rolled ${h.roll.join(', ')})` : ''}`).join('; ');
     }
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
@@ -399,6 +580,7 @@ function actionText(a: ActionChoice): string {
     case 'barrelRoll': return `Barrel roll ${a.dir}${a.shift ? (a.shift > 0 ? ' (forward)' : ' (back)') : ''}`;
     case 'boost': return `Boost ${a.bearing === 'straight' ? 'straight' : a.bearing === 'bankLeft' ? 'left' : 'right'}`;
     case 'repair': return `Repair ${DAMAGE_CARDS[a.card].title}`;
+    case 'rotateArc': return `Rotate turret to face ${a.to}`;
   }
 }
 
@@ -425,7 +607,7 @@ function renderDecision() {
     const title = state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat';
     detail.innerHTML = `<h2>${title}</h2>
       <p class="hint">Battle ended in round ${state.round}.</p><button class="go" id="again">New battle</button>`;
-    document.getElementById('again')!.onclick = newGame;
+    document.getElementById('again')!.onclick = () => newGame();
     setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [{ label: 'New battle', cls: 'primary', onClick: newGame }] });
     return;
   }
@@ -442,6 +624,7 @@ function renderDecision() {
   scene.setMarkers([]);
   if (d.kind === 'action') return renderAction(d.shipId, d.options);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
+  if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +903,24 @@ const planningMode: BoardMode = {
   },
 };
 
+const deployMode: BoardMode = {
+  press(p) {
+    const picked = scene.pickShip(p.clientX, p.clientY);
+    if (picked && shipById(picked).owner === HUMAN) pickUp(picked);
+  },
+  hover(p) { moveCarried(p); },
+  click(p) {
+    if (carrying) return dropCarried();
+    const picked = scene.pickShip(p.clientX, p.clientY);
+    if (picked && shipById(picked).owner === HUMAN) pickUp(picked);
+  },
+  release() { dropCarried(); },
+  key(e) {
+    if (e.key === 'Escape' && carrying) { carryValid = false; dropCarried(); }
+    if (e.key === 'Enter') beginBattle();
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Phone layout: a compact bar (bottom when upright, side rail when sideways),
 // a camera that frames the uncovered part of the screen, and a log ticker.
@@ -740,7 +941,8 @@ function updateLayout() {
     panel.classList.remove('expanded');
     logEl.classList.remove('open');
     if (!c) scene.resetView();
-    if (state && !busy) renderDecision();
+    if (stage === 'deploy') renderDeployment();
+    else if (stage === 'battle' && state && !busy) renderDecision();
   }
   applyCamera(250);
 }
@@ -757,6 +959,8 @@ function uiInsets() {
 
 function applyCamera(ms = 500) {
   if (!compact || !state) return;
+  if (stage === 'deploy') { viewBtn.hidden = true; scene.frameRect(457, 200, 470, 200, uiInsets(), 0.45, ms); return; }
+  if (stage !== 'battle') return;
   const d = state.pending;
   // Points of interest for the current decision; null = show the whole table.
   let pts: { x: number; y: number }[] | null = null;
@@ -774,6 +978,7 @@ function applyCamera(ms = 500) {
       minHalf = 130;
     }
     if (d.kind === 'attack') pts = [shipById(d.shipId).pose, ...d.targets.map((t) => shipById(t.targetId).pose)];
+    if (d.kind === 'system') { pts = [shipById(d.shipId).pose, ...d.options.flatMap((o) => (o.type === 'drop' ? [o.pose] : []))]; minHalf = 160; }
   }
   viewBtn.hidden = !pts;
   viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
@@ -860,7 +1065,7 @@ function planningBar() {
 function renderPlanning() {
   const mine = myShips();
   // An ionized ship ignores its dial (it drifts 1 straight), so plan it automatically.
-  for (const s of mine) if (s.ion > 0 && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
+  for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click to set it. Special moves (K-turn, loops, rolls) are the buttons under the ship: click once to preview, again to set.
     A ringed dot hides one; <b>F</b> flips to it. Blue clears stress, red adds it.</p>`;
@@ -869,9 +1074,10 @@ function renderPlanning() {
     const card = document.createElement('div');
     card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
-      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${t.hull} · shields ${s.shields}/${t.shields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${s.maxHull} · shields ${s.shields}/${s.maxShields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
-      <div class="planned">${s.ion > 0 ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
+      <div class="planned">${isIonized(s) ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
         : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
     if (s.id === selected) {
@@ -948,13 +1154,70 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
   const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'repair'), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
+  /**
+   * The targeted action picked from the ring (lock / barrel roll / boost), or null while the ring is
+   * showing. Picking one hides the ring and shows only its targets; Esc or Back brings the ring back.
+   */
+  let only: 'lock' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
+  const back = () => { only = null; cand = null; show(); };
+  const shownLocks = () => (only === 'lock' ? locks : []);
+  const shownSpots = () => spots.filter((o) => only === o.type);
+
+  /** The ring: instant actions do it now; Lock / Barrel roll / Boost narrow the board to their targets. */
+  const radial = () => {
+    const has = (t: string) => options.some((o) => o.type === t);
+    if (only === 'rotateArc') {
+      // Rotate: the ring becomes the turret facings (hover to preview the arc), plus Back.
+      const dirs = options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc');
+      // Each facing's button sits (and its arrow points) where that facing is on screen, so with the ship
+      // pointing up the board Left is on the left, Right on the right and Rear at the bottom. Back takes
+      // the remaining spot: the way the turret faces now.
+      const OFFSET: Record<string, number> = { front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 };
+      const onScreen = (arc: string) => scene.screenBearing(s.pose.x, s.pose.y, s.pose.h + OFFSET[arc]);
+      const items: RadialItem[] = dirs.map((o) => ({
+        angle: onScreen(o.to),
+        icon: `<span style="display:inline-flex;transform:rotate(${onScreen(o.to).toFixed(0)}deg)">${ICONS.boost}</span>`,
+        label: o.to[0].toUpperCase() + o.to.slice(1),
+        title: `Turn the turret to face ${o.to}`,
+        onClick: () => choose(o),
+        onHover: (on) => { void scene.setTurret(s.id, on ? o.to : s.turretArc, 150, true); },
+      }));
+      items.push({ angle: onScreen(s.turretArc), icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: () => { void scene.setTurret(s.id, s.turretArc, 0, true); back(); } });
+      scene.showRadial(s.pose, items, { key: 'rotate', caption: `Turret faces ${s.turretArc}: pick a new facing · Esc to go back` });
+      return;
+    }
+    if (only) {
+      // Targeting: the ring makes way for the targets; a lone Back button returns to it.
+      const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
+      scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: back }],
+        { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
+      return;
+    }
+    const narrow = (t: 'lock' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
+      ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
+    const items: RadialItem[] = [];
+    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: 'Focus: turn focus results into hits or evades', onClick: () => choose({ type: 'focus' }) });
+    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: 'Evade: add an evade result when defending', onClick: () => choose({ type: 'evade' }) });
+    if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
+    if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
+    if (spots.some((o) => o.type === 'boost')) items.push(narrow('boost', ICONS.boost, 'Boost', 'Boost: then click a green dot'));
+    if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, onClick: () => { only = 'rotateArc'; cand = null; show(); } });
+    for (const o of options) {
+      if (o.type !== 'repair') continue;
+      const c = DAMAGE_CARDS[o.card];
+      items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
+    }
+    items.push({ icon: ICONS.skip, label: 'Skip', title: 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+    scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick an action' });
+  };
 
   const show = () => {
-    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(locks.map((l) => [l.targetId, ACTION_COLOR.lock])) });
-    scene.setMarkers(spots.map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
+    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(shownLocks().map((l) => [l.targetId, ACTION_COLOR.lock])) });
+    scene.setMarkers(shownSpots().map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
+    radial();
     const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
-    scene.showArcs(repositioning ? [] : [s.id]);
+    scene.showArcs(repositioning ? [] : [s.id], only === 'rotateArc' ? 'turret' : 'all');
     showOddsFrom(s, cand && (cand.type === 'barrelRoll' || cand.type === 'boost') ? cand.to : s.pose, true);
     if (cand && (cand.type === 'barrelRoll' || cand.type === 'boost')) {
       scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand), s.id);
@@ -963,8 +1226,9 @@ function renderAction(shipId: string, options: ActionChoice[]) {
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR.lock, `Lock ${shipById(cand.targetId).name}`);
     } else scene.clearOverlay();
     const who = `<b>${s.name.split(' ')[0]}</b>`;
-    const boardHint = spots.length || locks.length ? 'tap a dot or ringed enemy, or pick below' : 'pick an action';
-    const btns: BarButton[] = simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
+    const boardHint = only === 'barrelRoll' ? 'tap a teal dot to roll' : only === 'boost' ? 'tap a green dot to boost' : 'pick from the ring around your ship';
+    const btns: BarButton[] = only ? [{ label: 'Back', onClick: back }]
+      : simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
     if (cand && cand.type !== 'none' && cand.type !== 'focus' && cand.type !== 'evade') {
       const c = cand;
       btns.unshift({ label: 'Do it', cls: 'primary', onClick: () => choose(c) });
@@ -973,18 +1237,18 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   };
   const pick = (p: P): ActionChoice | null => {
     const picked = scene.pickShip(p.clientX, p.clientY);
-    const lock = locks.find((l) => l.targetId === picked);
+    const lock = shownLocks().find((l) => l.targetId === picked);
     if (lock) return lock;
     const pt = scene.boardPoint(p.clientX, p.clientY);
     let best: Spot | null = null, bestD = Infinity;
-    for (const o of spots) {
+    for (const o of shownSpots()) {
       const d = screenDist(p, o.to.x, o.to.y);
       const near = d < fingerPx(p) || (pt !== null && Math.hypot(o.to.x - pt.x, o.to.y - pt.y) < ACTION_SNAP);
       if (near && d < bestD) { bestD = d; best = o; }
     }
     if (best) return best;
     // Touch: also accept a tap near a lockable enemy's base.
-    for (const l of locks) {
+    for (const l of shownLocks()) {
       const t = shipById(l.targetId).pose;
       if (screenDist(p, t.x, t.y) < fingerPx(p)) return l;
     }
@@ -993,18 +1257,16 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   mode = {
     hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
     click(e) { const c = pick(e); if (c) choose(c); },
-    key(e) { if (e.key === 'Escape') choose({ type: 'none' }); },
+    key(e) { if (e.key === 'Escape' && only) { if (only === 'rotateArc') void scene.setTurret(s.id, s.turretArc, 0, true); back(); } },
   };
-  scene.showChips(s.pose, simple.map((o) => ({
-    label: o.type === 'none' ? 'Skip' : actionText(o), cls: o.type === 'none' ? 'skip' : '', onClick: () => choose(o),
-  })));
 
-  const parts = [
-    spots.some((o) => o.type === 'barrelRoll') ? 'click a <b style="color:#7cf0c5">teal</b> dot to barrel roll' : '',
-    spots.some((o) => o.type === 'boost') ? 'a <b style="color:#9be37c">green</b> dot to boost' : '',
-    locks.length ? 'click a <b style="color:#ffd166">ringed enemy</b> to lock it' : '',
+  const ring = [
+    'Pick from the ring around your ship: Focus and Evade act at once',
+    locks.length ? '<b style="color:#ffd166">Lock</b> then click a ringed enemy' : '',
+    spots.some((o) => o.type === 'barrelRoll') ? '<b style="color:#7cf0c5">Roll</b> shows the barrel-roll spots' : '',
+    spots.some((o) => o.type === 'boost') ? '<b style="color:#9be37c">Boost</b> shows the boost spots' : '',
   ].filter(Boolean);
-  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the buttons under the ship.</p>${critList(s)}`;
+  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
@@ -1020,16 +1282,42 @@ function renderAction(shipId: string, options: ActionChoice[]) {
 // ---------------------------------------------------------------------------
 // Attacks on the board: valid targets get a red ring; click one to fire.
 // ---------------------------------------------------------------------------
-type Target = { targetId: string; range: number; arc: string; attack: number; obstructed: boolean; bullseye: boolean };
-const targetText = (t: Target) =>
-  `${shipById(t.targetId).name}: range ${t.range}, ${t.attack + (t.range <= 1 ? 1 : 0)} dice${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}`;
+type Target = TargetInfo;
+const weaponName = (t: Pick<Target, 'weapon'>) => (isPrimary(t) ? 'Primary' : UPGRADES[t.weapon!].name);
+const targetText = (t: Target, attacker?: ShipState) =>
+  `${shipById(t.targetId).name}: ${isPrimary(t) ? '' : `${weaponName(t)}, `}range ${t.range}, ` +
+  `${attacker ? attackDiceFor(attacker, t) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
+
+/** An upgrade with its charges, e.g. "Proton Torpedoes 1/2", or "(spent)" for one-shot talents. */
+function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
+  const def = UPGRADES[u.id];
+  if (def.weapon?.arc === 'turret') return `${def.name}${ship ? ` (facing ${ship.turretArc})` : ''}`;
+  if (def.weapon || def.device) return `${def.name} ${u.charges}/${def.charges}`;
+  return `${def.name}${def.charges && !u.charges ? ' (spent)' : ''}`;
+}
+
+/** How good a shot is, for picking a default weapon: expected damage, plus ions and kills. */
+const shotValue = (attacker: ShipState, t: Target) => {
+  const o = attackOdds(attacker, shipById(t.targetId), t);
+  return o.expected + o.ion * 0.6 + o.kill * 3;
+};
+/** The best weapon per enemy from a list of target entries. */
+function bestPerTarget(attacker: ShipState, ts: Target[]): Map<string, Target> {
+  const best = new Map<string, Target>();
+  for (const t of ts) {
+    const cur = best.get(t.targetId);
+    if (!cur || shotValue(attacker, t) > shotValue(attacker, cur)) best.set(t.targetId, t);
+  }
+  return best;
+}
 
 /** "62% hit · 1.4 dmg · 18% kill" for one attack, from the engine's exact odds. */
 function oddsHtml(attacker: ShipState, t: Target): string {
   const o = attackOdds(attacker, shipById(t.targetId), t);
   const pct = (p: number) => `${Math.round(p * 100)}%`;
   const cls = o.hit >= 0.66 ? 'hi' : o.hit >= 0.4 ? 'mid' : 'lo';
-  return `<span class="${cls}"><b>${pct(o.hit)}</b> hit</span> · ${o.expected.toFixed(1)} dmg` +
+  return `${isPrimary(t) ? '' : `<span class="wpn">${weaponName(t)}</span> `}<span class="${cls}"><b>${pct(o.hit)}</b> hit</span> · ${o.expected.toFixed(1)} dmg` +
+    (o.ion >= 0.05 ? ` · <span class="ion">${o.ion.toFixed(1)} ion</span>` : '') +
     (o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : '');
 }
 
@@ -1039,60 +1327,165 @@ function oddsHtml(attacker: ShipState, t: Target): string {
  */
 function showOddsFrom(s: ShipState, pose: Pose = s.pose, preview = false) {
   const me = { ...s, pose };
-  scene.setOdds(Object.fromEntries(legalTargets(state, me).map((t) =>
+  scene.setOdds(Object.fromEntries([...bestPerTarget(me, legalTargets(state, me)).values()].map((t) =>
     [t.targetId, `${preview ? '<span class="pv">if here</span> ' : ''}${oddsHtml(me, t)}`])));
 }
 
+/**
+ * System phase: drop a bomb or mine behind the ship, or skip. Hovering a choice previews where the token
+ * lands and (for bombs) its range-1 blast.
+ */
+function renderSystem(shipId: string, options: DropChoice[]) {
+  const s = shipById(shipId);
+  const drops = options.filter((o): o is Extract<DropChoice, { type: 'drop' }> => o.type === 'drop');
+  const choose = (c: DropChoice) => { scene.previewDevice(null); send({ type: 'drop', playerId: HUMAN, choice: c }); };
+  const preview = (o: Extract<DropChoice, { type: 'drop' }> | null) =>
+    scene.previewDevice(o ? { pose: o.pose, kind: UPGRADES[o.upgrade].device!.kind } : null);
+  const short = (id: string) => ({ 'proton-bomb': 'Proton', 'ion-bomb': 'Ion bomb', 'proximity-mine': 'Mine' } as Record<string, string>)[id] ?? UPGRADES[id].name.split(' ')[0];
+  scene.setRings({ [s.id]: GREEN });
+  scene.showArcs([]);
+  const items: RadialItem[] = drops.map((o) => ({
+    icon: UPGRADES[o.upgrade].device!.kind === 'mine' ? ICONS.mine : ICONS.bomb,
+    label: short(o.upgrade),
+    badge: s.upgrades.find((u) => u.id === o.upgrade)?.charges,
+    title: `Drop ${UPGRADES[o.upgrade].name}: ${UPGRADES[o.upgrade].text}`,
+    onClick: () => choose(o),
+    onHover: (on) => preview(on ? o : null),
+  }));
+  items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+  scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
+  mode = { click() {}, key(e) { if (e.key === 'Escape') choose({ type: 'none' }); } };
+  setBar({
+    status: `<b>${s.name.split(' ')[0]}</b>: drop a bomb or mine?`,
+    buttons: [...drops.map((o) => ({ label: `Drop ${short(o.upgrade)}`, onClick: () => choose(o) })), { label: 'Skip', onClick: () => choose({ type: 'none' }) }],
+  });
+  detail.innerHTML = `<h2>System: ${s.name}</h2><p class="hint">Before anyone moves, you may drop one device one straight template behind
+    your ship. Bombs go off at the end of the Activation phase and hit every ship at range 0-1, yours too; mines stay until a ship
+    flies through or onto one. Hover a button in the ring to preview.</p>`;
+  for (const o of drops) {
+    const b = document.createElement('button');
+    b.className = 'opt';
+    const u = s.upgrades.find((x) => x.id === o.upgrade);
+    b.innerHTML = `<b>Drop ${UPGRADES[o.upgrade].name}</b> (${u?.charges} left)<br><span class="hint">${UPGRADES[o.upgrade].text}</span>`;
+    b.onmouseenter = () => preview(o);
+    b.onmouseleave = () => preview(null);
+    b.onclick = () => choose(o);
+    detail.appendChild(b);
+  }
+  const skip = document.createElement('button');
+  skip.className = 'opt';
+  skip.textContent = 'Drop nothing';
+  skip.onclick = () => choose({ type: 'none' });
+  detail.appendChild(skip);
+}
+
+/** Radial-menu icon and short label for a weapon ('primary' or an ordnance upgrade id). */
+const weaponIcon = (w: string, turretPrimary = false) => (w === 'primary' ? (turretPrimary ? ICONS.turret : ICONS.lasers) : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : ICONS.missile);
+const WEAPON_SHORT: Record<string, string> = {
+  primary: 'Lasers', 'proton-torpedoes': 'Proton', 'ion-torpedoes': 'Ion torp', 'concussion-missiles': 'Missiles', 'rocket-pods': 'Rockets',
+  'dorsal-turret': 'Turret', 'ion-turret': 'Ion cann.',
+};
+const weaponShort = (w: string) => WEAPON_SHORT[w] ?? UPGRADES[w].name.split(' ')[0].slice(0, 8);
+
+/**
+ * Attack: pick a weapon from the ring around your ship, then click one of the enemies it can hit.
+ * Lasers are preselected when they have a target, so a plain shot is still a single click.
+ */
 function renderAttack(shipId: string, targets: Target[]) {
   const s = shipById(shipId);
-  let cand: Target | null = null;
-  const fire = (t: Target | null) => send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null });
+  const weaponIds = ['primary', ...s.upgrades.filter((u) => UPGRADES[u.id].weapon).map((u) => u.id)];
+  const turretPrimary = SHIP_TYPES[s.typeId].primaries.some((p) => p.arc === 'turret');
+  const targetsFor = (w: string) => targets.filter((t) => (t.weapon ?? 'primary') === w);
+  /** The weapon picked from the ring, or null while the ring is showing (then nothing is targeted yet). */
+  let weapon: string | null = null;
+  let candId: string | null = null;
+  const back = () => { weapon = null; candId = null; show(); };
+  const fire = (t: Target | null) =>
+    send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null, ...(t && !isPrimary(t) ? { weapon: t.weapon } : {}) });
+  const current = () => (weapon ? targetsFor(weapon) : []);
+  const shotAt = (id: string | null) => current().find((t) => t.targetId === id) ?? null;
+  /** Why a weapon cannot fire right now (shown on its greyed-out button). */
+  const why = (w: string) => {
+    if (w === 'primary') return turretPrimary ? `No enemy in your turret arc (facing ${s.turretArc}); Rotate it in the action step` : 'No enemy in your firing arc';
+    const u = s.upgrades.find((x) => x.id === w)!, def = UPGRADES[w].weapon!;
+    if (UPGRADES[w].charges !== undefined && u.charges <= 0) return `${UPGRADES[w].name}: out of charges`;
+    if (def.arc === 'turret') return `${UPGRADES[w].name}: no enemy at range ${def.minRange}-${def.maxRange} in the turret arc (facing ${s.turretArc}); Rotate it in the action step`;
+    if (def.requires === 'lock') return `${UPGRADES[w].name}: needs a lock on an enemy at range ${def.minRange}-${def.maxRange} in your front arc`;
+    return `${UPGRADES[w].name}: no enemy at range ${def.minRange}-${def.maxRange} in your front arc`;
+  };
 
   const show = () => {
-    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(targets.map((t) => [t.targetId, RED])) });
-    scene.showArcs([s.id]);
-    scene.setOdds(Object.fromEntries(targets.map((t) => [t.targetId, oddsHtml(s, t)])));
-    if (cand) scene.showLine(s.pose, shipById(cand.targetId).pose, RED, targetText(cand));
+    const ts = current();
+    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(ts.map((t) => [t.targetId, RED])) });
+    const turretWeapon = !!weapon && (weapon === 'primary' ? turretPrimary : UPGRADES[weapon]?.weapon?.arc === 'turret');
+    scene.showArcs([s.id], weapon === null ? 'all' : turretWeapon ? 'turret' : 'primary');
+    scene.setOdds(Object.fromEntries(ts.map((t) => [t.targetId, oddsHtml(s, t)])));
+    const c = shotAt(candId);
+    if (c) scene.showLine(s.pose, shipById(c.targetId).pose, RED, targetText(c, s));
     else scene.clearOverlay();
-    const c = cand;
-    const btns: BarButton[] = [];
-    if (c) btns.push({ label: 'Fire', cls: 'primary', onClick: () => fire(c) });
-    btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
-    setBar({ status: c ? targetText(c) : `<b>${s.name.split(' ')[0]}</b>: tap a red-ringed enemy`, buttons: btns });
+    if (weapon) {
+      // Targeting: the ring makes way for the enemies this weapon can hit; a lone Back button returns to it.
+      const name = weapon === 'primary' ? 'Lasers' : UPGRADES[weapon].name;
+      scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the weapon menu (Esc)', cls: 'quiet', onClick: back }],
+        { key: `back|${weapon}|${candId}`, caption: `${name}: ${c ? targetText(c, s) : 'click a red-ringed enemy'} · Esc to go back` });
+    } else {
+    const items: RadialItem[] = weaponIds.map((w) => {
+      const u = s.upgrades.find((x) => x.id === w);
+      const ok = targetsFor(w).length > 0;
+      return {
+        icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, active: w === weapon, disabled: !ok,
+        title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
+        onClick: () => { weapon = w; candId = null; show(); },
+      };
+    });
+    items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+    scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
+    }
+    const btns: BarButton[] = weapon ? [{ label: 'Back', onClick: back }] : [];
+    if (c) btns.push({ label: isPrimary(c) ? 'Fire' : `Fire ${weaponName(c)}`, cls: 'primary', onClick: () => fire(c) });
+    if (!weapon) btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+    setBar({ status: c ? targetText(c, s) : weapon ? `<b>${s.name.split(' ')[0]}</b>: tap a red-ringed enemy` : `<b>${s.name.split(' ')[0]}</b>: pick a weapon from the ring`, buttons: btns });
   };
-  const pick = (p: P): Target | null => {
+  const pick = (p: P): string | null => {
+    const ids = current().map((t) => t.targetId);
     const picked = scene.pickShip(p.clientX, p.clientY);
-    const hit = targets.find((t) => t.targetId === picked);
-    if (hit) return hit;
+    if (picked && ids.includes(picked)) return picked;
     // Small models are fiddly to hit, so also accept a click near a target's base.
     const pt = scene.boardPoint(p.clientX, p.clientY);
-    let best: Target | null = null, bestD = Infinity;
-    for (const t of targets) {
-      const tp = shipById(t.targetId).pose;
+    let best: string | null = null, bestD = Infinity;
+    for (const id of ids) {
+      const tp = shipById(id).pose;
       const d = screenDist(p, tp.x, tp.y);
       const near = d < fingerPx(p) || (pt !== null && Math.hypot(tp.x - pt.x, tp.y - pt.y) < 40);
-      if (near && d < bestD) { bestD = d; best = t; }
+      if (near && d < bestD) { bestD = d; best = id; }
     }
     return best;
   };
   mode = {
-    hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
-    click(e) { const c = pick(e); if (c) fire(c); },
-    key(e) { if (e.key === 'Escape') fire(null); },
+    // The enemy in focus stays selected until another one is pointed at.
+    hover(e) { const id = pick(e); if (id && id !== candId) { candId = id; show(); } },
+    click(e) { const t = shotAt(pick(e)); if (t) fire(t); },
+    key(e) {
+      if (e.key === 'Escape' && weapon) back();
+      if (e.key === 'Enter' && shotAt(candId)) fire(shotAt(candId));
+      // Number keys pick a weapon from the ring.
+      const n = Number(e.key);
+      if (!weapon && n >= 1 && n <= weaponIds.length && targetsFor(weaponIds[n - 1]).length) { weapon = weaponIds[n - 1]; show(); }
+    },
   };
-  scene.showChips(s.pose, [{ label: 'Hold fire', cls: 'hold', onClick: () => fire(null) }]);
 
-  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Click a <b style="color:#ff5a5a">red-ringed</b> enemy to fire.
-    Range 1 adds an attack die; range 3 and obstruction add a defense die. Tokens are spent automatically.</p>`;
+  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}):
+    the enemies it can hit get a <b style="color:#ff5a5a">red ring</b>; click one to fire, or press Esc to pick another weapon. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
+    obstruction adds a defense die. Tokens are spent automatically. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
+    const charges = s.upgrades.find((u) => u.id === t.weapon)?.charges;
     const b = document.createElement('button');
     b.className = 'opt';
-    b.innerHTML = `<b>${e.name}</b>: range ${t.range}, ${t.arc} arc, ${t.attack + (t.range <= 1 ? 1 : 0)} dice` +
-      `${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
+    b.innerHTML = `<b>${e.name}</b> · ${weaponName(t)}${isPrimary(t) ? '' : ` (${charges} left)`}: range ${t.range}, ${t.arc} arc, ` +
+      `${attackDiceFor(s, t)} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
       `<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
-    b.onmouseenter = () => { cand = t; show(); };
-    b.onmouseleave = () => { cand = null; show(); };
+    b.onmouseenter = () => { weapon = t.weapon ?? 'primary'; candId = t.targetId; show(); };
     b.onclick = () => fire(t);
     detail.appendChild(b);
   }

@@ -4,6 +4,7 @@ export * from './types';
 export * from './content';
 export * from './combat';
 export * from './damage';
+export * from './squad';
 export * from './game';
 export * from './rng';
 export { decide as aiDecide, scoreManeuver } from './ai';
