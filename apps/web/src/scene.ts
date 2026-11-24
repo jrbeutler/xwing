@@ -622,10 +622,14 @@ export class BattleScene {
     return new THREE.MeshBasicMaterial({ color, map, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
   }
 
-  /** One glowing bolt flying from the attacker's nose to `end`. Resolves on arrival. */
-  async bolt(fromId: string, end: THREE.Vector3, color: number, ms = 170) {
+  /**
+   * One shot flying from the attacker's nose to `end`, resolving on arrival: a laser bolt, or a slower
+   * missile (glowing head with an exhaust trail) for ordnance.
+   */
+  async bolt(fromId: string, end: THREE.Vector3, color: number, ms = 170, style: 'laser' | 'missile' = 'laser') {
     const start = this.gunPoint(fromId);
     if (!start) return;
+    if (style === 'missile') return this.missile(start, end, color, ms);
     const dir = end.clone().sub(start);
     const len = 34;
     const geo = new THREE.CylinderGeometry(1.6, 1.6, len, 8);
@@ -649,6 +653,37 @@ export class BattleScene {
     this.scene.remove(g);
     geo.dispose();
     glowGeo.dispose();
+  }
+
+  private async missile(start: THREE.Vector3, end: THREE.Vector3, color: number, ms: number) {
+    const head = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(0xfff0d0, 2.4), blending: THREE.AdditiveBlending, depthWrite: false }));
+    head.scale.setScalar(16);
+    const flare = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(color, 1.6), blending: THREE.AdditiveBlending, depthWrite: false }));
+    flare.scale.setScalar(36);
+    const trailN = 40;
+    const trailPos = new Float32Array(trailN * 3);
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+    const trailMat = new THREE.PointsMaterial({ color: hot(0xffa060, 2.2), size: 16, map: glowTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const trail = new THREE.Points(trailGeo, trailMat);
+    trail.frustumCulled = false; // its bounds would be computed from the all-zero start positions
+    this.scene.add(head, flare, trail);
+    this.flash(start, color, 300, 200);
+    // A slight arc so a volley reads as missiles, not lasers.
+    const lift = new THREE.Vector3(0, start.distanceTo(end) * 0.12, 0);
+    const at = (t: number) => new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(lift, Math.sin(t * Math.PI));
+    await this.tween(ms, (t) => {
+      const p = at(t);
+      head.position.copy(p);
+      flare.position.copy(p);
+      for (let i = 0; i < trailN; i++) {
+        const q = at(Math.max(0, t - (i / trailN) * 0.35));
+        trailPos.set([q.x, q.y, q.z], i * 3);
+      }
+      trailGeo.attributes.position.needsUpdate = true;
+    });
+    this.scene.remove(head, flare, trail);
+    head.material.dispose(); flare.material.dispose(); trailMat.dispose(); trailGeo.dispose();
   }
 
   /** Blue energy bubble around a ship: its shields took the hit. Bright at the rim, ripples outward. */
@@ -707,6 +742,7 @@ export class BattleScene {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const mat = new THREE.PointsMaterial({ color, size, map: glowTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
     const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false; // bounds would come from the all-zero start positions
     this.scene.add(pts);
     return {
       update: (t: number) => {
