@@ -413,14 +413,20 @@ async function showAttack(e: AttackEvent) {
   const ionShot = !!e.weapon && UPGRADES[e.weapon].weapon?.effect === 'ion';
   const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
 
-  // 1. Who shoots whom
+  // 1. Who shoots whom. The player's own shots are seen from behind the attacker, down its line of fire.
+  const gunCam = a.owner === HUMAN;
   scene.setRings({ [a.id]: GREEN, [d.id]: RED });
-  scene.showArcs([a.id]);
   scene.setOdds({});
-  if (compact) framePoints([ap, dp], 150, 350);
-  scene.showLine(ap, dp, incoming ? RED : 0xffd166, `${a.name} → ${d.name}`);
-  await scene.wait(compact ? 650 : 450);
-  scene.clearOverlay();
+  if (gunCam) {
+    scene.attackView(a.id, d.id, 650);
+    await scene.wait(750);
+  } else {
+    scene.showArcs([a.id]);
+    if (compact) framePoints([ap, dp], 150, 350);
+    scene.showLine(ap, dp, incoming ? RED : 0xffd166, `${a.name} → ${d.name}`);
+    await scene.wait(compact ? 650 : 450);
+    scene.clearOverlay();
+  }
 
   // 2. Bolts: one per die rolled; the ones that got through hit, the rest streak past.
   const landed = e.hits + e.crits;
@@ -492,6 +498,10 @@ async function showAttack(e: AttackEvent) {
   roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);
   await scene.wait(1100);
   scene.showArcs([]);
+  if (gunCam) {
+    scene.restoreView(600);
+    await scene.wait(600);
+  }
 }
 
 // ---------------------------------------------------------------------------

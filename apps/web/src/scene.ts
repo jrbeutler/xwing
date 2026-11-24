@@ -753,6 +753,48 @@ export class BattleScene {
     });
   }
 
+  private savedView: { target: THREE.Vector3; position: THREE.Vector3; minDistance: number; maxPolarAngle: number; enabled: boolean } | null = null;
+
+  /**
+   * Gunner's-eye view: drop in just behind and above the attacker, looking down its line of fire at the
+   * defender. The orbit limits that keep the normal view overhead are lifted until restoreView().
+   */
+  attackView(attackerId: string, defenderId: string, ms = 600) {
+    const a = this.ships.get(attackerId), d = this.ships.get(defenderId);
+    if (!a || !d) return;
+    if (!this.savedView) {
+      this.savedView = {
+        target: this.controls.target.clone(), position: this.camera.position.clone(),
+        minDistance: this.controls.minDistance, maxPolarAngle: this.controls.maxPolarAngle, enabled: this.controls.enabled,
+      };
+    }
+    this.controls.minDistance = 0;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.enabled = false;
+    const from = a.root.position.clone().setY(FLY_HEIGHT);
+    const to = d.root.position.clone().setY(FLY_HEIGHT);
+    const dir = to.clone().sub(from).setY(0).normalize();
+    // Low and close behind, so the attacker fills the lower third of the frame with the target ahead.
+    const back = a.reach * 1.5 + 25;
+    const pos = from.clone().addScaledVector(dir, -back).setY(Math.max(a.top, FLY_HEIGHT) + 14);
+    this.flyTo(to, pos, ms);
+  }
+
+  /** Return from attackView() to wherever the camera was before. */
+  restoreView(ms = 600) {
+    const v = this.savedView;
+    if (!v) return;
+    this.savedView = null;
+    this.flyTo(v.target, v.position, ms);
+    this.controls.enabled = v.enabled;
+    // Put the orbit limits back once the camera is up again, so they don't yank it mid-flight.
+    void this.wait(ms).then(() => {
+      if (this.savedView) return; // the next shot's view has already taken over
+      this.controls.minDistance = v.minDistance;
+      this.controls.maxPolarAngle = v.maxPolarAngle;
+    });
+  }
+
   /** The original desktop view of the whole table. */
   resetView(ms = 500) {
     this.flyTo(new THREE.Vector3(0, 0, 60), new THREE.Vector3(0, 1080, 640), ms);
