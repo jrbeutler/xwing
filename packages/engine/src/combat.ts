@@ -27,8 +27,11 @@ export function rangeBand(d: number): number | null {
  * Clip a target polygon to a firing arc. Arcs on square bases are 90° wedges bounded
  * by lines from the base centre through the corners.
  */
+/** Heading offset of each arc from the ship's facing (board y is left of x, so left is +90°). */
+export const ARC_OFFSET: Record<ArcName, number> = { front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 };
+
 export function clipToArc(attackerPose: Pose, arc: ArcName, target: Polygon): Polygon {
-  const facing = arc === 'front' ? attackerPose.h : attackerPose.h + Math.PI;
+  const facing = attackerPose.h + ARC_OFFSET[arc];
   const c = vec(attackerPose.x, attackerPose.y);
   // Wedge = intersection of two half-planes through the centre at ±45°.
   const n1 = fwd(facing + Math.PI / 4 - Math.PI / 2); // inward normal of the left boundary
@@ -80,18 +83,22 @@ export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[
       if (!best || cand.attack > best.attack || (cand.attack === best.attack && cand.range < best.range)) best = cand;
     }
     if (best) out.push(best);
-    // Secondary weapons: loaded, in their range band and front arc, requirement met.
+    // Secondary weapons: loaded, in their range band and arc (front, or the turret's), requirement met.
     for (const u of attacker.upgrades) {
       const w = UPGRADES[u.id].weapon;
-      if (!w || u.charges <= 0) continue;
+      if (!w || !hasAmmo(u)) continue;
       if (w.requires === 'lock' && attacker.lock !== t.id) continue;
-      const m = measureArc(state, attacker, t, 'front');
+      const arc: ArcName = w.arc === 'turret' ? attacker.turretArc : 'front';
+      const m = measureArc(state, attacker, t, arc);
       if (!m || m.range < w.minRange || m.range > w.maxRange) continue;
-      out.push({ targetId: t.id, arc: 'front', attack: w.attack, ...m, weapon: u.id });
+      out.push({ targetId: t.id, arc, attack: w.attack, ...m, bullseye: arc === 'front' && m.bullseye, weapon: u.id });
     }
   }
   return out;
 }
+
+/** Weapons with charges need one left; turrets (no charges) never run out. */
+export const hasAmmo = (u: { id: string; charges: number }) => UPGRADES[u.id].charges === undefined || u.charges > 0;
 
 /** Whether a target entry is a primary attack (range bonuses and bullseye talents apply only to those). */
 export const isPrimary = (t: Pick<TargetInfo, 'weapon'>) => !t.weapon || t.weapon === 'primary';
@@ -117,7 +124,7 @@ export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' 
  */
 export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed' | 'weapon'> & { arc?: ArcName }, attacker?: ShipState) =>
   Math.max(0, shipType(defender).agility + (isPrimary(t) && t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
-    - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc) ? 1 : 0));
+    - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc, t.weapon) ? 1 : 0));
 
 /** Stealth Coating: an extra defense die while its charge lasts (lost on first damage). */
 const stealthActive = (sh: ShipState) => sh.upgrades.some((u) => u.id === 'stealth-coating' && u.charges > 0);
@@ -130,9 +137,9 @@ export const upgradeOf = (sh: ShipState, id: string, needCharge = false) =>
 export const inFiringArc = (from: ShipState, target: ShipState) =>
   shipType(from).primaries.some((w) => clipToArc(from.pose, w.arc, shipPolygon(target)).length >= 3);
 
-/** Outmaneuver: a front-arc attack from outside the defender's firing arcs costs it a defense die. */
-const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = 'front') =>
-  arc === 'front' && !!upgradeOf(attacker, 'outmaneuver') && !inFiringArc(defender, attacker);
+/** Outmaneuver: a front-arc attack from outside the defender's firing arcs costs it a defense die (turret shots are not front-arc attacks). */
+const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = 'front', weapon?: string) =>
+  arc === 'front' && !(weapon && UPGRADES[weapon]?.weapon?.arc === 'turret') && !!upgradeOf(attacker, 'outmaneuver') && !inFiringArc(defender, attacker);
 
 /**
  * Resolve one primary attack. Dice modification is automated with a fixed policy that attackOdds mirrors:
@@ -146,7 +153,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const defenseDice = defenseDiceFor(defender, t, attacker);
   const mods = canModifyAttack(attacker);
   const primary = isPrimary(t), weapon = weaponOf(t);
-  if (!primary) { const u = upgradeOf(attacker, t.weapon!); if (u) u.charges--; }
+  if (!primary) { const u = upgradeOf(attacker, t.weapon!); if (u && UPGRADES[u.id].charges !== undefined) u.charges--; }
 
   const attackRoll = rollAttack(state, attackDice);
   const atk = [...attackRoll];

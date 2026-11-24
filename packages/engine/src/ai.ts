@@ -3,12 +3,13 @@
 // to test rules; later AIs can plug into the same `decide` contract.
 import { Pose, dist, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
-import { attackOdds, clipToArc, legalTargets, shipPolygon, shipSize, shipType } from './combat';
+import { attackOdds, clipToArc, legalTargets, measureArc, shipPolygon, shipSize, shipType } from './combat';
+import { UPGRADES } from './content';
 import { activeShips, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
-import type { Command, GameState, PlayerId, ShipState, TargetInfo } from './types';
+import type { ActionChoice, ArcName, Command, GameState, PlayerId, ShipState, TargetInfo } from './types';
 
 function arcScore(fromPose: Pose, fromSize: number, toPoly: ReturnType<typeof shipPolygon>): number {
   const clipped = clipToArc(fromPose, 'front', toPoly);
@@ -49,6 +50,21 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   return score + jitter() * 6;
 }
 
+/** Rotate the turret toward the closest enemy it could then shoot, if the current arc has none. */
+function turretTurn(s: GameState, sh: ShipState, options: ActionChoice[]): ActionChoice | undefined {
+  const rotations = options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc');
+  const turret = sh.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
+  if (!rotations.length || !turret) return undefined;
+  const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
+  const reach = (arc: ArcName) => Math.min(...enemies.map((e) => {
+    const m = measureArc(s, sh, e, arc);
+    return m && m.range <= turret.maxRange ? m.range : Infinity;
+  }));
+  if (reach(sh.turretArc) < Infinity) return undefined;
+  const best = rotations.map((o) => ({ o, r: reach(o.to) })).sort((a, b) => a.r - b.r)[0];
+  return best.r < Infinity ? best.o : undefined;
+}
+
 export function decide(s: GameState, playerId: PlayerId): Command | null {
   const d = pendingFor(s, playerId);
   if (!d) return null;
@@ -79,7 +95,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     const blunted = hasShot ? repair(['blindedPilot', 'weaponsFailure']) : undefined;
     const choice = urgent ?? blunted
       ?? (hasShot ? pick('focus') ?? pick('lock') : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot'])
-        ?? pick('evade') ?? pick('focus') ?? pick('lock'));
+        ?? turretTurn(s, sh, d.options) ?? pick('evade') ?? pick('focus') ?? pick('lock'));
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
   }
 

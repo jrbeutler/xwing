@@ -95,6 +95,17 @@ export const UPGRADES: Record<string, UpgradeDef> = {
     weapon: { attack: 3, minRange: 1, maxRange: 2 },
     text: 'Attack 3, range 1-2. No lock needed.',
   },
+  // Turrets: secondary weapons firing through a turret arc the ship can turn with the Rotate action.
+  'dorsal-turret': {
+    id: 'dorsal-turret', name: 'Dorsal Turret', slot: 'turret', cost: 4,
+    weapon: { attack: 2, minRange: 1, maxRange: 2, arc: 'turret' },
+    text: 'Attack 2, range 1-2, through your turret arc. Adds the Rotate action to turn the arc.',
+  },
+  'ion-turret': {
+    id: 'ion-turret', name: 'Ion Cannon Turret', slot: 'turret', cost: 6,
+    weapon: { attack: 3, minRange: 1, maxRange: 2, arc: 'turret', effect: 'ion' },
+    text: 'Attack 3, range 1-2, through your turret arc. If it hits: 1 damage, every other hit is an ion token. Adds the Rotate action.',
+  },
   // Modifications (stat boosts).
   'hull-plating': {
     id: 'hull-plating', name: 'Hull Plating', slot: 'modification', text: '+1 hull.',

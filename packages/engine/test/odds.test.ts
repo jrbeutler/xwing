@@ -59,6 +59,8 @@ const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: Ta
   { name: 'Ion Torpedoes: at most 1 damage', a: { upgrades: up('ion-torpedoes'), lock: baseD.id, focus: 1 }, d: {}, t: ordnance('ion-torpedoes', 4, 2) },
   { name: 'Rocket Pods at range 1 (no primary bonus die)', a: { upgrades: up('rocket-pods'), focus: 1 }, d: { focus: 1 }, t: ordnance('rocket-pods', 3, 1) },
   { name: 'Marksman does not apply to ordnance', a: { upgrades: up('marksman', 'concussion-missiles'), lock: baseD.id }, d: {}, t: ordnance('concussion-missiles', 3, 2, true) },
+  { name: 'Dorsal Turret (2 dice, no range bonus)', a: { upgrades: [{ id: 'dorsal-turret', charges: 0 }], focus: 1 }, d: { focus: 1 }, t: { ...ordnance('dorsal-turret', 2, 1), arc: 'left' } },
+  { name: 'Ion Cannon Turret', a: { upgrades: [{ id: 'ion-turret', charges: 0 }], focus: 1 }, d: {}, t: { ...ordnance('ion-turret', 3, 2), arc: 'rear' } },
   { name: 'everything', a: { focus: 1, lock: baseD.id }, d: { focus: 1, evade: 1 }, t: target(3, true) },
 ];
 

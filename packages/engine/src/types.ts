@@ -3,8 +3,9 @@ import type { BaseSize, Maneuver } from './maneuvers';
 import type { DamageCardId } from './damage';
 
 export type PlayerId = string;
-export type ArcName = 'front' | 'rear';
-export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair';
+/** Firing arcs by facing: primaries use front/rear; a turret's arc can face any of the four. */
+export type ArcName = 'front' | 'rear' | 'left' | 'right';
+export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc';
 
 export interface ActionDef { type: ActionType; red?: boolean }
 
@@ -34,6 +35,8 @@ export interface WeaponDef {
   requires?: 'lock';
   /** 'proton': change 1 hit to a crit. 'ion': 1 damage, every other hit becomes an ion token. */
   effect?: 'proton' | 'ion';
+  /** 'turret': fires through the ship's turret arc (which the Rotate action turns); default: front arc. */
+  arc?: 'turret';
 }
 
 /** An upgrade fitted to a ship in play, with its remaining charges. */
@@ -87,6 +90,8 @@ export interface ShipState {
   lock: string | null;
   /** Ion tokens: an ionized ship flies a white 1-straight instead of its dial. */
   ion: number;
+  /** Which way the ship's turret arc faces (ships with a turret upgrade). */
+  turretArc: ArcName;
   /** Face-up damage cards (critical damage) in effect. */
   crits: DamageCardId[];
   /** Index into the ship type's dial; hidden from opponents during planning. */
@@ -107,7 +112,8 @@ export type ActionChoice =
   | { type: 'lock'; targetId: string }
   | { type: 'barrelRoll'; dir: 'left' | 'right'; shift: -1 | 0 | 1; to: Pose }
   | { type: 'boost'; bearing: 'straight' | 'bankLeft' | 'bankRight'; to: Pose }
-  | { type: 'repair'; card: DamageCardId };
+  | { type: 'repair'; card: DamageCardId }
+  | { type: 'rotateArc'; to: ArcName };
 
 export interface TargetInfo {
   targetId: string;

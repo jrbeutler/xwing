@@ -46,7 +46,7 @@ export function createGame(setup: GameSetup): GameState {
         id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
         initiative: pilot.initiative, pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: u.charges ?? 0 })),
-        stress: 0, focus: 0, evade: 0, lock: null, ion: 0, crits: [], dial: null, destroyed: false, removed: false,
+        stress: 0, focus: 0, evade: 0, lock: null, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
   }
@@ -85,6 +85,9 @@ export const activeShips = (s: GameState) => s.ships.filter((x) => !x.destroyed)
 
 /** A ship's dial entry as it must fly it now (damage cards can make it harder). */
 export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => effectiveManeuver(sh, shipType(sh).dial[dialIndex]);
+
+/** Whether a ship carries a turret weapon (and so has the Rotate action and a turret arc). */
+export const hasTurret = (sh: ShipState) => sh.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret');
 
 /** Ion tokens it takes to ionize a ship: 1 small, 2 medium, 3 large. */
 export const ionThreshold = (sh: ShipState) => ({ small: 1, medium: 2, large: 3 })[shipType(sh).size];
@@ -183,6 +186,10 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
         }
       }
     }
+  }
+  // A turret upgrade adds the Rotate action: turn the turret arc to face another way.
+  if (!ionized && hasTurret(sh) && actionAllowed(sh, 'rotateArc')) {
+    for (const to of ['front', 'left', 'right', 'rear'] as const) if (to !== sh.turretArc) opts.push({ type: 'rotateArc', to });
   }
   if (!ionized) for (const card of repairableCards(sh)) opts.push({ type: 'repair', card });
   return opts;
@@ -380,6 +387,7 @@ function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
   if (a.type === 'evade') sh.evade++;
   if (a.type === 'lock') sh.lock = a.targetId;
   if (a.type === 'barrelRoll' || a.type === 'boost') sh.pose = a.to;
+  if (a.type === 'rotateArc') sh.turretArc = a.to;
   s.log.push({ type: 'action', shipId: sh.id, action: a });
   if (a.type === 'repair') {
     discardCard(s, sh, a.card);
