@@ -1,11 +1,11 @@
-import { Pose, convexHull, normalizeAngle, polygonsOverlap, toWorld, vec } from './geometry';
-import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, STRAIGHT_UNIT } from './maneuvers';
+import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
+import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import { cardDamage, upgradeOf, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import type {
-  ActionChoice, Command, Decision, GameState, Obstacle, Player, PlayerId, ShipState,
+  ActionChoice, Command, Decision, Device, DropChoice, GameState, Obstacle, Player, PlayerId, ShipState,
 } from './types';
 
 export interface SquadEntry { pilotId: string; pose: Pose; upgrades?: string[] }
@@ -28,7 +28,7 @@ export function createGame(setup: GameSetup): GameState {
   const state: GameState = {
     version: 1, rng: setup.seed | 0, round: 0, maxRounds: setup.maxRounds ?? 12, phase: 'planning',
     players: setup.players, firstPlayer: setup.players[0].id, ships: [], obstacles: setup.obstacles ?? [],
-    queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null,
+    queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null, devices: [],
     // Shuffled from its own seed so the dice sequence is unchanged by the deck.
     damageDeck: newDamageDeck({ rng: (setup.seed ^ 0xdec4) | 0 }), damageDiscard: [],
   };
@@ -225,10 +225,18 @@ export function apply(prev: GameState, cmd: Command): GameState {
     d.waitingOn = d.waitingOn.filter((p) => p !== cmd.playerId);
     if (d.waitingOn.length === 0) {
       s.pending = null;
-      s.phase = 'system';
-      s.log.push({ type: 'phase', phase: 'system' });
-      beginActivation(s);
+      beginSystem(s);
     }
+    return s;
+  }
+
+  if (cmd.type === 'drop') {
+    if (d.kind !== 'system' || d.playerId !== cmd.playerId) throw new Error('Not expecting a drop');
+    if (!d.options.some((o) => JSON.stringify(o) === JSON.stringify(cmd.choice))) throw new Error('Illegal drop');
+    if (cmd.choice.type === 'drop') dropDevice(s, ship(s, d.shipId), cmd.choice.upgrade, cmd.choice.pose);
+    s.pending = null;
+    s.queueIndex++;
+    continueSystem(s);
     return s;
   }
 
@@ -292,6 +300,92 @@ function startRound(s: GameState) {
   s.pending = { kind: 'planning', waitingOn: waiting };
 }
 
+// ---------------------------------------------------------------------------
+// System phase: ships with bombs or mines may drop one (lowest initiative first).
+// ---------------------------------------------------------------------------
+
+/** Device tokens are about the size of the real ones; drops use the 1-straight template. */
+export const DEVICE_SIZE = 30;
+export const devicePolygon = (d: { pose: Pose }) => basePolygon(d.pose, DEVICE_SIZE);
+
+/** Where a dropped device lands: one straight template (40 mm) behind the ship's rear edge. */
+export function dropPose(sh: ShipState): Pose {
+  const back = shipSize(sh) / 2 + STRAIGHT_UNIT + DEVICE_SIZE / 2;
+  return { x: sh.pose.x - Math.cos(sh.pose.h) * back, y: sh.pose.y - Math.sin(sh.pose.h) * back, h: sh.pose.h };
+}
+
+/** The drops a ship may make now: each loaded device, if its token would land on the table. */
+export function dropOptions(s: GameState, sh: ShipState): DropChoice[] {
+  const opts: DropChoice[] = [{ type: 'none' }];
+  const pose = dropPose(sh);
+  if (!inBounds(devicePolygon({ pose }))) return opts;
+  const seen = new Set<string>();
+  for (const u of sh.upgrades) {
+    if (!UPGRADES[u.id].device || u.charges <= 0 || seen.has(u.id)) continue;
+    seen.add(u.id);
+    opts.push({ type: 'drop', upgrade: u.id, pose });
+  }
+  return opts;
+}
+
+function beginSystem(s: GameState) {
+  s.phase = 'system';
+  s.log.push({ type: 'phase', phase: 'system' });
+  s.queue = initiativeOrder(s, true);
+  s.queueIndex = 0;
+  continueSystem(s);
+}
+
+function continueSystem(s: GameState) {
+  while (s.queueIndex < s.queue.length) {
+    const sh = ship(s, s.queue[s.queueIndex]);
+    const options = sh.destroyed ? [] : dropOptions(s, sh);
+    if (options.length > 1) {
+      s.pending = { kind: 'system', playerId: sh.owner, shipId: sh.id, options };
+      return;
+    }
+    s.queueIndex++;
+  }
+  beginActivation(s);
+}
+
+function dropDevice(s: GameState, sh: ShipState, upgrade: string, pose: Pose) {
+  const u = upgradeOf(sh, upgrade);
+  if (!u) return;
+  u.charges--;
+  const device: Device = { id: `dev-${s.round}-${s.devices.length}-${sh.id}`, upgrade, owner: sh.owner, kind: UPGRADES[upgrade].device!.kind, pose };
+  s.devices.push(device);
+  s.log.push({ type: 'deviceDropped', shipId: sh.id, device });
+}
+
+/** Ships within range 0-1 of a device token. */
+const inBlast = (s: GameState, d: Device) =>
+  activeShips(s).filter((x) => polygonDistance(devicePolygon(d), shipPolygon(x)).d <= RANGE_BAND);
+
+/** Set a device off against `victims`; it leaves the table. Damage cards it deals are logged after it. */
+function detonate(s: GameState, d: Device, victims: ShipState[]) {
+  s.devices = s.devices.filter((x) => x.id !== d.id);
+  const effect = UPGRADES[d.upgrade].device!.effect;
+  const mark = s.log.length;
+  const hits = victims.map((v) => {
+    if (effect === 'ion') { v.ion += 3; return { shipId: v.id, shieldDamage: 0, hullDamage: 0, ion: 3 }; }
+    if (effect === 'proton') return { shipId: v.id, ...sufferDamage(s, v, 0, 1) };
+    const roll = rollAttack(s, 2);
+    return { shipId: v.id, ...sufferDamage(s, v, roll.filter((f) => f === 'hit').length, roll.filter((f) => f === 'crit').length), roll };
+  });
+  const cards = s.log.splice(mark);
+  s.log.push({ type: 'deviceDetonated', device: d, ships: hits }, ...cards);
+  for (const v of victims) if (v.hull <= 0) destroy(s, v);
+}
+
+/** Mines a ship touches anywhere along `poses` detonate on it. */
+function triggerMines(s: GameState, sh: ShipState, poses: Pose[]) {
+  for (const d of s.devices.filter((x) => x.kind === 'mine')) {
+    if (sh.destroyed) return;
+    if (poses.some((p) => polygonsOverlap(shipPolygon(sh, p), devicePolygon(d)))) detonate(s, d, [sh]);
+  }
+}
+
 function beginActivation(s: GameState) {
   s.phase = 'activation';
   s.log.push({ type: 'phase', phase: 'activation' });
@@ -332,7 +426,8 @@ function continueActivation(s: GameState) {
       if (face === 'crit') sufferDamage(s, sh, 0, 1);
     }
     afterManeuver(s, sh, m, mv.obstacles.length > 0, ionized);
-    if (sh.hull <= 0) { destroy(s, sh); s.queueIndex++; continue; }
+    triggerMines(s, sh, [...mv.path, mv.final]);
+    if (sh.hull <= 0 || sh.destroyed) { destroy(s, sh); s.queueIndex++; continue; }
 
     const canAct = !mv.partial && mv.obstacles.length === 0 && sh.stress === 0;
     if (canAct) {
@@ -344,6 +439,8 @@ function continueActivation(s: GameState) {
     }
     s.queueIndex++;
   }
+  // End of the Activation phase: every bomb on the table goes off.
+  for (const d of s.devices.filter((x) => x.kind === 'bomb')) detonate(s, d, inBlast(s, d));
   beginEngagement(s);
 }
 
@@ -386,7 +483,7 @@ function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
   if (a.type === 'focus') sh.focus++;
   if (a.type === 'evade') sh.evade++;
   if (a.type === 'lock') sh.lock = a.targetId;
-  if (a.type === 'barrelRoll' || a.type === 'boost') sh.pose = a.to;
+  if (a.type === 'barrelRoll' || a.type === 'boost') { const from = sh.pose; sh.pose = a.to; triggerMines(s, sh, [from, a.to]); }
   if (a.type === 'rotateArc') sh.turretArc = a.to;
   s.log.push({ type: 'action', shipId: sh.id, action: a });
   if (a.type === 'repair') {

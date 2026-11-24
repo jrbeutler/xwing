@@ -5,11 +5,11 @@ import { Pose, dist, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, measureArc, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { activeShips, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { activeShips, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
-import type { ActionChoice, ArcName, Command, GameState, PlayerId, ShipState, TargetInfo } from './types';
+import type { ActionChoice, ArcName, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
 
 function arcScore(fromPose: Pose, fromSize: number, toPoly: ReturnType<typeof shipPolygon>): number {
   const clipped = clipToArc(fromPose, 'front', toPoly);
@@ -34,6 +34,7 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   if (!inBounds(poly)) return -1000;
   let score = 0;
   if (s.obstacles.some((o) => polygonsOverlap(poly, o.polygon))) score -= 40;
+  if (s.devices.some((d) => d.kind === 'mine' && polygonsOverlap(poly, devicePolygon(d)))) score -= 45;
   const edge = Math.min(pose.x, pose.y, BOARD_SIZE - pose.x, BOARD_SIZE - pose.y);
   if (edge < 80) score -= (80 - edge) * 0.5;
   let nearest = Infinity;
@@ -63,6 +64,31 @@ function turretTurn(s: GameState, sh: ShipState, options: ActionChoice[]): Actio
   if (reach(sh.turretArc) < Infinity) return undefined;
   const best = rotations.map((o) => ({ o, r: reach(o.to) })).sort((a, b) => a.r - b.r)[0];
   return best.r < Infinity ? best.o : undefined;
+}
+
+/**
+ * System phase: drop a bomb if, by the end of Activation, enemies are likely in its blast and friends
+ * are not (enemies are predicted to fly on; friends' dials are known); lay a mine where an enemy is heading.
+ */
+function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoice {
+  const none = options.find((o) => o.type === 'none')!;
+  const drops = options.filter((o): o is Extract<DropChoice, { type: 'drop' }> => o.type === 'drop');
+  if (!drops.length) return none;
+  const token = devicePolygon({ pose: drops[0].pose });
+  const near = (pose: Pose, size: number, reach: number) => polygonDistance(token, basePolygon(pose, size)).d <= reach;
+  const friendsEnd = activeShips(s).filter((x) => x.owner === sh.owner)
+    .map((x) => ({ pose: x.dial === null ? x.pose : maneuverFinalPose(x.pose, shipSize(x), maneuverFor(x, x.dial)), size: shipSize(x) }));
+  const enemies = activeShips(s).filter((x) => x.owner !== sh.owner).map((e) => ({ pose: predictEnemy(e), size: shipSize(e) }));
+  const score = (o: Extract<DropChoice, { type: 'drop' }>) => {
+    const dev = UPGRADES[o.upgrade].device!;
+    const reach = dev.kind === 'bomb' ? 100 : 60;
+    const foes = enemies.filter((e) => near(e.pose, e.size, reach)).length;
+    const friends = friendsEnd.filter((f) => near(f.pose, f.size, reach + 10)).length; // small margin: a bomber flying its slowest straight ends 120 mm away
+    if (!foes || friends) return 0;
+    return foes * (dev.effect === 'proton' ? 3 : dev.effect === 'ion' ? 2 : 2.5);
+  };
+  const best = drops.map((o) => ({ o, sc: score(o) })).sort((a, b) => b.sc - a.sc)[0];
+  return best.sc > 0 ? best.o : none;
 }
 
 export function decide(s: GameState, playerId: PlayerId): Command | null {
@@ -97,6 +123,11 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
       ?? (hasShot ? pick('focus') ?? pick('lock') : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot'])
         ?? turretTurn(s, sh, d.options) ?? pick('evade') ?? pick('focus') ?? pick('lock'));
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
+  }
+
+  if (d.kind === 'system') {
+    const sh = s.ships.find((x) => x.id === d.shipId)!;
+    return { type: 'drop', playerId, choice: bestDrop(s, sh, d.options) };
   }
 
   // attack: the shot (target and weapon) with the best exact odds; kills and weak targets count extra.

@@ -106,6 +106,19 @@ export const UPGRADES: Record<string, UpgradeDef> = {
     weapon: { attack: 3, minRange: 1, maxRange: 2, arc: 'turret', effect: 'ion' },
     text: 'Attack 3, range 1-2, through your turret arc. If it hits: 1 damage, every other hit is an ion token. Adds the Rotate action.',
   },
+  // Devices: dropped behind the ship in the System phase (one charge each). Bombs hit everything nearby.
+  'proton-bomb': {
+    id: 'proton-bomb', name: 'Proton Bomb', slot: 'device', cost: 5, charges: 2, device: { kind: 'bomb', effect: 'proton' },
+    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship at range 0-1 (yours too) takes 1 crit.',
+  },
+  'ion-bomb': {
+    id: 'ion-bomb', name: 'Ion Bomb', slot: 'device', cost: 4, charges: 2, device: { kind: 'bomb', effect: 'ion' },
+    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship at range 0-1 (yours too) gains 3 ion tokens.',
+  },
+  'proximity-mine': {
+    id: 'proximity-mine', name: 'Proximity Mine', slot: 'device', cost: 6, charges: 2, device: { kind: 'mine', effect: 'proximity' },
+    text: 'Drop behind you in the System phase. It stays until a ship moves through or onto it: that ship rolls 2 attack dice and takes 1 damage per hit or crit.',
+  },
   // Modifications (stat boosts).
   'hull-plating': {
     id: 'hull-plating', name: 'Hull Plating', slot: 'modification', text: '+1 hull.',

@@ -25,7 +25,21 @@ export interface UpgradeDef {
   charges?: number;
   /** Secondary weapons (missiles, torpedoes): fired instead of the primary, one charge per shot. */
   weapon?: WeaponDef;
+  /** Devices (bombs, mines): dropped behind the ship in the System phase, one charge each. */
+  device?: DeviceDef;
 }
+
+export interface DeviceDef {
+  /** Bombs detonate at the end of the Activation phase; mines when a ship moves through or onto them. */
+  kind: 'bomb' | 'mine';
+  /** 'proton': 1 crit to each ship at range 0-1. 'ion': 3 ion tokens to each. 'proximity': the ship rolls 2 attack dice. */
+  effect: 'proton' | 'ion' | 'proximity';
+}
+
+/** A bomb or mine token on the table. */
+export interface Device { id: string; upgrade: string; owner: PlayerId; kind: 'bomb' | 'mine'; pose: Pose }
+
+export type DropChoice = { type: 'none' } | { type: 'drop'; upgrade: string; pose: Pose };
 
 export interface WeaponDef {
   attack: number;
@@ -129,7 +143,8 @@ export interface TargetInfo {
 export type Decision =
   | { kind: 'planning'; waitingOn: PlayerId[] }
   | { kind: 'action'; playerId: PlayerId; shipId: string; options: ActionChoice[] }
-  | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[] };
+  | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[] }
+  | { kind: 'system'; playerId: PlayerId; shipId: string; options: DropChoice[] };
 
 export type AttackFace = 'hit' | 'crit' | 'focus' | 'blank';
 export type DefenseFace = 'evade' | 'focus' | 'blank';
@@ -156,6 +171,12 @@ export type GameEvent =
       shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
     }
   | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered' }
+  | { type: 'deviceDropped'; shipId: string; device: Device }
+  | {
+      type: 'deviceDetonated'; device: Device;
+      /** What it did to each ship caught by it (damage cards it dealt follow as damageCard events). */
+      ships: { shipId: string; shieldDamage: number; hullDamage: number; ion?: number; roll?: AttackFace[] }[];
+    }
   | { type: 'destroyed'; shipId: string }
   | { type: 'gameOver'; winner: PlayerId | 'draw' }
   | { type: 'info'; text: string };
@@ -173,6 +194,8 @@ export interface GameState {
   firstPlayer: PlayerId;
   ships: ShipState[];
   obstacles: Obstacle[];
+  /** Bomb and mine tokens on the table. */
+  devices: Device[];
   /** Face-down damage deck (draws come off the end) and its discard pile. */
   damageDeck: DamageCardId[];
   damageDiscard: DamageCardId[];
@@ -188,4 +211,5 @@ export interface GameState {
 export type Command =
   | { type: 'setDials'; playerId: PlayerId; dials: Record<string, number> }
   | { type: 'action'; playerId: PlayerId; choice: ActionChoice }
-  | { type: 'attack'; playerId: PlayerId; targetId: string | null; weapon?: string };
+  | { type: 'attack'; playerId: PlayerId; targetId: string | null; weapon?: string }
+  | { type: 'drop'; playerId: PlayerId; choice: DropChoice };
