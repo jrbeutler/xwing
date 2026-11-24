@@ -13,6 +13,8 @@ import roughUrl from './assets/spaceship/roughness.jpg?url';
 import metalUrl from './assets/spaceship/metallic.jpg?url';
 import aoUrl from './assets/spaceship/ao.jpg?url';
 import interceptorObj from './assets/interceptor/interceptor.obj?raw';
+import bomberUrl from './assets/bomber/bomber.bin?url'; // baked by scripts/bake-glb.mjs
+const bomberMaps = import.meta.glob('./assets/bomber/*.jpg', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
 import freighterUrl from './assets/freighter/freighter.bin?url'; // baked by scripts/bake-freighter.mjs
 
 /** Freighter display length (procedural-model units; ships are drawn at 1.7×, so 78 ≈ 133 mm). */
@@ -167,8 +169,65 @@ async function loadInterceptor() {
   };
 }
 
+/** Read a binary written by scripts/bake-glb.mjs into one geometry per source material. */
+function parseBakedGlb(buf: ArrayBuffer) {
+  const headerLen = new DataView(buf).getUint32(0, true);
+  const header: { posScale: number; groups: { material: string; vertices: number; indices: number; wide: boolean }[] } =
+    JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, headerLen)));
+  let off = 4 + headerLen;
+  const take = (bytes: number) => { const at = off; off += Math.ceil(bytes / 4) * 4; return at; };
+  return header.groups.map((g) => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Int16Array(buf, take(g.vertices * 6), g.vertices * 3), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(buf, take(g.vertices * 3), g.vertices * 3), 3, true));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(buf, take(g.vertices * 8), g.vertices * 2), 2));
+    const idx = g.wide ? new Uint32Array(buf, take(g.indices * 4), g.indices) : new Uint16Array(buf, take(g.indices * 2), g.indices);
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    return { material: g.material, geometry: geo, posScale: header.posScale };
+  });
+}
+
+async function loadBomber(renderer: THREE.WebGLRenderer) {
+  const tl = new THREE.TextureLoader();
+  const map = (file: string, srgb = false) => {
+    const url = bomberMaps[`./assets/bomber/${file}`];
+    if (!url) return Promise.resolve(null);
+    return tl.loadAsync(url).then((t) => {
+      t.flipY = false; // glTF UV convention
+      if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      return t;
+    });
+  };
+  const parts = parseBakedGlb(await bytes(bomberUrl));
+  const outer = new THREE.Group();
+  for (const p of parts) {
+    const id = /Material\.(\d+)/.exec(p.material)?.[1] ?? '';
+    const [base, normal, rough, metal, emissive] = await Promise.all([
+      map(`m${id}_base.jpg`, true), map(`m${id}_normal.jpg`), map(`m${id}_rough.jpg`), map(`m${id}_metal.jpg`), map(`m${id}_emissive.jpg`, true),
+    ]);
+    const mat = base
+      ? new THREE.MeshStandardMaterial({
+        map: base, normalMap: normal, roughnessMap: rough, metalnessMap: metal, roughness: 1, metalness: 1,
+        emissiveMap: emissive, emissive: emissive ? 0xffffff : 0x000000, emissiveIntensity: 2, side: THREE.DoubleSide,
+      })
+      // The one untextured part is the canopy.
+      : new THREE.MeshStandardMaterial({ color: 0x0b1626, metalness: 0.9, roughness: 0.1, emissive: 0x0c2f4a, emissiveIntensity: 0.6 });
+    const mesh = new THREE.Mesh(p.geometry, mat);
+    mesh.scale.setScalar(p.posScale); // positions are quantised to int16
+    outer.add(mesh);
+  }
+  castShadows(outer);
+  const box = new THREE.Box3().setFromObject(outer);
+  templates.anvil = {
+    build() { return outer.clone(true); },
+    // twin engine nacelles at the tail
+    engines: [-1, 1].map((s) => ({ x: box.min.x + 0.8, y: 0, z: s * box.max.z * 0.6, r: 2.2 })),
+  };
+}
+
 /** Load every imported model; each one that fails just leaves its procedural stand-in. */
 export async function loadShipModels(renderer: THREE.WebGLRenderer): Promise<void> {
-  const results = await Promise.allSettled([loadFighter(renderer), loadFreighter(), loadInterceptor()]);
+  const results = await Promise.allSettled([loadFighter(renderer), loadFreighter(), loadInterceptor(), loadBomber(renderer)]);
   for (const r of results) if (r.status === 'rejected') console.warn('ship model failed to load; using built-in model', r.reason);
 }

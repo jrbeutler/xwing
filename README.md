@@ -14,6 +14,7 @@ npm test           # engine unit tests
 npm run typecheck
 npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts (apps/web/dist/artifact.html)
 node apps/web/scripts/bake-freighter.mjs path/to/Freighter.fbx   # re-bake the freighter model (source FBX is not in the repo)
+node apps/web/scripts/bake-glb.mjs path/to/glb.glb apps/web/src/assets/bomber/bomber.bin --length 42 --cell 0.2 --uv 0.03 --normal 2   # re-bake the bomber (source GLB is not in the repo)
 ```
 
 ## How to play

@@ -21,6 +21,15 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'boost', red: true }],
     dial: parseDial('0X:r 1TL:r 1BL:b 1S:b 1BR:b 1TR:r 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3BL:w 3S:w 3BR:w 4S:w 1RS:r 2SL:r 2SR:r'),
   },
+  // Bomber class. Stats, actions and dial follow the X-Wing 2nd edition BTL-A4 Y-wing: tough (6 hull,
+  // 2 shields) but slow to turn, with a red barrel roll. Its Reload action, turret and bomb slots need
+  // mechanics the engine does not have yet (ordnance, turret arcs, devices), so they are left out.
+  anvil: {
+    id: 'anvil', name: 'Anvil Bomber', size: 'small',
+    primaries: [{ arc: 'front', attack: 2 }], agility: 1, hull: 6, shields: 2,
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'barrelRoll', red: true }],
+    dial: parseDial('1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:w 3BR:w 3TR:r 4S:r 4K:r'),
+  },
 };
 
 export const PILOTS: Record<string, PilotDef> = {
@@ -30,4 +39,6 @@ export const PILOTS: Record<string, PilotDef> = {
   'drav-okono': { id: 'drav-okono', name: 'Drav Okono', shipType: 'bulwark', initiative: 4 },
   'syl-ketch': { id: 'syl-ketch', name: 'Syl Ketch', shipType: 'wasp', initiative: 3 },
   'grunt-seven': { id: 'grunt-seven', name: 'Grunt Seven', shipType: 'wasp', initiative: 1 },
+  'bram-holloway': { id: 'bram-holloway', name: 'Bram Holloway', shipType: 'anvil', initiative: 4 },
+  'rook-twelve': { id: 'rook-twelve', name: 'Rook Twelve', shipType: 'anvil', initiative: 2 },
 };

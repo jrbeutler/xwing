@@ -392,14 +392,16 @@ export function quickSkirmish(seed: number): GameState {
     ],
     squads: {
       p1: [
-        { pilotId: 'mara-venn', pose: { x: 300, y: 70, h: h1 } },
-        { pilotId: 'tobin-reyes', pose: { x: 457, y: 70, h: h1 } },
-        { pilotId: 'ilse-kord', pose: { x: 614, y: 70, h: h1 } },
+        { pilotId: 'mara-venn', pose: { x: 220, y: 70, h: h1 } },
+        { pilotId: 'tobin-reyes', pose: { x: 377, y: 70, h: h1 } },
+        { pilotId: 'bram-holloway', pose: { x: 537, y: 70, h: h1 } },
+        { pilotId: 'ilse-kord', pose: { x: 694, y: 70, h: h1 } },
       ],
       p2: [
-        { pilotId: 'syl-ketch', pose: { x: 300, y: 844, h: h2 } },
-        { pilotId: 'drav-okono', pose: { x: 457, y: 834, h: h2 } },
-        { pilotId: 'grunt-seven', pose: { x: 614, y: 844, h: h2 } },
+        { pilotId: 'syl-ketch', pose: { x: 220, y: 844, h: h2 } },
+        { pilotId: 'drav-okono', pose: { x: 377, y: 834, h: h2 } },
+        { pilotId: 'rook-twelve', pose: { x: 537, y: 844, h: h2 } },
+        { pilotId: 'grunt-seven', pose: { x: 694, y: 844, h: h2 } },
       ],
     },
     obstacles: rocks,
