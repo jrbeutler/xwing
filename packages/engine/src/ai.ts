@@ -3,7 +3,7 @@
 // to test rules; later AIs can plug into the same `decide` contract.
 import { Pose, dist, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
-import { clipToArc, legalTargets, shipPolygon, shipSize, shipType } from './combat';
+import { attackOdds, clipToArc, legalTargets, shipPolygon, shipSize, shipType } from './combat';
 import { activeShips, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
@@ -83,11 +83,13 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
   }
 
-  // attack: prefer the most damaged target, then closer range
+  // attack: the shot (target and weapon) with the best exact odds; kills and weak targets count extra.
+  const me = s.ships.find((x) => x.id === d.shipId)!;
   const worth = (t: TargetInfo) => {
     const e = s.ships.find((x) => x.id === t.targetId)!;
-    return -(e.hull + e.shields) * 10 - t.range * 3 + t.attack * 5;
+    const o = attackOdds(me, e, t);
+    return o.expected + o.kill * 3 + o.ion * 0.6 - (e.hull + e.shields) * 0.05;
   };
   const best = [...d.targets].sort((a, b) => worth(b) - worth(a))[0];
-  return { type: 'attack', playerId, targetId: best ? best.targetId : null };
+  return { type: 'attack', playerId, targetId: best ? best.targetId : null, ...(best?.weapon ? { weapon: best.weapon } : {}) };
 }

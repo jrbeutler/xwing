@@ -22,6 +22,18 @@ export interface UpgradeDef {
   stats?: { hull?: number; shields?: number };
   /** Starting charges, for upgrades that run out. */
   charges?: number;
+  /** Secondary weapons (missiles, torpedoes): fired instead of the primary, one charge per shot. */
+  weapon?: WeaponDef;
+}
+
+export interface WeaponDef {
+  attack: number;
+  minRange: number;
+  maxRange: number;
+  /** 'lock': the attacker must have a lock on the defender (the lock can still be spent to reroll). */
+  requires?: 'lock';
+  /** 'proton': change 1 hit to a crit. 'ion': 1 damage, every other hit becomes an ion token. */
+  effect?: 'proton' | 'ion';
 }
 
 /** An upgrade fitted to a ship in play, with its remaining charges. */
@@ -104,6 +116,8 @@ export interface TargetInfo {
   range: number;
   obstructed: boolean;
   bullseye: boolean;
+  /** Upgrade id of the secondary weapon used; absent (or 'primary') for the primary weapon. */
+  weapon?: string;
 }
 
 export type Decision =
@@ -126,6 +140,8 @@ export type GameEvent =
       type: 'attack'; attackerId: string; defenderId: string; arc: ArcName; range: number; obstructed: boolean;
       attackRoll: AttackFace[]; attackFinal: AttackFace[]; defenseRoll: DefenseFace[]; defenseFinal: DefenseFace[];
       spent: string[]; hits: number; crits: number; shieldDamage: number; hullDamage: number;
+      /** Secondary weapon used (absent for the primary) and ion tokens it gave. */
+      weapon?: string; ion?: number;
     }
   | {
       /** A face-up damage card was dealt, triggered, or left the ship (repaired / discarded). */
@@ -166,4 +182,4 @@ export interface GameState {
 export type Command =
   | { type: 'setDials'; playerId: PlayerId; dials: Record<string, number> }
   | { type: 'action'; playerId: PlayerId; choice: ActionChoice }
-  | { type: 'attack'; playerId: PlayerId; targetId: string | null };
+  | { type: 'attack'; playerId: PlayerId; targetId: string | null; weapon?: string };

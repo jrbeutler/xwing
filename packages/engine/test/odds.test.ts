@@ -14,12 +14,15 @@ const game = createGame({
 const [baseA, baseD] = game.ships;
 
 /** Fraction of `n` real resolveAttack rolls with each damage total, for comparison with attackOdds. */
+let ionTotal = 0;
 function simulate(a: ShipState, d: ShipState, t: TargetInfo, n: number) {
   const rng = { rng: 12345, log: [] } as unknown as GameState;
   const counts: number[] = [];
+  ionTotal = 0;
   for (let i = 0; i < n; i++) {
     const r = resolveAttack(rng, structuredClone(a), structuredClone({ ...d, shields: 99, hull: 99 }), t);
-    const k = r.hits + r.crits;
+    const k = r.shieldDamage + r.hullDamage; // damage dealt (ion weapons deal at most 1)
+    ionTotal += r.ion ?? 0;
     counts[k] = (counts[k] ?? 0) + 1;
   }
   return counts.map((c) => (c ?? 0) / n);
@@ -28,6 +31,8 @@ function simulate(a: ShipState, d: ShipState, t: TargetInfo, n: number) {
 const target = (range: number, obstructed = false, bullseye = false): TargetInfo =>
   ({ targetId: baseD.id, arc: 'front', attack: 3, range, obstructed, bullseye });
 const up = (...ids: string[]) => ids.map((id) => ({ id, charges: 1 }));
+const ordnance = (weapon: string, attack: number, range: number, bullseye = false): TargetInfo =>
+  ({ targetId: baseD.id, arc: 'front', attack, range, obstructed: false, bullseye, weapon });
 
 const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: TargetInfo }[] = [
   { name: 'no tokens, range 2', a: {}, d: {}, t: target(2) },
@@ -50,6 +55,10 @@ const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: Ta
   { name: 'Elusive with focus and evade tokens', a: { focus: 1, lock: baseD.id }, d: { upgrades: up('elusive'), focus: 1, evade: 1 }, t: target(3) },
   { name: 'all talents at once', a: { upgrades: up('marksman', 'crack-shot'), lock: baseD.id, focus: 1 }, d: { upgrades: up('elusive', 'stealth-coating'), focus: 1, evade: 1 }, t: target(2, true, true) },
   { name: 'Blinded Pilot stops Marksman and Crack Shot', a: { upgrades: up('marksman', 'crack-shot'), crits: ['blindedPilot'], focus: 1 }, d: { evade: 1 }, t: target(2, false, true) },
+  { name: 'Proton Torpedoes (4 dice, no range bonus)', a: { upgrades: up('proton-torpedoes'), lock: baseD.id }, d: { evade: 1 }, t: ordnance('proton-torpedoes', 4, 3) },
+  { name: 'Ion Torpedoes: at most 1 damage', a: { upgrades: up('ion-torpedoes'), lock: baseD.id, focus: 1 }, d: {}, t: ordnance('ion-torpedoes', 4, 2) },
+  { name: 'Rocket Pods at range 1 (no primary bonus die)', a: { upgrades: up('rocket-pods'), focus: 1 }, d: { focus: 1 }, t: ordnance('rocket-pods', 3, 1) },
+  { name: 'Marksman does not apply to ordnance', a: { upgrades: up('marksman', 'concussion-missiles'), lock: baseD.id }, d: {}, t: ordnance('concussion-missiles', 3, 2, true) },
   { name: 'everything', a: { focus: 1, lock: baseD.id }, d: { focus: 1, evade: 1 }, t: target(3, true) },
 ];
 
@@ -64,6 +73,7 @@ describe('attackOdds matches resolveAttack', () => {
       for (let k = 0; k < Math.max(sim.length, odds.dist.length); k++) {
         expect(Math.abs((sim[k] ?? 0) - (odds.dist[k] ?? 0))).toBeLessThan(0.012);
       }
+      expect(Math.abs(ionTotal / 40000 - odds.ion)).toBeLessThan(0.02); // expected ion tokens
     });
   }
 

@@ -74,6 +74,27 @@ export const UPGRADES: Record<string, UpgradeDef> = {
     id: 'hotshot', name: 'Hotshot', slot: 'talent', cost: 3,
     text: 'After you fully execute a red maneuver, gain 1 focus.',
   },
+  // Ordnance: secondary weapons. No range bonuses (those are for primary attacks); one charge per shot.
+  'proton-torpedoes': {
+    id: 'proton-torpedoes', name: 'Proton Torpedoes', slot: 'torpedo', cost: 9, charges: 2,
+    weapon: { attack: 4, minRange: 2, maxRange: 3, requires: 'lock', effect: 'proton' },
+    text: 'Attack 4, range 2-3, needs a lock. Change 1 hit to a crit.',
+  },
+  'ion-torpedoes': {
+    id: 'ion-torpedoes', name: 'Ion Torpedoes', slot: 'torpedo', cost: 6, charges: 2,
+    weapon: { attack: 4, minRange: 2, maxRange: 3, requires: 'lock', effect: 'ion' },
+    text: 'Attack 4, range 2-3, needs a lock. If it hits: 1 damage, and every other hit is an ion token instead.',
+  },
+  'concussion-missiles': {
+    id: 'concussion-missiles', name: 'Concussion Missiles', slot: 'missile', cost: 6, charges: 3,
+    weapon: { attack: 3, minRange: 2, maxRange: 3, requires: 'lock' },
+    text: 'Attack 3, range 2-3, needs a lock.',
+  },
+  'rocket-pods': {
+    id: 'rocket-pods', name: 'Rocket Pods', slot: 'missile', cost: 5, charges: 2,
+    weapon: { attack: 3, minRange: 1, maxRange: 2 },
+    text: 'Attack 3, range 1-2. No lock needed.',
+  },
   // Modifications (stat boosts).
   'hull-plating': {
     id: 'hull-plating', name: 'Hull Plating', slot: 'modification', text: '+1 hull.',

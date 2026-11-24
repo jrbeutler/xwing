@@ -86,6 +86,10 @@ export const activeShips = (s: GameState) => s.ships.filter((x) => !x.destroyed)
 /** A ship's dial entry as it must fly it now (damage cards can make it harder). */
 export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => effectiveManeuver(sh, shipType(sh).dial[dialIndex]);
 
+/** Ion tokens it takes to ionize a ship: 1 small, 2 medium, 3 large. */
+export const ionThreshold = (sh: ShipState) => ({ small: 1, medium: 2, large: 3 })[shipType(sh).size];
+export const isIonized = (sh: ShipState) => sh.ion >= ionThreshold(sh);
+
 /** The white 1-straight an ionized ship flies instead of its dial. */
 export const ION_MANEUVER: Maneuver = { bearing: 'straight', speed: 1, difficulty: 'white' };
 
@@ -236,7 +240,8 @@ export function apply(prev: GameState, cmd: Command): GameState {
     if (d.kind !== 'attack' || d.playerId !== cmd.playerId) throw new Error('Not expecting an attack');
     const attacker = ship(s, d.shipId);
     if (cmd.targetId !== null) {
-      const t = d.targets.find((x) => x.targetId === cmd.targetId);
+      const want = cmd.weapon && cmd.weapon !== 'primary' ? cmd.weapon : undefined;
+      const t = d.targets.find((x) => x.targetId === cmd.targetId && (x.weapon ?? undefined) === want);
       if (!t) throw new Error('Illegal target');
       const defender = ship(s, t.targetId);
       const mark = s.log.length;
@@ -292,7 +297,7 @@ function continueActivation(s: GameState) {
   while (s.queueIndex < s.queue.length) {
     const sh = ship(s, s.queue[s.queueIndex]);
     if (sh.destroyed || sh.dial === null) { s.queueIndex++; continue; }
-    const ionized = sh.ion > 0;
+    const ionized = isIonized(sh);
     const m = ionized ? ION_MANEUVER : maneuverFor(sh, sh.dial);
     if (ionized) {
       sh.ion = 0;
