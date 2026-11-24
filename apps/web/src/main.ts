@@ -1117,17 +1117,28 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
   const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'repair'), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
-  /** Narrow the board to one kind of targeted action (lock / barrel roll / boost) chosen from the ring. */
+  /**
+   * The targeted action picked from the ring (lock / barrel roll / boost), or null while the ring is
+   * showing. Picking one hides the ring and shows only its targets; Esc or Back brings the ring back.
+   */
   let only: 'lock' | 'barrelRoll' | 'boost' | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
-  const shownLocks = () => (only === null || only === 'lock' ? locks : []);
-  const shownSpots = () => spots.filter((o) => only === null || only === o.type);
+  const back = () => { only = null; cand = null; show(); };
+  const shownLocks = () => (only === 'lock' ? locks : []);
+  const shownSpots = () => spots.filter((o) => only === o.type);
 
   /** The ring: instant actions do it now; Lock / Barrel roll / Boost narrow the board to their targets. */
   const radial = () => {
     const has = (t: string) => options.some((o) => o.type === t);
+    if (only) {
+      // Targeting: the ring makes way for the targets; a lone Back button returns to it.
+      const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
+      scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: back }],
+        { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
+      return;
+    }
     const narrow = (t: 'lock' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
-      ({ icon, label, title: hint, active: only === t, onClick: () => { only = only === t ? null : t; cand = null; show(); } });
+      ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
     const items: RadialItem[] = [];
     if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: 'Focus: turn focus results into hits or evades', onClick: () => choose({ type: 'focus' }) });
     if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: 'Evade: add an evade result when defending', onClick: () => choose({ type: 'evade' }) });
@@ -1140,9 +1151,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
       items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
     }
     items.push({ icon: ICONS.skip, label: 'Skip', title: 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
-    const caption = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'barrelRoll' ? 'Click a teal dot to barrel roll'
-      : only === 'boost' ? 'Click a green dot to boost' : cand ? actionText(cand) : 'Pick an action';
-    scene.showRadial(s.pose, items, { key: `${only}|${cand ? JSON.stringify(cand) : ''}`, caption });
+    scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick an action' });
   };
 
   const show = () => {
@@ -1159,8 +1168,9 @@ function renderAction(shipId: string, options: ActionChoice[]) {
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR.lock, `Lock ${shipById(cand.targetId).name}`);
     } else scene.clearOverlay();
     const who = `<b>${s.name.split(' ')[0]}</b>`;
-    const boardHint = spots.length || locks.length ? 'tap a dot or ringed enemy, or pick below' : 'pick an action';
-    const btns: BarButton[] = simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
+    const boardHint = only === 'barrelRoll' ? 'tap a teal dot to roll' : only === 'boost' ? 'tap a green dot to boost' : 'pick from the ring around your ship';
+    const btns: BarButton[] = only ? [{ label: 'Back', onClick: back }]
+      : simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
     if (cand && cand.type !== 'none' && cand.type !== 'focus' && cand.type !== 'evade') {
       const c = cand;
       btns.unshift({ label: 'Do it', cls: 'primary', onClick: () => choose(c) });
@@ -1189,15 +1199,16 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   mode = {
     hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
     click(e) { const c = pick(e); if (c) choose(c); },
-    key(e) { if (e.key === 'Escape') { if (only) { only = null; show(); } else choose({ type: 'none' }); } },
+    key(e) { if (e.key === 'Escape' && only) back(); },
   };
 
-  const parts = [
-    spots.some((o) => o.type === 'barrelRoll') ? 'click a <b style="color:#7cf0c5">teal</b> dot to barrel roll' : '',
-    spots.some((o) => o.type === 'boost') ? 'a <b style="color:#9be37c">green</b> dot to boost' : '',
-    locks.length ? 'click a <b style="color:#ffd166">ringed enemy</b> to lock it' : '',
+  const ring = [
+    'Pick from the ring around your ship: Focus and Evade act at once',
+    locks.length ? '<b style="color:#ffd166">Lock</b> then click a ringed enemy' : '',
+    spots.some((o) => o.type === 'barrelRoll') ? '<b style="color:#7cf0c5">Roll</b> shows the barrel-roll spots' : '',
+    spots.some((o) => o.type === 'boost') ? '<b style="color:#9be37c">Boost</b> shows the boost spots' : '',
   ].filter(Boolean);
-  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">Pick from the ring around your ship. On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the ring.</p>${critList(s)}`;
+  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
@@ -1276,11 +1287,13 @@ function renderAttack(shipId: string, targets: Target[]) {
   const s = shipById(shipId);
   const weaponIds = ['primary', ...s.upgrades.filter((u) => UPGRADES[u.id].weapon).map((u) => u.id)];
   const targetsFor = (w: string) => targets.filter((t) => (t.weapon ?? 'primary') === w);
-  let weapon = targetsFor('primary').length ? 'primary' : weaponIds.find((w) => targetsFor(w).length) ?? 'primary';
+  /** The weapon picked from the ring, or null while the ring is showing (then nothing is targeted yet). */
+  let weapon: string | null = null;
   let candId: string | null = null;
+  const back = () => { weapon = null; candId = null; show(); };
   const fire = (t: Target | null) =>
     send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null, ...(t && !isPrimary(t) ? { weapon: t.weapon } : {}) });
-  const current = () => targetsFor(weapon);
+  const current = () => (weapon ? targetsFor(weapon) : []);
   const shotAt = (id: string | null) => current().find((t) => t.targetId === id) ?? null;
   /** Why a weapon cannot fire right now (shown on its greyed-out button). */
   const why = (w: string) => {
@@ -1299,22 +1312,28 @@ function renderAttack(shipId: string, targets: Target[]) {
     const c = shotAt(candId);
     if (c) scene.showLine(s.pose, shipById(c.targetId).pose, RED, targetText(c, s));
     else scene.clearOverlay();
+    if (weapon) {
+      // Targeting: the ring makes way for the enemies this weapon can hit; a lone Back button returns to it.
+      const name = weapon === 'primary' ? 'Lasers' : UPGRADES[weapon].name;
+      scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the weapon menu (Esc)', cls: 'quiet', onClick: back }],
+        { key: `back|${weapon}|${candId}`, caption: `${name}: ${c ? targetText(c, s) : 'click a red-ringed enemy'} · Esc to go back` });
+    } else {
     const items: RadialItem[] = weaponIds.map((w) => {
       const u = s.upgrades.find((x) => x.id === w);
       const ok = targetsFor(w).length > 0;
       return {
         icon: weaponIcon(w), label: weaponShort(w), badge: u ? u.charges : undefined, active: w === weapon, disabled: !ok,
         title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
-        onClick: () => { weapon = w; if (!shotAt(candId)) candId = null; show(); },
+        onClick: () => { weapon = w; candId = null; show(); },
       };
     });
     items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
-    const caption = `${weapon === 'primary' ? 'Lasers' : UPGRADES[weapon].name}: ${c ? targetText(c, s) : 'click a red-ringed enemy'}`;
-    scene.showRadial(s.pose, items, { key: `${weapon}|${candId}`, caption });
-    const btns: BarButton[] = [];
+    scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
+    }
+    const btns: BarButton[] = weapon ? [{ label: 'Back', onClick: back }] : [];
     if (c) btns.push({ label: isPrimary(c) ? 'Fire' : `Fire ${weaponName(c)}`, cls: 'primary', onClick: () => fire(c) });
-    btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
-    setBar({ status: c ? targetText(c, s) : `<b>${s.name.split(' ')[0]}</b>: pick a weapon, then a red-ringed enemy`, buttons: btns });
+    if (!weapon) btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+    setBar({ status: c ? targetText(c, s) : weapon ? `<b>${s.name.split(' ')[0]}</b>: tap a red-ringed enemy` : `<b>${s.name.split(' ')[0]}</b>: pick a weapon from the ring`, buttons: btns });
   };
   const pick = (p: P): string | null => {
     const ids = current().map((t) => t.targetId);
@@ -1336,16 +1355,16 @@ function renderAttack(shipId: string, targets: Target[]) {
     hover(e) { const id = pick(e); if (id && id !== candId) { candId = id; show(); } },
     click(e) { const t = shotAt(pick(e)); if (t) fire(t); },
     key(e) {
-      if (e.key === 'Escape') fire(null);
+      if (e.key === 'Escape' && weapon) back();
       if (e.key === 'Enter' && shotAt(candId)) fire(shotAt(candId));
       // Number keys pick a weapon from the ring.
       const n = Number(e.key);
-      if (n >= 1 && n <= weaponIds.length && targetsFor(weaponIds[n - 1]).length) { weapon = weaponIds[n - 1]; show(); }
+      if (!weapon && n >= 1 && n <= weaponIds.length && targetsFor(weaponIds[n - 1]).length) { weapon = weaponIds[n - 1]; show(); }
     },
   };
 
-  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}),
-    then click a <b style="color:#ff5a5a">red-ringed</b> enemy. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
+  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}):
+    the enemies it can hit get a <b style="color:#ff5a5a">red ring</b>; click one to fire, or press Esc to pick another weapon. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
     obstruction adds a defense die. Tokens are spent automatically. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
