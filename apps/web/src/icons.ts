@@ -19,6 +19,10 @@ export const ICONS = {
   boost: svg('<path d="M6 13l6-6 6 6M6 19l6-6 6 6"/>'),
   repair: svg('<path d="M14.5 5.5a4 4 0 0 0-5 5L4 16l4 4 5.5-5.5a4 4 0 0 0 5-5l-2.5 2.5-3-1-1-3 2.5-2.5z"/>'),
   skip: svg('<path d="M5 6l8 6-8 6V6zM17 6v12"/>'),
+  /** Bomb: a round casing with a fuse. */
+  bomb: svg('<circle cx="11" cy="14" r="6.5"/><path d="M15 9.5 18 6.5"/><path d="M18 3v2M21 6.5h-2M20.5 4l-1.4 1.4"/>'),
+  /** Mine: a spiked disc. */
+  mine: svg('<circle cx="12" cy="12" r="5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l2.8 2.8M16.2 16.2 19 19M19 5l-2.8 2.8M7.8 16.2 5 19"/>'),
   /** Back to the menu. */
   back: svg('<path d="M10 6 4 12l6 6"/><path d="M4 12h11a5 5 0 0 1 0 10h-2"/>'),
 } as const;

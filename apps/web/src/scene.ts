@@ -183,6 +183,9 @@ export class BattleScene {
   /** Hover bob, engine flicker and the slowly turning sky. */
   private animateIdle(t: number, dt: number) {
     this.sky.rotation.y += dt * 0.004;
+    // Device tokens blink.
+    const blink = 0.35 + 0.65 * Math.max(0, Math.sin(t * 5));
+    this.deviceGroup.traverse((o) => { if (o.userData.blink) ((o as THREE.Sprite).material as THREE.SpriteMaterial).opacity = blink; });
     if (!this.reducedMotion) arcTime.value = t;
     for (const v of this.ships.values()) {
       if (!this.reducedMotion) {
@@ -379,6 +382,138 @@ export class BattleScene {
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([toV3(0, edgeY, 0.6), toV3(BOARD_SIZE, edgeY, 0.6)]),
       new THREE.LineBasicMaterial({ color: 0x7cf0c5, transparent: true, opacity: 0.8 }));
     this.deployZone.add(strip, line);
+  }
+
+  // ---------------- devices (bombs and mines) ----------------
+  private deviceGroup = new THREE.Group();
+  private deviceViews = new Map<string, THREE.Group>();
+  private devicePreview = new THREE.Group();
+
+  /** A bomb (dark sphere, red light) or mine (spiked disc, amber light) token. */
+  private deviceToken(kind: 'bomb' | 'mine'): THREE.Group {
+    const g = new THREE.Group();
+    const shell = new THREE.MeshStandardMaterial({ color: 0x2a2f38, metalness: 0.7, roughness: 0.35 });
+    if (kind === 'bomb') {
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(9, 20, 14), shell);
+      ball.position.y = 9;
+      g.add(ball);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(9.2, 1.1, 8, 24), new THREE.MeshStandardMaterial({ color: 0xff9f43, metalness: 0.4, roughness: 0.4 }));
+      band.rotation.x = Math.PI / 2;
+      band.position.y = 9;
+      g.add(band);
+    } else {
+      const disc = new THREE.Mesh(new THREE.CylinderGeometry(11, 12, 5, 16), shell);
+      disc.position.y = 3;
+      g.add(disc);
+      for (let i = 0; i < 6; i++) {
+        const spike = new THREE.Mesh(new THREE.ConeGeometry(1.6, 7, 6), shell);
+        const a = (i / 6) * Math.PI * 2;
+        spike.position.set(Math.cos(a) * 11, 3, Math.sin(a) * 11);
+        spike.rotation.z = -Math.PI / 2;
+        spike.rotation.y = -a;
+        g.add(spike);
+      }
+    }
+    const light = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTexture(), color: hot(kind === 'bomb' ? 0xff3b30 : 0xffb020, 3), blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    light.position.y = kind === 'bomb' ? 19 : 8;
+    light.scale.setScalar(12);
+    light.userData.blink = true;
+    g.add(light);
+    g.traverse((o) => { o.castShadow = true; o.raycast = () => {}; });
+    return g;
+  }
+
+  /** Make the table show exactly these device tokens. */
+  setDevices(devices: { id: string; kind: 'bomb' | 'mine'; pose: Pose }[]) {
+    if (!this.deviceGroup.parent) this.scene.add(this.deviceGroup);
+    for (const [id, g] of this.deviceViews) if (!devices.some((d) => d.id === id)) { this.deviceGroup.remove(g); this.deviceViews.delete(id); }
+    for (const d of devices) {
+      if (this.deviceViews.has(d.id)) continue;
+      const g = this.deviceToken(d.kind);
+      placeObject(g, d.pose);
+      this.deviceGroup.add(g);
+      this.deviceViews.set(d.id, g);
+    }
+  }
+
+  /** Range-1 blast outline around a device token: its square grown by 100 mm, corners rounded. */
+  private blastOutline(pose: Pose, color: number) {
+    const half = 15, r = 100, pts: THREE.Vector3[] = [];
+    const corners = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+    corners.forEach(([sx, sy], i) => {
+      const a0 = (i * Math.PI) / 2;
+      for (let k = 0; k <= 8; k++) {
+        const a = a0 + (k / 8) * (Math.PI / 2);
+        const lx = sx * half + Math.cos(a) * r, ly = sy * half + Math.sin(a) * r;
+        const c = Math.cos(pose.h), sn = Math.sin(pose.h);
+        pts.push(toV3(pose.x + lx * c - ly * sn, pose.y + lx * sn + ly * c, 1.2));
+      }
+    });
+    return new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+  }
+
+  /** Preview a drop: a ghost token where it would land and, for bombs, its range-1 blast. */
+  previewDevice(drop: { pose: Pose; kind: 'bomb' | 'mine' } | null) {
+    clearGroup(this.devicePreview);
+    if (!this.devicePreview.parent) this.scene.add(this.devicePreview);
+    if (!drop) return;
+    const ghost = this.deviceToken(drop.kind);
+    ghost.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+      if (m) { m.transparent = true; m.opacity = 0.55; }
+    });
+    placeObject(ghost, drop.pose);
+    this.devicePreview.add(ghost);
+    if (drop.kind === 'bomb') this.devicePreview.add(this.blastOutline(drop.pose, 0xff6a3d));
+  }
+
+  /** Slide a newly dropped token out from behind the ship to where it lands. */
+  async dropDevice(shipId: string, d: { id: string; kind: 'bomb' | 'mine'; pose: Pose }) {
+    if (!this.deviceGroup.parent) this.scene.add(this.deviceGroup);
+    const v = this.ships.get(shipId);
+    const g = this.deviceToken(d.kind);
+    const to = toV3(d.pose.x, d.pose.y, 0);
+    const from = v ? v.root.position.clone().setY(FLY_HEIGHT) : to.clone();
+    g.rotation.y = d.pose.h;
+    this.deviceGroup.add(g);
+    this.deviceViews.set(d.id, g);
+    await this.tween(500, (t) => {
+      const e = 1 - (1 - t) * (1 - t);
+      g.position.lerpVectors(from, to, e);
+      g.position.y = from.y * (1 - e) + Math.sin(t * Math.PI) * 6;
+    });
+    g.position.copy(to);
+  }
+
+  /** A device going off: flash, a blast ring out to range 1 (blue for ion), and the token is gone. */
+  async detonate(d: { id: string; pose: Pose }, ion = false) {
+    const g = this.deviceViews.get(d.id);
+    if (g) { this.deviceGroup.remove(g); this.deviceViews.delete(d.id); }
+    const at = toV3(d.pose.x, d.pose.y, 10);
+    const color = ion ? 0x7fd8ff : 0xff9944;
+    const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(ion ? 0xd8f4ff : 0xfff0d0, 3), blending: THREE.AdditiveBlending, depthWrite: false }));
+    flash.position.copy(at);
+    this.scene.add(flash);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 64), this.additive(hot(color, 2.2)));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(at).setY(2);
+    this.scene.add(ring);
+    const debris = this.burst(at, hot(color, 2.5), 50, 110, 6);
+    this.flash(at, color, 3000, 700);
+    await this.tween(800, (t) => {
+      const e = 1 - Math.pow(1 - t, 3);
+      flash.scale.setScalar(20 + 80 * Math.min(1, t * 3));
+      flash.material.opacity = Math.max(0, 1 - t * 2.5);
+      ring.scale.setScalar(10 + 105 * e); // out to about range 1 from the token
+      (ring.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t * 1.3);
+      debris.update(t);
+    });
+    this.scene.remove(flash, ring);
+    flash.material.dispose();
+    ring.geometry.dispose();
+    debris.dispose();
   }
 
   /**

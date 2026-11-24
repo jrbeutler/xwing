@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, type ActionChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, type ActionChoice, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
@@ -98,6 +98,7 @@ function startDeployment(setup: BattleSetup) {
   scene.setObstacles(state.obstacles);
   scene.syncShips(state.ships);
   scene.setDeployZone('near');
+  scene.setDevices([]);
   roundEl.textContent = 'Setup';
   phaseEl.textContent = 'deployment';
   carrying = null;
@@ -228,7 +229,7 @@ function logLine(e: GameEvent) {
   if (!text) return;
   const div = document.createElement('div');
   div.innerHTML = text;
-  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart' || (e.type === 'damageCard' && e.what === 'dealt')) div.className = 'hl';
+  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart' || e.type === 'deviceDetonated' || (e.type === 'damageCard' && e.what === 'dealt')) div.className = 'hl';
   logEl.appendChild(div);
   logEl.scrollTop = logEl.scrollHeight;
   ticker.innerHTML = text;
@@ -246,6 +247,7 @@ async function present() {
   }
   scene.skipping = false;
   scene.syncShips(state.ships);
+  scene.setDevices(state.devices);
   disp = structuredClone(state.ships);
   roundEl.textContent = `Round ${state.round}`;
   phaseEl.textContent = state.phase;
@@ -313,6 +315,28 @@ async function animate(e: GameEvent) {
     case 'damageCard':
       await showDamageCard(e);
       return;
+    case 'deviceDropped':
+      scene.highlight(e.shipId);
+      await scene.dropDevice(e.shipId, e.device);
+      { const u = dispShip(e.shipId)?.upgrades.find((x) => x.id === e.device.upgrade); if (u) u.charges--; }
+      return;
+    case 'deviceDetonated': {
+      const ion = UPGRADES[e.device.upgrade].device?.effect === 'ion';
+      showBanner(`<span class="who">${UPGRADES[e.device.upgrade].name}</span><b>${e.device.kind === 'mine' ? 'MINE!' : 'DETONATION'}</b>` +
+        `<span class="detail">${e.ships.length ? e.ships.map((h) => shipById(h.shipId).name).join(', ') : 'nobody caught'}</span>`,
+        e.ships.some((h) => shipById(h.shipId).owner === HUMAN) ? 'crit incoming' : 'crit');
+      await scene.detonate(e.device, ion);
+      for (const h of e.ships) {
+        const d = dispShip(h.shipId);
+        if (d) { d.shields -= h.shieldDamage; d.hull -= h.hullDamage; d.ion += h.ion ?? 0; relabel(h.shipId); }
+        if (h.shieldDamage) void scene.shieldFlash(h.shipId);
+        if (h.hullDamage) { void scene.sparks(h.shipId, 0xffa040, 30, true); void scene.shake(h.shipId); }
+        const dmg = h.shieldDamage + h.hullDamage;
+        void scene.floatText(h.shipId, h.ion ? `ION +${h.ion}` : dmg ? `−${dmg}` : 'NO DAMAGE', h.ion ? 'ion-float' : 'p2c');
+      }
+      await scene.wait(900);
+      return;
+    }
     case 'upgrade': {
       const d = dispShip(e.shipId);
       const u = d?.upgrades.find((x) => x.id === e.upgrade);
@@ -534,6 +558,12 @@ function describe(e: GameEvent): string | null {
       if (e.what === 'used') return e.upgrade === 'hotshot' ? `${nameHtml(e.shipId)}: ${n} (gains focus)` : `${nameHtml(e.shipId)} uses ${n}`;
       return `${nameHtml(e.shipId)}'s ${n} is spent`;
     }
+    case 'deviceDropped': { const n = UPGRADES[e.device.upgrade].name; return `${nameHtml(e.shipId)} drops ${/^[AEIOU]/.test(n) ? 'an' : 'a'} ${n}`; }
+    case 'deviceDetonated': {
+      const name = UPGRADES[e.device.upgrade].name;
+      if (!e.ships.length) return `${name} detonates: nobody in range`;
+      return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (rolled ${h.roll.join(', ')})` : ''}`).join('; ');
+    }
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -594,6 +624,7 @@ function renderDecision() {
   scene.setMarkers([]);
   if (d.kind === 'action') return renderAction(d.shipId, d.options);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
+  if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
 
 // ---------------------------------------------------------------------------
@@ -947,6 +978,7 @@ function applyCamera(ms = 500) {
       minHalf = 130;
     }
     if (d.kind === 'attack') pts = [shipById(d.shipId).pose, ...d.targets.map((t) => shipById(t.targetId).pose)];
+    if (d.kind === 'system') { pts = [shipById(d.shipId).pose, ...d.options.flatMap((o) => (o.type === 'drop' ? [o.pose] : []))]; minHalf = 160; }
   }
   viewBtn.hidden = !pts;
   viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
@@ -1260,7 +1292,7 @@ const targetText = (t: Target, attacker?: ShipState) =>
 function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
   const def = UPGRADES[u.id];
   if (def.weapon?.arc === 'turret') return `${def.name}${ship ? ` (facing ${ship.turretArc})` : ''}`;
-  if (def.weapon) return `${def.name} ${u.charges}/${def.charges}`;
+  if (def.weapon || def.device) return `${def.name} ${u.charges}/${def.charges}`;
   return `${def.name}${def.charges && !u.charges ? ' (spent)' : ''}`;
 }
 
@@ -1297,6 +1329,54 @@ function showOddsFrom(s: ShipState, pose: Pose = s.pose, preview = false) {
   const me = { ...s, pose };
   scene.setOdds(Object.fromEntries([...bestPerTarget(me, legalTargets(state, me)).values()].map((t) =>
     [t.targetId, `${preview ? '<span class="pv">if here</span> ' : ''}${oddsHtml(me, t)}`])));
+}
+
+/**
+ * System phase: drop a bomb or mine behind the ship, or skip. Hovering a choice previews where the token
+ * lands and (for bombs) its range-1 blast.
+ */
+function renderSystem(shipId: string, options: DropChoice[]) {
+  const s = shipById(shipId);
+  const drops = options.filter((o): o is Extract<DropChoice, { type: 'drop' }> => o.type === 'drop');
+  const choose = (c: DropChoice) => { scene.previewDevice(null); send({ type: 'drop', playerId: HUMAN, choice: c }); };
+  const preview = (o: Extract<DropChoice, { type: 'drop' }> | null) =>
+    scene.previewDevice(o ? { pose: o.pose, kind: UPGRADES[o.upgrade].device!.kind } : null);
+  const short = (id: string) => ({ 'proton-bomb': 'Proton', 'ion-bomb': 'Ion bomb', 'proximity-mine': 'Mine' } as Record<string, string>)[id] ?? UPGRADES[id].name.split(' ')[0];
+  scene.setRings({ [s.id]: GREEN });
+  scene.showArcs([]);
+  const items: RadialItem[] = drops.map((o) => ({
+    icon: UPGRADES[o.upgrade].device!.kind === 'mine' ? ICONS.mine : ICONS.bomb,
+    label: short(o.upgrade),
+    badge: s.upgrades.find((u) => u.id === o.upgrade)?.charges,
+    title: `Drop ${UPGRADES[o.upgrade].name}: ${UPGRADES[o.upgrade].text}`,
+    onClick: () => choose(o),
+    onHover: (on) => preview(on ? o : null),
+  }));
+  items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+  scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
+  mode = { click() {}, key(e) { if (e.key === 'Escape') choose({ type: 'none' }); } };
+  setBar({
+    status: `<b>${s.name.split(' ')[0]}</b>: drop a bomb or mine?`,
+    buttons: [...drops.map((o) => ({ label: `Drop ${short(o.upgrade)}`, onClick: () => choose(o) })), { label: 'Skip', onClick: () => choose({ type: 'none' }) }],
+  });
+  detail.innerHTML = `<h2>System: ${s.name}</h2><p class="hint">Before anyone moves, you may drop one device one straight template behind
+    your ship. Bombs go off at the end of the Activation phase and hit every ship at range 0-1, yours too; mines stay until a ship
+    flies through or onto one. Hover a button in the ring to preview.</p>`;
+  for (const o of drops) {
+    const b = document.createElement('button');
+    b.className = 'opt';
+    const u = s.upgrades.find((x) => x.id === o.upgrade);
+    b.innerHTML = `<b>Drop ${UPGRADES[o.upgrade].name}</b> (${u?.charges} left)<br><span class="hint">${UPGRADES[o.upgrade].text}</span>`;
+    b.onmouseenter = () => preview(o);
+    b.onmouseleave = () => preview(null);
+    b.onclick = () => choose(o);
+    detail.appendChild(b);
+  }
+  const skip = document.createElement('button');
+  skip.className = 'opt';
+  skip.textContent = 'Drop nothing';
+  skip.onclick = () => choose({ type: 'none' });
+  detail.appendChild(skip);
 }
 
 /** Radial-menu icon and short label for a weapon ('primary' or an ordnance upgrade id). */
