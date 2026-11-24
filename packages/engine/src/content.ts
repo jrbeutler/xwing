@@ -35,6 +35,16 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     // Y-wing style: turret, ordnance and two device (bomb) slots.
     slots: ['talent', 'turret', 'torpedo', 'missile', 'device', 'device', 'modification'],
   },
+  // Light freighter. Stats and dial follow the X-Wing 2nd edition HWK-290, but on a medium base like the
+  // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), and it carries
+  // missiles, torpedoes, a turret and devices. Jam and the linked focus/lock→rotate actions are left out.
+  wayfarer: {
+    id: 'wayfarer', name: 'Wayfarer Light Freighter', size: 'medium',
+    primaries: [{ arc: 'turret', attack: 2 }], agility: 2, hull: 3, shields: 2,
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'boost', red: true }],
+    dial: parseDial('0X:r 1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:b 3BR:w 3TR:r 4S:w'),
+    slots: ['talent', 'missile', 'torpedo', 'turret', 'device', 'device', 'modification', 'modification'],
+  },
   // Fast interceptor. Stats, actions and dial follow the X-Wing 2nd edition RZ-1 A-wing: fragile but very
   // agile (agility 3), white focus/evade/lock/barrel roll/boost, a blue-heavy dial with 5-straight and red loops.
   javelin: {
@@ -58,6 +68,9 @@ export const PILOTS: Record<string, PilotDef> = {
   'hauler-three': { id: 'hauler-three', name: 'Hauler Three', shipType: 'bulwark', initiative: 2, cost: 30, unique: false },
   'bram-holloway': { id: 'bram-holloway', name: 'Bram Holloway', shipType: 'anvil', initiative: 4, cost: 23, unique: true },
   'rook-twelve': { id: 'rook-twelve', name: 'Rook Twelve', shipType: 'anvil', initiative: 2, cost: 18, unique: false },
+  'tessa-varn': { id: 'tessa-varn', name: 'Tessa Varn', shipType: 'wayfarer', initiative: 5, cost: 24, unique: true },
+  'corin-hale': { id: 'corin-hale', name: 'Corin Hale', shipType: 'wayfarer', initiative: 3, cost: 21, unique: true },
+  'scout-two': { id: 'scout-two', name: 'Scout Two', shipType: 'wayfarer', initiative: 2, cost: 19, unique: false },
   'kira-solace': { id: 'kira-solace', name: 'Kira Solace', shipType: 'javelin', initiative: 5, cost: 24, unique: true },
   'wren-tal': { id: 'wren-tal', name: 'Wren Tal', shipType: 'javelin', initiative: 3, cost: 20, unique: true },
   'lance-four': { id: 'lance-four', name: 'Lance Four', shipType: 'javelin', initiative: 1, cost: 16, unique: false },

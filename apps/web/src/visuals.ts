@@ -121,7 +121,7 @@ export function buildShip(typeId: string, color: number, skin: Skin): ShipModel 
     // Imported model (see shipAsset.ts), skinned per team.
     body.add(tpl.build(skin, color));
     for (const e of tpl.engines) engine(e.x, e.y, e.z, e.r);
-  } else if (typeId === 'kestrel' || typeId === 'anvil' || typeId === 'javelin') {
+  } else if (typeId === 'kestrel' || typeId === 'anvil' || typeId === 'javelin' || typeId === 'wayfarer') {
     // Sleek strike fighter: needle fuselage, swept wings with tip cannons, twin engines.
     add(lathe([[0.01, -16], [3.2, -15], [4.2, -10], [4, 2], [2.8, 10], [1.2, 16], [0.01, 19]]), hull);
     const canopy = add(new THREE.SphereGeometry(2.6, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), glass, 4, 2.4, 0);

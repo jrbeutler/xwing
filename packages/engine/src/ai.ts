@@ -54,7 +54,9 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
 /** Rotate the turret toward the closest enemy it could then shoot, if the current arc has none. */
 function turretTurn(s: GameState, sh: ShipState, options: ActionChoice[]): ActionChoice | undefined {
   const rotations = options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc');
-  const turret = sh.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
+  // Reach of the turret: range 3 for a turret primary, else the turret upgrade's.
+  const turretPrimary = shipType(sh).primaries.some((w) => w.arc === 'turret');
+  const turret = turretPrimary ? { maxRange: 3 } : sh.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
   if (!rotations.length || !turret) return undefined;
   const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
   const reach = (arc: ArcName) => Math.min(...enemies.map((e) => {

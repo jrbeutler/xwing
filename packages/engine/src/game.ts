@@ -87,7 +87,8 @@ export const activeShips = (s: GameState) => s.ships.filter((x) => !x.destroyed)
 export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => effectiveManeuver(sh, shipType(sh).dial[dialIndex]);
 
 /** Whether a ship carries a turret weapon (and so has the Rotate action and a turret arc). */
-export const hasTurret = (sh: ShipState) => sh.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret');
+export const hasTurret = (sh: ShipState) =>
+  shipType(sh).primaries.some((w) => w.arc === 'turret') || sh.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret');
 
 /** Ion tokens it takes to ionize a ship: 1 small, 2 medium, 3 large. */
 export const ionThreshold = (sh: ShipState) => ({ small: 1, medium: 2, large: 3 })[shipType(sh).size];

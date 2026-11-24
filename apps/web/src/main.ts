@@ -1380,7 +1380,7 @@ function renderSystem(shipId: string, options: DropChoice[]) {
 }
 
 /** Radial-menu icon and short label for a weapon ('primary' or an ordnance upgrade id). */
-const weaponIcon = (w: string) => (w === 'primary' ? ICONS.lasers : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : ICONS.missile);
+const weaponIcon = (w: string, turretPrimary = false) => (w === 'primary' ? (turretPrimary ? ICONS.turret : ICONS.lasers) : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : ICONS.missile);
 const WEAPON_SHORT: Record<string, string> = {
   primary: 'Lasers', 'proton-torpedoes': 'Proton', 'ion-torpedoes': 'Ion torp', 'concussion-missiles': 'Missiles', 'rocket-pods': 'Rockets',
   'dorsal-turret': 'Turret', 'ion-turret': 'Ion cann.',
@@ -1394,6 +1394,7 @@ const weaponShort = (w: string) => WEAPON_SHORT[w] ?? UPGRADES[w].name.split(' '
 function renderAttack(shipId: string, targets: Target[]) {
   const s = shipById(shipId);
   const weaponIds = ['primary', ...s.upgrades.filter((u) => UPGRADES[u.id].weapon).map((u) => u.id)];
+  const turretPrimary = SHIP_TYPES[s.typeId].primaries.some((p) => p.arc === 'turret');
   const targetsFor = (w: string) => targets.filter((t) => (t.weapon ?? 'primary') === w);
   /** The weapon picked from the ring, or null while the ring is showing (then nothing is targeted yet). */
   let weapon: string | null = null;
@@ -1405,7 +1406,7 @@ function renderAttack(shipId: string, targets: Target[]) {
   const shotAt = (id: string | null) => current().find((t) => t.targetId === id) ?? null;
   /** Why a weapon cannot fire right now (shown on its greyed-out button). */
   const why = (w: string) => {
-    if (w === 'primary') return 'No enemy in your firing arc';
+    if (w === 'primary') return turretPrimary ? `No enemy in your turret arc (facing ${s.turretArc}); Rotate it in the action step` : 'No enemy in your firing arc';
     const u = s.upgrades.find((x) => x.id === w)!, def = UPGRADES[w].weapon!;
     if (UPGRADES[w].charges !== undefined && u.charges <= 0) return `${UPGRADES[w].name}: out of charges`;
     if (def.arc === 'turret') return `${UPGRADES[w].name}: no enemy at range ${def.minRange}-${def.maxRange} in the turret arc (facing ${s.turretArc}); Rotate it in the action step`;
@@ -1416,7 +1417,7 @@ function renderAttack(shipId: string, targets: Target[]) {
   const show = () => {
     const ts = current();
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(ts.map((t) => [t.targetId, RED])) });
-    const turretWeapon = !!weapon && UPGRADES[weapon]?.weapon?.arc === 'turret';
+    const turretWeapon = !!weapon && (weapon === 'primary' ? turretPrimary : UPGRADES[weapon]?.weapon?.arc === 'turret');
     scene.showArcs([s.id], weapon === null ? 'all' : turretWeapon ? 'turret' : 'primary');
     scene.setOdds(Object.fromEntries(ts.map((t) => [t.targetId, oddsHtml(s, t)])));
     const c = shotAt(candId);
@@ -1432,7 +1433,7 @@ function renderAttack(shipId: string, targets: Target[]) {
       const u = s.upgrades.find((x) => x.id === w);
       const ok = targetsFor(w).length > 0;
       return {
-        icon: weaponIcon(w), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, active: w === weapon, disabled: !ok,
+        icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, active: w === weapon, disabled: !ok,
         title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
         onClick: () => { weapon = w; candId = null; show(); },
       };

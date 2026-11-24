@@ -77,9 +77,12 @@ export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[
     if (t.owner === attacker.owner || t.destroyed) continue;
     let best: TargetInfo | null = null;
     for (const w of shipType(attacker).primaries) {
-      const m = measureArc(state, attacker, t, w.arc);
+      const turret = w.arc === 'turret';
+      const arc: ArcName = turret ? attacker.turretArc : w.arc as ArcName;
+      const m = measureArc(state, attacker, t, arc);
       if (!m) continue;
-      const cand: TargetInfo = { targetId: t.id, arc: w.arc, attack: w.attack, ...m };
+      // A turret primary is not a front-arc attack, so it has no bullseye.
+      const cand: TargetInfo = { targetId: t.id, arc, attack: w.attack, ...m, ...(turret ? { bullseye: false, turret: true } : {}) };
       if (!best || cand.attack > best.attack || (cand.attack === best.attack && cand.range < best.range)) best = cand;
     }
     if (best) out.push(best);
@@ -91,7 +94,8 @@ export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[
       const arc: ArcName = w.arc === 'turret' ? attacker.turretArc : 'front';
       const m = measureArc(state, attacker, t, arc);
       if (!m || m.range < w.minRange || m.range > w.maxRange) continue;
-      out.push({ targetId: t.id, arc, attack: w.attack, ...m, bullseye: arc === 'front' && m.bullseye, weapon: u.id });
+      const turret = w.arc === 'turret';
+      out.push({ targetId: t.id, arc, attack: w.attack, ...m, bullseye: !turret && arc === 'front' && m.bullseye, weapon: u.id, ...(turret ? { turret } : {}) });
     }
   }
   return out;
@@ -122,9 +126,9 @@ export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' 
  * Defense dice: agility, +1 at range 3 (primary only), +1 obstructed, +1 Stealth Coating, -1 for an Outmaneuver attacker,
  * minus damage-card penalties. Shared with attackOdds.
  */
-export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed' | 'weapon'> & { arc?: ArcName }, attacker?: ShipState) =>
+export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed' | 'weapon'> & { arc?: ArcName; turret?: boolean }, attacker?: ShipState) =>
   Math.max(0, shipType(defender).agility + (isPrimary(t) && t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
-    - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc, t.weapon) ? 1 : 0));
+    - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc, t.weapon, t.turret) ? 1 : 0));
 
 /** Stealth Coating: an extra defense die while its charge lasts (lost on first damage). */
 const stealthActive = (sh: ShipState) => sh.upgrades.some((u) => u.id === 'stealth-coating' && u.charges > 0);
@@ -135,11 +139,11 @@ export const upgradeOf = (sh: ShipState, id: string, needCharge = false) =>
 
 /** Whether `target` sits in any of `from`'s firing arcs (at any range). */
 export const inFiringArc = (from: ShipState, target: ShipState) =>
-  shipType(from).primaries.some((w) => clipToArc(from.pose, w.arc, shipPolygon(target)).length >= 3);
+  shipType(from).primaries.some((w) => clipToArc(from.pose, w.arc === 'turret' ? from.turretArc : w.arc, shipPolygon(target)).length >= 3);
 
 /** Outmaneuver: a front-arc attack from outside the defender's firing arcs costs it a defense die (turret shots are not front-arc attacks). */
-const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = 'front', weapon?: string) =>
-  arc === 'front' && !(weapon && UPGRADES[weapon]?.weapon?.arc === 'turret') && !!upgradeOf(attacker, 'outmaneuver') && !inFiringArc(defender, attacker);
+const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = 'front', weapon?: string, turret = false) =>
+  arc === 'front' && !turret && !(weapon && UPGRADES[weapon]?.weapon?.arc === 'turret') && !!upgradeOf(attacker, 'outmaneuver') && !inFiringArc(defender, attacker);
 
 /**
  * Resolve one primary attack. Dice modification is automated with a fixed policy that attackOdds mirrors:

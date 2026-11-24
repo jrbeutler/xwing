@@ -55,7 +55,8 @@ export interface WeaponDef {
 
 /** An upgrade fitted to a ship in play, with its remaining charges. */
 export interface UpgradeState { id: string; charges: number }
-export interface PrimaryWeapon { arc: ArcName; attack: number }
+/** A primary weapon fires through a fixed arc, or ('turret') through the ship's rotatable turret arc. */
+export interface PrimaryWeapon { arc: ArcName | 'turret'; attack: number }
 
 export interface ShipType {
   id: string;
@@ -138,6 +139,8 @@ export interface TargetInfo {
   bullseye: boolean;
   /** Upgrade id of the secondary weapon used; absent (or 'primary') for the primary weapon. */
   weapon?: string;
+  /** Fired through the turret arc (a turret upgrade or a turret primary): not a front-arc attack. */
+  turret?: boolean;
 }
 
 export type Decision =

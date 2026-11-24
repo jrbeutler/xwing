@@ -90,3 +90,51 @@ describe('the Rotate action', () => {
     expect(aiDecide(g, 'a')).toMatchObject({ type: 'action', choice: { type: 'rotateArc', to: 'right' } });
   });
 });
+
+describe('turret primary (Wayfarer, after the HWK-290)', () => {
+  const ways = (dx: number, dy: number, upgrades: string[] = []) => createGame({
+    seed: 9,
+    players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],
+    squads: {
+      a: [{ pilotId: 'tessa-varn', pose: { x: 450, y: 450, h: 0 }, upgrades }],
+      b: [{ pilotId: 'syl-ketch', pose: { x: 450 + dx, y: 450 + dy, h: Math.PI } }],
+    },
+  });
+  const primary = (g: GameState) => legalTargets(g, g.ships[0]).filter((t) => !t.weapon);
+
+  it('fires its primary through the turret arc, which Rotate turns (no upgrade needed)', () => {
+    const g = ways(0, 280); // enemy on the left at range 3 (medium base: 30 + 20 + 230 mm)
+    expect(primary(g)).toHaveLength(0);
+    expect(actionOptions(g, g.ships[0]).some((o) => o.type === 'rotateArc')).toBe(true);
+    g.ships[0].turretArc = 'left';
+    expect(primary(g)).toMatchObject([{ arc: 'left', turret: true, bullseye: false, range: 3 }]);
+  });
+
+  it('keeps primary range bonuses but is not a front-arc attack', () => {
+    const g = ways(60, 0); // dead ahead at range 1
+    const [t] = primary(g);
+    expect(t).toMatchObject({ arc: 'front', turret: true, bullseye: false, range: 1 });
+    const r = resolveAttack(g, g.ships[0], { ...g.ships[1], shields: 99, hull: 99 }, t);
+    expect(r.attackRoll).toHaveLength(3); // attack 2 + range-1 bonus
+    const out = createGame({
+      seed: 1,
+      players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],
+      squads: { a: [{ pilotId: 'tessa-varn', pose: { x: 300, y: 450, h: 0 }, upgrades: ['outmaneuver'] }], b: [{ pilotId: 'syl-ketch', pose: { x: 450, y: 450, h: 0 } }] },
+    });
+    const [ot] = legalTargets(out, out.ships[0]);
+    expect(defenseDiceFor(out.ships[1], ot, out.ships[0])).toBe(3); // Outmaneuver does not apply to turret shots
+  });
+
+  it('the AI turns a turret primary toward an enemy up to range 3', () => {
+    const g = ways(0, -250); // enemy on the right at range 3
+    const a = g.ships[0];
+    Object.assign(g, { phase: 'activation', queue: [a.id], queueIndex: 0 });
+    g.pending = { kind: 'action', playerId: 'a', shipId: a.id, options: actionOptions(g, a) };
+    expect(aiDecide(g, 'a')).toMatchObject({ type: 'action', choice: { type: 'rotateArc', to: 'right' } });
+  });
+
+  it('carries missiles, torpedoes and a turret together', async () => {
+    const { fitsSlots } = await import('../src/squad');
+    expect(fitsSlots('tessa-varn', ['concussion-missiles', 'proton-torpedoes', 'dorsal-turret', 'proton-bomb', 'shield-booster'])).toBe(true);
+  });
+});

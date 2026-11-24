@@ -15,6 +15,12 @@ import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacl
 const HALF = BOARD_SIZE / 2;
 const FLY_HEIGHT = 18;
 const TURRET_COLOR = 0xffd166;
+/** The part of a ship model tagged as its turret gun (imported models only). */
+const findGun = (model: THREE.Object3D) => {
+  let gun: THREE.Object3D | undefined;
+  model.traverse((o) => { if (!gun && o.userData.turretGun) gun = o; });
+  return gun;
+};
 /** Turret facing → rotation about the ship's up axis (left is +90°: three's -z is the board's +y). */
 const TURRET_ANGLE: Record<string, number> = { front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 };
 export const COLORS: Record<string, number> = { p1: 0x57c7ff, p2: 0xff9f43 };
@@ -59,7 +65,7 @@ export interface ShipView {
   /** Firing-arc fans (hidden unless shown with showArcs). */
   arcs: THREE.Group;
   /** Ships with a turret: its arc fan (shown with the arcs) and a pointer on the base, turned to face `turretArc`. */
-  turret?: { holder: THREE.Group; fan: THREE.Group; facing: string };
+  turret?: { holder: THREE.Group; fan: THREE.Group; facing: string; gun?: THREE.Object3D };
 }
 
 export class BattleScene {
@@ -280,19 +286,20 @@ export class BattleScene {
     root.add(label);
     const box = new THREE.Box3().setFromObject(root);
     const reach = Math.max(Math.hypot(Math.max(-box.min.x, box.max.x), Math.max(-box.min.z, box.max.z)), size * Math.SQRT1_2);
-    const arcs = buildArcs(size, t.primaries.map((p) => p.arc), color); // added after measuring reach
+    const arcs = buildArcs(size, t.primaries.map((p) => p.arc).filter((a) => a !== 'turret'), color); // added after measuring reach
     arcs.visible = false;
     root.add(arcs);
     // Turret: a yellow fan (range 2) and pointer that turn together to the turret's facing.
     let turret: ShipView['turret'];
-    if (s.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret')) {
+    const turretPrimary = t.primaries.some((p) => p.arc === 'turret');
+    if (turretPrimary || s.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret')) {
       const holder = new THREE.Group();
-      const fan = buildArcs(size, ['front'], TURRET_COLOR, 200);
+      const fan = buildArcs(size, ['front'], TURRET_COLOR, turretPrimary ? 300 : 200); // a turret primary reaches range 3
       fan.visible = false;
       holder.add(fan, buildTurretPointer(size));
       holder.rotation.y = TURRET_ANGLE[s.turretArc];
       root.add(holder);
-      turret = { holder, fan, facing: s.turretArc };
+      turret = { holder, fan, facing: s.turretArc, gun: findGun(model) };
     }
     this.scene.add(root);
     const v: ShipView = {
@@ -312,6 +319,10 @@ export class BattleScene {
       v.model.add(next.body);
       v.body = next.body;
       v.engines = next.engines;
+      if (v.turret) {
+        v.turret.gun = findGun(v.model);
+        if (v.turret.gun) v.turret.gun.rotation.y = v.turret.holder.rotation.y;
+      }
     }
   }
 
@@ -536,8 +547,10 @@ export class BattleScene {
     let to = TURRET_ANGLE[arc] ?? 0;
     while (to - from > Math.PI) to -= Math.PI * 2;
     while (to - from < -Math.PI) to += Math.PI * 2;
-    if (ms <= 0 || this.reducedMotion) { t.holder.rotation.y = to; return Promise.resolve(); }
-    return this.tween(ms, (k) => { t.holder.rotation.y = from + (to - from) * (1 - (1 - k) * (1 - k)); });
+    // The model's own gun (if it has one) swivels with the arc.
+    const turn = (y: number) => { t.holder.rotation.y = y; if (t.gun) t.gun.rotation.y = y; };
+    if (ms <= 0 || this.reducedMotion) { turn(to); return Promise.resolve(); }
+    return this.tween(ms, (k) => turn(from + (to - from) * (1 - (1 - k) * (1 - k))));
   }
 
   /** Extra line on ships' labels (e.g. hit odds); ships not listed have theirs cleared. */
