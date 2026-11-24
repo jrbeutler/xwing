@@ -126,3 +126,14 @@ describe('upgrades in play', () => {
     expect(g.ships.map((s) => s.name)).toEqual(['Grunt Seven', 'Grunt Seven #2', 'Grunt Seven #3']);
   });
 });
+
+describe('Javelin Interceptor (A-wing stats)', () => {
+  it('has the A-wing dial: 17 maneuvers incl. red loops at 3, 5-straight and a red 5 K-turn', () => {
+    const d = SHIP_TYPES.javelin.dial;
+    expect(d).toHaveLength(17);
+    expect(d.filter((m) => m.bearing === 'sloopLeft' || m.bearing === 'sloopRight').map((m) => `${m.speed}${m.difficulty}`)).toEqual(['3red', '3red']);
+    expect(d.find((m) => m.bearing === 'straight' && m.speed === 5)?.difficulty).toBe('blue');
+    expect(d.find((m) => m.bearing === 'kturn')).toMatchObject({ speed: 5, difficulty: 'red' });
+    expect(d.filter((m) => m.speed === 2).every((m) => m.difficulty === 'blue')).toBe(true);
+  });
+});
