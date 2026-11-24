@@ -5,6 +5,8 @@ import {
   upgradeOptions, validateSquad, type Squad, type SquadShip, type SlotType,
 } from '@xw/engine';
 
+import { onModelsReady, shipPreview } from './preview';
+
 export interface BattleSetup { budget: number; player: Squad; ai: Squad }
 
 const BUDGETS = [50, 75, 100, 150];
@@ -46,6 +48,9 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
   let ai = keep ? structuredClone(keep.ai) : buildAiSquad(aiSeed, budget, uniquesIn(player));
   let picking = false; // pilot picker open
   let saveName = '';
+  /** The ship card showing the 3D preview. */
+  let selected: { side: 'you' | 'ai'; i: number } | null = player.ships.length ? { side: 'you', i: 0 } : ai.ships.length ? { side: 'ai', i: 0 } : null;
+  const isSel = (side: 'you' | 'ai', i: number) => selected?.side === side && selected.i === i;
 
   const root = document.createElement('div');
   root.id = 'setup';
@@ -57,7 +62,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     if (force || clash) ai = buildAiSquad(aiSeed, budget, uniquesIn(player));
   };
 
-  const render = () => {
+  let render = () => {
     store(LAST_KEY, { budget, squad: player });
     const cost = squadCost(player);
     const problems = validateSquad(player, budget);
@@ -90,7 +95,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           </section>
           <section class="setup-col them">
             <div class="col-head"><h2>Opponent (AI)</h2><div class="points"><b>${squadCost(ai)}</b> / ${budget}</div></div>
-            <div class="ships">${ai.ships.map((s) => aiCard(s)).join('')}</div>
+            <div class="ships">${ai.ships.map((s, i) => aiCard(s, i)).join('')}</div>
             <div class="row"><button class="opt mini" id="su-reroll">Re-roll opponent</button></div>
           </section>
         </div>
@@ -100,6 +105,19 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
         </footer>
       </div>`;
     wire();
+    attachPreview();
+  };
+
+  /** Move the live preview canvas into the selected card and show that ship. */
+  const attachPreview = () => {
+    const list = selected?.side === 'ai' ? ai.ships : player.ships;
+    const ship = selected ? list[selected.i] : undefined;
+    const slot = root.querySelector('.preview-slot');
+    if (!ship || !slot) return;
+    const pv = shipPreview();
+    slot.appendChild(pv.canvas);
+    pv.show(PILOTS[ship.pilotId].shipType, selected!.side === 'ai' ? 'red' : 'blue');
+    pv.start();
   };
 
   const shipCard = (s: SquadShip, i: number, room: number) => {
@@ -116,7 +134,8 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           ${fit.map((u) => `<option value="${u}" ${upgradeCost(u, s.pilotId) > room ? 'class="dear"' : ''}>${esc(UPGRADES[u].name)} (${upgradeCost(u, s.pilotId)}) — ${esc(UPGRADES[u].text)}</option>`).join('')}
         </select>`;
     });
-    return `<div class="sq-ship">
+    return `<div class="sq-ship ${isSel('you', i) ? 'selected' : ''}" data-sel="you:${i}">
+        ${isSel('you', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}
         <div class="sq-top"><span class="who"><b>${esc(p.name)}</b> <span class="init">${p.initiative}</span>
           <span class="hint">${esc(t.name)}${p.unique ? '' : ' · generic'}</span></span>
           <span class="cost">${shipCost(s)}</span><button class="rm" data-rm="${i}" aria-label="Remove ${esc(p.name)}">✕</button></div>
@@ -125,9 +144,10 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
       </div>`;
   };
 
-  const aiCard = (s: SquadShip) => {
+  const aiCard = (s: SquadShip, i: number) => {
     const p = PILOTS[s.pilotId];
-    return `<div class="sq-ship compact"><div class="sq-top"><span class="who"><b>${esc(p.name)}</b> <span class="init">${p.initiative}</span>
+    return `<div class="sq-ship compact ${isSel('ai', i) ? 'selected' : ''}" data-sel="ai:${i}">
+      ${isSel('ai', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}<div class="sq-top"><span class="who"><b>${esc(p.name)}</b> <span class="init">${p.initiative}</span>
       <span class="hint">${esc(SHIP_TYPES[p.shipType].name)}</span></span><span class="cost">${shipCost(s)}</span></div>
       ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => esc(UPGRADES[u].name)).join(' · ')}</div>` : ''}</div>`;
   };
@@ -136,7 +156,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     const taken = uniquesIn(player);
     const groups = Object.values(SHIP_TYPES).map((t) => {
       const pilots = Object.values(PILOTS).filter((p) => p.shipType === t.id).sort((a, b) => b.initiative - a.initiative);
-      return `<div class="pick-group"><h3>${esc(t.name)} <span class="hint">${t.size} · atk ${t.primaries.map((w) => w.attack).join('+')} · agi ${t.agility} · hull ${t.hull} · shields ${t.shields} · slots: ${pilotSlots(pilots[0].id).filter((x) => x !== 'talent').map((x) => SLOT_LABEL[x]).join(', ')}</span></h3>
+      return `<div class="pick-group"><img class="thumb" alt="" src="${shipPreview().thumbnail(t.id)}"><h3>${esc(t.name)} <span class="hint">${t.size} · atk ${t.primaries.map((w) => w.attack).join('+')} · agi ${t.agility} · hull ${t.hull} · shields ${t.shields} · slots: ${pilotSlots(pilots[0].id).filter((x) => x !== 'talent').map((x) => SLOT_LABEL[x]).join(', ')}</span></h3>
         ${pilots.map((p) => {
           const off = p.unique && taken.has(p.id);
           return `<button class="opt pick-pilot ${p.cost > room ? 'dear' : ''}" data-add="${p.id}" ${off ? 'disabled' : ''}>
@@ -181,13 +201,25 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
       render();
       root.querySelector<HTMLDetailsElement>('.saved')!.open = true;
     }; });
+    root.querySelectorAll<HTMLElement>('[data-sel]').forEach((card) => { card.onclick = (e) => {
+      if ((e.target as HTMLElement).closest('button, select, input')) return;
+      const [side, i] = card.dataset.sel!.split(':');
+      selected = { side: side as 'you' | 'ai', i: Number(i) };
+      render();
+    }; });
     root.querySelectorAll<HTMLButtonElement>('[data-add]').forEach((b) => { b.onclick = () => {
       player.ships.push({ pilotId: b.dataset.add!, upgrades: [] });
+      selected = { side: 'you', i: player.ships.length - 1 };
       picking = false;
       refreshAi();
       render();
     }; });
-    root.querySelectorAll<HTMLButtonElement>('[data-rm]').forEach((b) => { b.onclick = () => { player.ships.splice(Number(b.dataset.rm), 1); render(); }; });
+    root.querySelectorAll<HTMLButtonElement>('[data-rm]').forEach((b) => { b.onclick = () => {
+      const i = Number(b.dataset.rm);
+      player.ships.splice(i, 1);
+      if (selected?.side === 'you') selected = player.ships.length ? { side: 'you', i: Math.min(selected.i, player.ships.length - 1) } : null;
+      render();
+    }; });
     root.querySelectorAll<HTMLButtonElement>('[data-unfit]').forEach((b) => { b.onclick = () => {
       const [i, ui] = b.dataset.unfit!.split(':').map(Number);
       player.ships[i].upgrades.splice(ui, 1);
@@ -199,5 +231,16 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     }; });
   };
 
+  // The opponent can change under the selection (re-roll, budget): keep it pointing at a real ship.
+  const baseRender = render;
+  const guarded = () => {
+    if (selected?.side === 'ai' && selected.i >= ai.ships.length) selected = ai.ships.length ? { side: 'ai', i: 0 } : null;
+    if (selected?.side === 'you' && selected.i >= player.ships.length) selected = null;
+    if (!selected && player.ships.length) selected = { side: 'you', i: 0 };
+    baseRender();
+  };
+  render = guarded;
+  // Picker thumbnails and the live view start with stand-in models; redraw once the real ones load.
+  onModelsReady(() => { shipPreview().refresh(); if (root.isConnected) render(); });
   render();
 }

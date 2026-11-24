@@ -227,7 +227,12 @@ async function loadBomber(renderer: THREE.WebGLRenderer) {
 }
 
 /** Load every imported model; each one that fails just leaves its procedural stand-in. */
+let modelsLoaded!: () => void;
+/** Resolves once every imported model has loaded or failed (other views, like previews, can then rebuild). */
+export const shipModelsReady = new Promise<void>((r) => { modelsLoaded = r; });
+
 export async function loadShipModels(renderer: THREE.WebGLRenderer): Promise<void> {
   const results = await Promise.allSettled([loadFighter(renderer), loadFreighter(), loadInterceptor(), loadBomber(renderer)]);
   for (const r of results) if (r.status === 'rejected') console.warn('ship model failed to load; using built-in model', r.reason);
+  modelsLoaded();
 }
