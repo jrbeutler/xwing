@@ -31,6 +31,19 @@ function clearGroup(g: THREE.Group) {
   g.clear();
 }
 
+/** One button in a ship's radial menu. */
+export interface RadialItem {
+  icon: string;
+  label: string;
+  /** Tooltip / accessible name (defaults to the label). */
+  title?: string;
+  badge?: string | number;
+  active?: boolean;
+  disabled?: boolean;
+  cls?: string;
+  onClick: () => void;
+}
+
 /** `reach` is the ship's horizontal radius (base corner or model tip) and `top` its highest point, both local. */
 export interface ShipView {
   root: THREE.Group; model: THREE.Group; label: CSS2DObject; ring: THREE.Mesh; reach: number; top: number;
@@ -387,6 +400,50 @@ export class BattleScene {
     this.chips.add(obj);
   }
   clearChips() { clearGroup(this.chips); this.chipsKey = ''; }
+
+  /**
+   * A ring of icon buttons around a ship (the acting ship's menu). Items are spread around the ship,
+   * leaving a gap at the top for its label. With `key`, an identical ring is left in place rather than
+   * rebuilt (rebuilding under the pointer can swallow a tap). Shares the chips layer, so clearChips clears it.
+   */
+  showRadial(pose: Pose, items: RadialItem[], opts: { key?: string; caption?: string } = {}) {
+    if (opts.key !== undefined && opts.key === this.chipsKey) return;
+    this.clearChips();
+    this.chipsKey = opts.key ?? '';
+    if (!items.length) return;
+    const el = document.createElement('div');
+    el.className = 'radial';
+    const n = items.length;
+    // Use the lower arc (75° to 285° clockwise from screen-up) so the ship's label above it stays clear,
+    // and push the ring out when there are many buttons so neighbours never overlap.
+    const from = 75, to = 285;
+    const arc = ((to - from) * Math.PI) / 180;
+    const radius = Math.max(88, n > 1 ? (62 * (n - 1)) / arc : 0);
+    el.style.setProperty('--r', `${radius.toFixed(0)}px`);
+    items.forEach((it, i) => {
+      const deg = n === 1 ? 180 : from + ((to - from) * i) / (n - 1);
+      const rad = (deg * Math.PI) / 180;
+      const b = document.createElement('button');
+      b.className = `rad-item ${it.cls ?? ''}${it.active ? ' active' : ''}`;
+      b.style.setProperty('--x', `${Math.sin(rad).toFixed(3)}`);
+      b.style.setProperty('--y', `${(-Math.cos(rad)).toFixed(3)}`);
+      b.disabled = !!it.disabled;
+      b.title = it.title ?? it.label;
+      b.setAttribute('aria-label', it.title ?? it.label);
+      b.innerHTML = `${it.icon}<span class="rad-label">${it.label}</span>${it.badge !== undefined ? `<span class="rad-badge">${it.badge}</span>` : ''}`;
+      b.addEventListener('click', (e) => { e.stopPropagation(); if (!b.disabled) it.onClick(); });
+      el.appendChild(b);
+    });
+    if (opts.caption) {
+      const c = document.createElement('div');
+      c.className = 'rad-caption';
+      c.innerHTML = opts.caption;
+      el.appendChild(c);
+    }
+    const obj = new CSS2DObject(el);
+    obj.position.copy(toV3(pose.x, pose.y, FLY_HEIGHT));
+    this.chips.add(obj);
+  }
 
   /** A ghost base at the end of a path, with the dashed path itself and an optional label. */
   private ghostGroup(size: number, poses: Pose[], color: number, opacity = 1, label?: string,
