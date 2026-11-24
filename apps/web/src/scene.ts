@@ -753,6 +753,7 @@ export class BattleScene {
     });
   }
 
+  private aimFrom: ShipView | null = null;
   private savedView: { target: THREE.Vector3; position: THREE.Vector3; minDistance: number; maxPolarAngle: number; enabled: boolean } | null = null;
 
   /**
@@ -773,18 +774,29 @@ export class BattleScene {
     this.controls.enabled = false;
     const from = a.root.position.clone().setY(FLY_HEIGHT);
     const to = d.root.position.clone().setY(FLY_HEIGHT);
+    const dist = to.distanceTo(from);
     const dir = to.clone().sub(from).setY(0).normalize();
     // Low and close behind, so the attacker fills the lower third of the frame with the target ahead.
+    // A close target would hide behind the attacker's own hull, so rise above it the closer the target is.
     const back = a.reach * 1.5 + 25;
-    const pos = from.clone().addScaledVector(dir, -back).setY(Math.max(a.top, FLY_HEIGHT) + 14);
+    const lift = Math.max(0, 220 - dist) * 0.4;
+    const pos = from.clone().addScaledVector(dir, -back).setY(Math.max(a.top, FLY_HEIGHT) + 14 + lift);
     this.flyTo(to, pos, ms);
+    // The attacker's own label would float up into the middle of the view.
+    if (this.aimFrom && this.aimFrom !== a) this.aimFrom.label.visible = true;
+    this.aimFrom = a;
+    a.label.visible = false;
   }
+
+  /** True while the camera is in attackView(), so the normal framing leaves it alone. */
+  get inAttackView() { return this.savedView !== null; }
 
   /** Return from attackView() to wherever the camera was before. */
   restoreView(ms = 600) {
     const v = this.savedView;
     if (!v) return;
     this.savedView = null;
+    if (this.aimFrom) { this.aimFrom.label.visible = true; this.aimFrom = null; }
     this.flyTo(v.target, v.position, ms);
     this.controls.enabled = v.enabled;
     // Put the orbit limits back once the camera is up again, so they don't yank it mid-flight.

@@ -599,6 +599,9 @@ function actionText(a: ActionChoice): string {
 // ---------------------------------------------------------------------------
 function render() {
   userOverview = false;
+  // A gunner's view left over from the last decision (e.g. holding fire) goes back to the table.
+  setGunsight(null);
+  scene.restoreView();
   renderDecision();
   applyCamera();
 }
@@ -968,7 +971,7 @@ function uiInsets() {
 }
 
 function applyCamera(ms = 500) {
-  if (!compact || !state) return;
+  if (!compact || !state || scene.inAttackView) return;
   if (stage === 'deploy') { viewBtn.hidden = true; scene.frameRect(457, 200, 470, 200, uiInsets(), 0.45, ms); return; }
   if (stage !== 'battle') return;
   const d = state.pending;
@@ -1397,9 +1400,37 @@ const WEAPON_SHORT: Record<string, string> = {
 };
 const weaponShort = (w: string) => WEAPON_SHORT[w] ?? UPGRADES[w].name.split(' ')[0].slice(0, 8);
 
+// ---------------------------------------------------------------------------
+// Gunsight: the target readout shown while aiming from the gunner's view
+// ---------------------------------------------------------------------------
+const gunsight = document.createElement('div');
+gunsight.id = 'gunsight';
+gunsight.hidden = true;
+document.body.appendChild(gunsight);
+function setGunsight(html: string | null, on: Record<string, () => void> = {}) {
+  if (html === null) { gunsight.hidden = true; gunsight.innerHTML = ''; return; }
+  // Sit above whatever UI covers the bottom (the phone panel), centred in the space left over.
+  // On desktop, keep clear of the combat log in the bottom-left corner.
+  const ins = uiInsets();
+  const log = logEl.getBoundingClientRect();
+  gunsight.style.bottom = `${(compact ? ins.bottom : 0) + 16}px`;
+  gunsight.style.left = `${compact ? ins.left : log.width ? log.right + 12 : 0}px`;
+  gunsight.style.right = `${compact ? ins.right : 0}px`;
+  gunsight.innerHTML = html;
+  gunsight.hidden = false;
+  gunsight.querySelectorAll<HTMLElement>('[data-act]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); on[b.dataset.act!]?.(); }));
+}
+
+/** Bearing of `to` seen from `from`, relative to its heading: positive is to the left, negative to the right. */
+function relBearing(from: Pose, to: Pose) {
+  const a = Math.atan2(to.y - from.y, to.x - from.x) - from.h;
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
 /**
- * Attack: pick a weapon from the ring around your ship, then click one of the enemies it can hit.
- * Lasers are preselected when they have a target, so a plain shot is still a single click.
+ * Attack: pick a weapon from the ring around your ship. The camera then drops in behind it, aimed at the
+ * best shot; cycle through every enemy that weapon can hit (arrows / Tab, or the gunsight's buttons),
+ * compare the odds, and fire. Esc / Back returns to the table and the ring.
  */
 function renderAttack(shipId: string, targets: Target[]) {
   const s = shipById(shipId);
@@ -1409,11 +1440,33 @@ function renderAttack(shipId: string, targets: Target[]) {
   /** The weapon picked from the ring, or null while the ring is showing (then nothing is targeted yet). */
   let weapon: string | null = null;
   let candId: string | null = null;
-  const back = () => { weapon = null; candId = null; show(); };
-  const fire = (t: Target | null) =>
-    send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null, ...(t && !isPrimary(t) ? { weapon: t.weapon } : {}) });
+  /** The enemy the camera is currently aimed at. */
+  let aimed: string | null = null;
+  const fire = (t: Target | null) => {
+    setGunsight(null);
+    if (!t) scene.restoreView();
+    void send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null, ...(t && !isPrimary(t) ? { weapon: t.weapon } : {}) });
+  };
   const current = () => (weapon ? targetsFor(weapon) : []);
   const shotAt = (id: string | null) => current().find((t) => t.targetId === id) ?? null;
+  const best = (ts: Target[]) => ts.reduce<Target | null>((b, t) => (!b || shotValue(s, t) > shotValue(s, b) ? t : b), null);
+  /** This weapon's targets, left to right as seen from behind the ship. */
+  const ordered = () => [...current()].sort((a, b) =>
+    relBearing(s.pose, shipById(b.targetId).pose) - relBearing(s.pose, shipById(a.targetId).pose));
+  /** Pick a weapon, keeping the current enemy when it can hit that one too; otherwise aim at its best shot. */
+  const pickWeapon = (w: string) => {
+    weapon = w;
+    if (!shotAt(candId)) candId = best(current())?.targetId ?? null;
+    show();
+  };
+  const back = () => { weapon = null; candId = null; show(); };
+  const cycle = (dir: 1 | -1) => {
+    const list = ordered();
+    if (list.length < 2) return;
+    const i = list.findIndex((t) => t.targetId === candId);
+    candId = list[(i + dir + list.length) % list.length].targetId;
+    show();
+  };
   /** Why a weapon cannot fire right now (shown on its greyed-out button). */
   const why = (w: string) => {
     if (w === 'primary') return turretPrimary ? `No enemy in your turret arc (facing ${s.turretArc}); Rotate it in the action step` : 'No enemy in your firing arc';
@@ -1424,37 +1477,72 @@ function renderAttack(shipId: string, targets: Target[]) {
     return `${UPGRADES[w].name}: no enemy at range ${def.minRange}-${def.maxRange} in your front arc`;
   };
 
+  /** The gunsight readout for the enemy in the crosshairs. */
+  const sight = (c: Target) => {
+    const e = shipById(c.targetId);
+    const o = attackOdds(s, e, c);
+    const pct = (p: number) => `${Math.round(p * 100)}%`;
+    const cls = o.hit >= 0.66 ? 'hi' : o.hit >= 0.4 ? 'mid' : 'lo';
+    const list = ordered();
+    const n = list.length, i = list.findIndex((t) => t.targetId === c.targetId);
+    const isBest = n > 1 && best(list)?.targetId === c.targetId;
+    const wname = weapon === 'primary' ? (turretPrimary ? 'Turret lasers' : 'Lasers') : UPGRADES[weapon!].name;
+    // The same enemy through the ship's other weapons, so the best option is one click away.
+    const alts = targets.filter((t) => t.targetId === c.targetId && (t.weapon ?? 'primary') !== weapon);
+    const altHtml = alts.map((t) => {
+      const w = t.weapon ?? 'primary';
+      return `<button class="gs-alt" data-act="w:${w}">${weaponShort(w)} <b>${pct(attackOdds(s, e, t).hit)}</b></button>`;
+    }).join('');
+    const nav = (d: string, label: string, sym: string) =>
+      `<button class="gs-nav" data-act="${d}" aria-label="${label}"${n < 2 ? ' disabled' : ''}>${sym}</button>`;
+    return `<div class="gs-row">${nav('prev', 'Previous target', '&#8249;')}
+      <div class="gs-main">
+        <div class="gs-name"><span class="p2c">${e.name}</span>${isBest ? '<span class="gs-best">Best shot</span>' : ''}<span class="gs-count">${i + 1} / ${n}</span></div>
+        <div class="gs-odds"><span class="gs-pct ${cls}">${pct(o.hit)}</span><span>hit chance</span></div>
+        <div class="gs-stats">${o.expected.toFixed(1)} dmg${o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : ''}${o.ion >= 0.05 ? ` · <span class="ion">${o.ion.toFixed(1)} ion</span>` : ''}</div>
+        <div class="gs-meta">${wname} · range ${c.range} · ${attackDiceFor(s, c)} dice${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
+          · hull ${e.hull} · shields ${e.shields}</div>
+      </div>${nav('next', 'Next target', '&#8250;')}</div>
+      ${altHtml ? `<div class="gs-alts"><span>Also on this ship:</span>${altHtml}</div>` : ''}
+      <div class="gs-actions"><button class="opt mini" data-act="back">Back <kbd>Esc</kbd></button>
+        <button class="go gs-fire" data-act="fire">Fire ${isPrimary(c) ? '' : weaponShort(c.weapon!)} <kbd>Enter</kbd></button></div>`;
+  };
+
   const show = () => {
     const ts = current();
-    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(ts.map((t) => [t.targetId, RED])) });
-    const turretWeapon = !!weapon && (weapon === 'primary' ? turretPrimary : UPGRADES[weapon]?.weapon?.arc === 'turret');
-    scene.showArcs([s.id], weapon === null ? 'all' : turretWeapon ? 'turret' : 'primary');
-    scene.setOdds(Object.fromEntries(ts.map((t) => [t.targetId, oddsHtml(s, t)])));
     const c = shotAt(candId);
-    if (c) scene.showLine(s.pose, shipById(c.targetId).pose, RED, targetText(c, s));
-    else scene.clearOverlay();
-    if (weapon) {
-      // Targeting: the ring makes way for the enemies this weapon can hit; a lone Back button returns to it.
-      const name = weapon === 'primary' ? 'Lasers' : UPGRADES[weapon].name;
-      scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the weapon menu (Esc)', cls: 'quiet', onClick: back }],
-        { key: `back|${weapon}|${candId}`, caption: `${name}: ${c ? targetText(c, s) : 'click a red-ringed enemy'} · Esc to go back` });
+    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(ts.map((t) => [t.targetId, t.targetId === candId ? RED : 0x8a3030])) });
+    const turretWeapon = !!weapon && (weapon === 'primary' ? turretPrimary : UPGRADES[weapon]?.weapon?.arc === 'turret');
+    scene.showArcs(weapon ? [] : [s.id], weapon === null ? 'all' : turretWeapon ? 'turret' : 'primary');
+    scene.setOdds(Object.fromEntries(ts.map((t) => [t.targetId, oddsHtml(s, t)])));
+    scene.clearOverlay();
+    if (weapon && c) {
+      // Gunner's view: no ring, the gunsight carries the controls.
+      scene.clearChips();
+      if (aimed !== c.targetId) { aimed = c.targetId; scene.attackView(s.id, c.targetId, 450); }
+      setGunsight(sight(c), {
+        prev: () => cycle(-1), next: () => cycle(1), back, fire: () => fire(c),
+        ...Object.fromEntries(weaponIds.map((w) => [`w:${w}`, () => pickWeapon(w)])),
+      });
     } else {
-    const items: RadialItem[] = weaponIds.map((w) => {
-      const u = s.upgrades.find((x) => x.id === w);
-      const ok = targetsFor(w).length > 0;
-      return {
-        icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, active: w === weapon, disabled: !ok,
-        title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
-        onClick: () => { weapon = w; candId = null; show(); },
-      };
-    });
-    items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
-    scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
+      setGunsight(null);
+      if (aimed) { aimed = null; scene.restoreView(); }
+      const items: RadialItem[] = weaponIds.map((w) => {
+        const u = s.upgrades.find((x) => x.id === w);
+        const ok = targetsFor(w).length > 0;
+        return {
+          icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, disabled: !ok,
+          title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
+          onClick: () => pickWeapon(w),
+        };
+      });
+      items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+      scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
     }
     const btns: BarButton[] = weapon ? [{ label: 'Back', onClick: back }] : [];
     if (c) btns.push({ label: isPrimary(c) ? 'Fire' : `Fire ${weaponName(c)}`, cls: 'primary', onClick: () => fire(c) });
     if (!weapon) btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
-    setBar({ status: c ? targetText(c, s) : weapon ? `<b>${s.name.split(' ')[0]}</b>: tap a red-ringed enemy` : `<b>${s.name.split(' ')[0]}</b>: pick a weapon from the ring`, buttons: btns });
+    setBar({ status: c ? targetText(c, s) : `<b>${s.name.split(' ')[0]}</b>: pick a weapon from the ring`, buttons: btns });
   };
   const pick = (p: P): string | null => {
     const ids = current().map((t) => t.targetId);
@@ -1472,20 +1560,28 @@ function renderAttack(shipId: string, targets: Target[]) {
     return best;
   };
   mode = {
-    // The enemy in focus stays selected until another one is pointed at.
-    hover(e) { const id = pick(e); if (id && id !== candId) { candId = id; show(); } },
-    click(e) { const t = shotAt(pick(e)); if (t) fire(t); },
+    // In the gunner's view the camera follows the selection, so clicking (not hovering) picks a target:
+    // a click on another enemy swings to it, a click on the one in the sights fires.
+    click(e) {
+      const id = pick(e);
+      if (!id) return;
+      if (id === candId) fire(shotAt(id));
+      else { candId = id; show(); }
+    },
     key(e) {
       if (e.key === 'Escape' && weapon) back();
       if (e.key === 'Enter' && shotAt(candId)) fire(shotAt(candId));
-      // Number keys pick a weapon from the ring.
+      if (weapon && (e.key === 'ArrowRight' || (e.key === 'Tab' && !e.shiftKey))) { e.preventDefault(); cycle(1); }
+      if (weapon && (e.key === 'ArrowLeft' || (e.key === 'Tab' && e.shiftKey))) { e.preventDefault(); cycle(-1); }
+      // Number keys pick a weapon.
       const n = Number(e.key);
-      if (!weapon && n >= 1 && n <= weaponIds.length && targetsFor(weaponIds[n - 1]).length) { weapon = weaponIds[n - 1]; show(); }
+      if (n >= 1 && n <= weaponIds.length && targetsFor(weaponIds[n - 1]).length) pickWeapon(weaponIds[n - 1]);
     },
   };
 
-  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}):
-    the enemies it can hit get a <b style="color:#ff5a5a">red ring</b>; click one to fire, or press Esc to pick another weapon. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
+  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
+    The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
+    the odds, then Fire (Enter). Esc goes back to the table. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
     obstruction adds a defense die. Tokens are spent automatically. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
@@ -1495,7 +1591,8 @@ function renderAttack(shipId: string, targets: Target[]) {
     b.innerHTML = `<b>${e.name}</b> · ${weaponName(t)}${isPrimary(t) ? '' : ` (${charges} left)`}: range ${t.range}, ${t.arc} arc, ` +
       `${attackDiceFor(s, t)} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
       `<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
-    b.onmouseenter = () => { weapon = t.weapon ?? 'primary'; candId = t.targetId; show(); };
+    // While aiming, hovering a line swings the sights to it.
+    b.onmouseenter = () => { if (weapon) { weapon = t.weapon ?? 'primary'; candId = t.targetId; show(); } };
     b.onclick = () => fire(t);
     detail.appendChild(b);
   }
