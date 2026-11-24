@@ -148,3 +148,14 @@ html.compact .chips.special-row { display: flex; }
 .chip.special { font-size: 13px; padding: 6px 12px; min-height: 32px; }
 .chip.special .blue { color: var(--blue); } .chip.special .white { color: var(--white); } .chip.special .red { color: var(--red); }
 .chip.special.on { border-color: var(--accent); color: var(--accent); background: rgba(18, 51, 43, .95); }
+
+/* ---------- critical damage cards ---------- */
+.label .crits { display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; margin-top: 2px; }
+.label .crits span { font-size: 9px; font-weight: 700; letter-spacing: .04em; color: #ffd9cc; background: rgba(160, 40, 20, .85); border-radius: 3px; padding: 0 3px; }
+.label .ion, .ion { color: #8fd3ff; }
+.crit-list { margin: 4px 0 6px; padding-left: 16px; font-size: 12px; color: var(--text); }
+.crit-list li { margin: 2px 0; } .crit-list b { color: #ff8a65; }
+#banner.card b { color: #ff6a3d; font-size: 24px; }
+#banner.card .detail { max-width: 340px; }
+.float.crit-float { color: #ff8a65; } .float.repair-float { color: var(--accent); }
+#log b.crit, #recap b.crit { color: #ff8a65; }
