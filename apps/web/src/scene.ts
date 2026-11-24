@@ -9,11 +9,14 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
-import { arcTime, bakeBoardTexture, buildArcs, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
-import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, type Obstacle, type Pose, type ShipState } from '@xw/engine';
+import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
+import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
 const FLY_HEIGHT = 18;
+const TURRET_COLOR = 0xffd166;
+/** Turret facing → rotation about the ship's up axis (left is +90°: three's -z is the board's +y). */
+const TURRET_ANGLE: Record<string, number> = { front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 };
 export const COLORS: Record<string, number> = { p1: 0x57c7ff, p2: 0xff9f43 };
 const skinOf = (owner: string): 'blue' | 'red' => (owner === 'p1' ? 'blue' : 'red');
 
@@ -42,6 +45,10 @@ export interface RadialItem {
   disabled?: boolean;
   cls?: string;
   onClick: () => void;
+  /** Pointer over / off the button (e.g. to preview a turret facing). */
+  onHover?: (on: boolean) => void;
+  /** Fixed position on the ring, in degrees clockwise from screen-up (otherwise spread over the lower arc). */
+  angle?: number;
 }
 
 /** `reach` is the ship's horizontal radius (base corner or model tip) and `top` its highest point, both local. */
@@ -51,6 +58,8 @@ export interface ShipView {
   body: THREE.Group; engines: THREE.Sprite[]; thrust: number; phase: number; typeId: string; owner: string;
   /** Firing-arc fans (hidden unless shown with showArcs). */
   arcs: THREE.Group;
+  /** Ships with a turret: its arc fan (shown with the arcs) and a pointer on the base, turned to face `turretArc`. */
+  turret?: { holder: THREE.Group; fan: THREE.Group; facing: string };
 }
 
 export class BattleScene {
@@ -233,6 +242,7 @@ export class BattleScene {
       }
       if (!v) v = this.createShip(s);
       placeObject(v.root, s.pose);
+      if (v.turret && v.turret.facing !== s.turretArc) this.setTurret(s.id, s.turretArc, 0);
       this.updateLabel(v, s);
     }
   }
@@ -270,9 +280,21 @@ export class BattleScene {
     const arcs = buildArcs(size, t.primaries.map((p) => p.arc), color); // added after measuring reach
     arcs.visible = false;
     root.add(arcs);
+    // Turret: a yellow fan (range 2) and pointer that turn together to the turret's facing.
+    let turret: ShipView['turret'];
+    if (s.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret')) {
+      const holder = new THREE.Group();
+      const fan = buildArcs(size, ['front'], TURRET_COLOR, 200);
+      fan.visible = false;
+      holder.add(fan, buildTurretPointer(size));
+      holder.rotation.y = TURRET_ANGLE[s.turretArc];
+      root.add(holder);
+      turret = { holder, fan, facing: s.turretArc };
+    }
     this.scene.add(root);
     const v: ShipView = {
       root, model, label, ring, reach, top: box.max.y, body, engines, thrust: 1, phase: Math.random() * 6.28, typeId: s.typeId, owner: s.owner, arcs,
+      turret,
     };
     this.ships.set(s.id, v);
     return v;
@@ -359,9 +381,28 @@ export class BattleScene {
     this.deployZone.add(strip, line);
   }
 
-  /** Show the firing arcs of exactly these ships (none when empty). */
-  showArcs(ids: string[]) {
-    for (const [id, v] of this.ships) v.arcs.visible = ids.includes(id);
+  /**
+   * Show the firing arcs of exactly these ships (none when empty). `which` picks the primary arcs, the
+   * turret arc, or both (the default).
+   */
+  showArcs(ids: string[], which: 'primary' | 'turret' | 'all' = 'all') {
+    for (const [id, v] of this.ships) {
+      v.arcs.visible = ids.includes(id) && which !== 'turret';
+      if (v.turret) v.turret.fan.visible = ids.includes(id) && which !== 'primary';
+    }
+  }
+
+  /** Turn a ship's turret arc to face `arc` (animated unless ms is 0); `preview` leaves the recorded facing alone. */
+  setTurret(shipId: string, arc: string, ms = 400, preview = false) {
+    const t = this.ships.get(shipId)?.turret;
+    if (!t) return Promise.resolve();
+    if (!preview) t.facing = arc;
+    const from = t.holder.rotation.y;
+    let to = TURRET_ANGLE[arc] ?? 0;
+    while (to - from > Math.PI) to -= Math.PI * 2;
+    while (to - from < -Math.PI) to += Math.PI * 2;
+    if (ms <= 0 || this.reducedMotion) { t.holder.rotation.y = to; return Promise.resolve(); }
+    return this.tween(ms, (k) => { t.holder.rotation.y = from + (to - from) * (1 - (1 - k) * (1 - k)); });
   }
 
   /** Extra line on ships' labels (e.g. hit odds); ships not listed have theirs cleared. */
@@ -421,7 +462,7 @@ export class BattleScene {
     const radius = Math.max(88, n > 1 ? (62 * (n - 1)) / arc : 0);
     el.style.setProperty('--r', `${radius.toFixed(0)}px`);
     items.forEach((it, i) => {
-      const deg = n === 1 ? 180 : from + ((to - from) * i) / (n - 1);
+      const deg = it.angle ?? (n === 1 ? 180 : from + ((to - from) * i) / (n - 1));
       const rad = (deg * Math.PI) / 180;
       const b = document.createElement('button');
       b.className = `rad-item ${it.cls ?? ''}${it.active ? ' active' : ''}`;
@@ -432,6 +473,10 @@ export class BattleScene {
       b.setAttribute('aria-label', it.title ?? it.label);
       b.innerHTML = `${it.icon}<span class="rad-label">${it.label}</span>${it.badge !== undefined ? `<span class="rad-badge">${it.badge}</span>` : ''}`;
       b.addEventListener('click', (e) => { e.stopPropagation(); if (!b.disabled) it.onClick(); });
+      if (it.onHover) {
+        b.addEventListener('pointerenter', () => it.onHover!(true));
+        b.addEventListener('pointerleave', () => it.onHover!(false));
+      }
       el.appendChild(b);
     });
     if (opts.caption) {
@@ -584,6 +629,12 @@ export class BattleScene {
     target.z += (((insets.bottom - insets.top) / 2) * mmPerPx) / Math.cos(tilt);
     const pos = target.clone().add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
     this.flyTo(target, pos, ms);
+  }
+
+  /** Screen direction (degrees clockwise from screen-up) of the board heading `h` seen from point (x, y). */
+  screenBearing(x: number, y: number, h: number): number {
+    const a = this.screenPoint(x, y), b = this.screenPoint(x + Math.cos(h) * 60, y + Math.sin(h) * 60);
+    return ((Math.atan2(b.x - a.x, -(b.y - a.y)) * 180) / Math.PI + 360) % 360;
   }
 
   /** Screen (client) coordinates of a board point; used by tests and tutorials. */

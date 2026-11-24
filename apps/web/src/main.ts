@@ -285,6 +285,10 @@ async function animate(e: GameEvent) {
         await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 400);
         if (d) d.pose = e.action.to;
       }
+      if (e.action.type === 'rotateArc') {
+        if (d) d.turretArc = e.action.to;
+        await scene.setTurret(e.shipId, e.action.to, 450);
+      }
       if (d) {
         if (e.action.type === 'focus') d.focus++;
         if (e.action.type === 'evade') d.evade++;
@@ -546,6 +550,7 @@ function actionText(a: ActionChoice): string {
     case 'barrelRoll': return `Barrel roll ${a.dir}${a.shift ? (a.shift > 0 ? ' (forward)' : ' (back)') : ''}`;
     case 'boost': return `Boost ${a.bearing === 'straight' ? 'straight' : a.bearing === 'bankLeft' ? 'left' : 'right'}`;
     case 'repair': return `Repair ${DAMAGE_CARDS[a.card].title}`;
+    case 'rotateArc': return `Rotate turret to face ${a.to}`;
   }
 }
 
@@ -1038,7 +1043,7 @@ function renderPlanning() {
     card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
       <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${s.maxHull} · shields ${s.shields}/${s.maxShields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
-      ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u)).join(' · ')}</div>` : ''}
+      ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
       <div class="planned">${isIonized(s) ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
         : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
@@ -1121,7 +1126,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
    * The targeted action picked from the ring (lock / barrel roll / boost), or null while the ring is
    * showing. Picking one hides the ring and shows only its targets; Esc or Back brings the ring back.
    */
-  let only: 'lock' | 'barrelRoll' | 'boost' | null = null;
+  let only: 'lock' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
   const back = () => { only = null; cand = null; show(); };
   const shownLocks = () => (only === 'lock' ? locks : []);
@@ -1130,6 +1135,26 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   /** The ring: instant actions do it now; Lock / Barrel roll / Boost narrow the board to their targets. */
   const radial = () => {
     const has = (t: string) => options.some((o) => o.type === t);
+    if (only === 'rotateArc') {
+      // Rotate: the ring becomes the turret facings (hover to preview the arc), plus Back.
+      const dirs = options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc');
+      // Each facing's button sits (and its arrow points) where that facing is on screen, so with the ship
+      // pointing up the board Left is on the left, Right on the right and Rear at the bottom. Back takes
+      // the remaining spot: the way the turret faces now.
+      const OFFSET: Record<string, number> = { front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 };
+      const onScreen = (arc: string) => scene.screenBearing(s.pose.x, s.pose.y, s.pose.h + OFFSET[arc]);
+      const items: RadialItem[] = dirs.map((o) => ({
+        angle: onScreen(o.to),
+        icon: `<span style="display:inline-flex;transform:rotate(${onScreen(o.to).toFixed(0)}deg)">${ICONS.boost}</span>`,
+        label: o.to[0].toUpperCase() + o.to.slice(1),
+        title: `Turn the turret to face ${o.to}`,
+        onClick: () => choose(o),
+        onHover: (on) => { void scene.setTurret(s.id, on ? o.to : s.turretArc, 150, true); },
+      }));
+      items.push({ angle: onScreen(s.turretArc), icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: () => { void scene.setTurret(s.id, s.turretArc, 0, true); back(); } });
+      scene.showRadial(s.pose, items, { key: 'rotate', caption: `Turret faces ${s.turretArc}: pick a new facing · Esc to go back` });
+      return;
+    }
     if (only) {
       // Targeting: the ring makes way for the targets; a lone Back button returns to it.
       const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
@@ -1145,6 +1170,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
     if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
     if (spots.some((o) => o.type === 'boost')) items.push(narrow('boost', ICONS.boost, 'Boost', 'Boost: then click a green dot'));
+    if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, onClick: () => { only = 'rotateArc'; cand = null; show(); } });
     for (const o of options) {
       if (o.type !== 'repair') continue;
       const c = DAMAGE_CARDS[o.card];
@@ -1159,7 +1185,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     scene.setMarkers(shownSpots().map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
     radial();
     const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
-    scene.showArcs(repositioning ? [] : [s.id]);
+    scene.showArcs(repositioning ? [] : [s.id], only === 'rotateArc' ? 'turret' : 'all');
     showOddsFrom(s, cand && (cand.type === 'barrelRoll' || cand.type === 'boost') ? cand.to : s.pose, true);
     if (cand && (cand.type === 'barrelRoll' || cand.type === 'boost')) {
       scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand), s.id);
@@ -1199,7 +1225,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   mode = {
     hover(e) { const c = pick(e); if (c !== cand) { cand = c; show(); } },
     click(e) { const c = pick(e); if (c) choose(c); },
-    key(e) { if (e.key === 'Escape' && only) back(); },
+    key(e) { if (e.key === 'Escape' && only) { if (only === 'rotateArc') void scene.setTurret(s.id, s.turretArc, 0, true); back(); } },
   };
 
   const ring = [
@@ -1231,8 +1257,9 @@ const targetText = (t: Target, attacker?: ShipState) =>
   `${attacker ? attackDiceFor(attacker, t) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
 
 /** An upgrade with its charges, e.g. "Proton Torpedoes 1/2", or "(spent)" for one-shot talents. */
-function upgradeLabel(u: { id: string; charges: number }) {
+function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
   const def = UPGRADES[u.id];
+  if (def.weapon?.arc === 'turret') return `${def.name}${ship ? ` (facing ${ship.turretArc})` : ''}`;
   if (def.weapon) return `${def.name} ${u.charges}/${def.charges}`;
   return `${def.name}${def.charges && !u.charges ? ' (spent)' : ''}`;
 }
@@ -1276,6 +1303,7 @@ function showOddsFrom(s: ShipState, pose: Pose = s.pose, preview = false) {
 const weaponIcon = (w: string) => (w === 'primary' ? ICONS.lasers : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : ICONS.missile);
 const WEAPON_SHORT: Record<string, string> = {
   primary: 'Lasers', 'proton-torpedoes': 'Proton', 'ion-torpedoes': 'Ion torp', 'concussion-missiles': 'Missiles', 'rocket-pods': 'Rockets',
+  'dorsal-turret': 'Turret', 'ion-turret': 'Ion cann.',
 };
 const weaponShort = (w: string) => WEAPON_SHORT[w] ?? UPGRADES[w].name.split(' ')[0].slice(0, 8);
 
@@ -1299,7 +1327,8 @@ function renderAttack(shipId: string, targets: Target[]) {
   const why = (w: string) => {
     if (w === 'primary') return 'No enemy in your firing arc';
     const u = s.upgrades.find((x) => x.id === w)!, def = UPGRADES[w].weapon!;
-    if (u.charges <= 0) return `${UPGRADES[w].name}: out of charges`;
+    if (UPGRADES[w].charges !== undefined && u.charges <= 0) return `${UPGRADES[w].name}: out of charges`;
+    if (def.arc === 'turret') return `${UPGRADES[w].name}: no enemy at range ${def.minRange}-${def.maxRange} in the turret arc (facing ${s.turretArc}); Rotate it in the action step`;
     if (def.requires === 'lock') return `${UPGRADES[w].name}: needs a lock on an enemy at range ${def.minRange}-${def.maxRange} in your front arc`;
     return `${UPGRADES[w].name}: no enemy at range ${def.minRange}-${def.maxRange} in your front arc`;
   };
@@ -1307,7 +1336,8 @@ function renderAttack(shipId: string, targets: Target[]) {
   const show = () => {
     const ts = current();
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(ts.map((t) => [t.targetId, RED])) });
-    scene.showArcs([s.id]);
+    const turretWeapon = !!weapon && UPGRADES[weapon]?.weapon?.arc === 'turret';
+    scene.showArcs([s.id], weapon === null ? 'all' : turretWeapon ? 'turret' : 'primary');
     scene.setOdds(Object.fromEntries(ts.map((t) => [t.targetId, oddsHtml(s, t)])));
     const c = shotAt(candId);
     if (c) scene.showLine(s.pose, shipById(c.targetId).pose, RED, targetText(c, s));
@@ -1322,7 +1352,7 @@ function renderAttack(shipId: string, targets: Target[]) {
       const u = s.upgrades.find((x) => x.id === w);
       const ok = targetsFor(w).length > 0;
       return {
-        icon: weaponIcon(w), label: weaponShort(w), badge: u ? u.charges : undefined, active: w === weapon, disabled: !ok,
+        icon: weaponIcon(w), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, active: w === weapon, disabled: !ok,
         title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
         onClick: () => { weapon = w; candId = null; show(); },
       };

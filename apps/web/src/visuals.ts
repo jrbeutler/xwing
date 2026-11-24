@@ -423,25 +423,25 @@ function arcOutline(size: number, r: number, closed: boolean): THREE.Vector2[] {
 }
 
 /**
- * Translucent fans showing a ship's firing arcs out to range 3, with faint range-1/2 lines and a
+ * Translucent fans showing a ship's firing arcs (any of front/left/rear/right) out to `range` (default range 3), with faint range-1/2 lines and a
  * sweep pulse. Board-local (x forward, y left) maps to three's (x, -z). Not clickable.
  */
 const arcCache = new Map<string, THREE.Group>();
-export function buildArcs(size: number, arcs: string[], color: number): THREE.Group {
+export function buildArcs(size: number, arcs: string[], color: number, range = ARC_RANGE): THREE.Group {
   // Ghost previews rebuild on every pointer move: share geometry and materials, hand out cheap clones.
-  const key = `${size}|${arcs.join(',')}|${color}`;
+  const key = `${size}|${arcs.join(',')}|${color}|${range}`;
   let tpl = arcCache.get(key);
-  if (!tpl) { tpl = makeArcs(size, arcs, color); arcCache.set(key, tpl); }
+  if (!tpl) { tpl = makeArcs(size, arcs, color, range); arcCache.set(key, tpl); }
   const g = tpl.clone(true);
   g.traverse((o) => { o.raycast = () => {}; });
   return g;
 }
 
-function makeArcs(size: number, arcs: string[], color: number): THREE.Group {
+function makeArcs(size: number, arcs: string[], color: number, range: number): THREE.Group {
   const g = new THREE.Group();
   const mat = new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide, clipping: true, clippingPlanes: BOARD_CLIP,
-    uniforms: { uColor: { value: new THREE.Color(color) }, uTime: arcTime, uHalf: { value: size / 2 }, uRange: { value: ARC_RANGE } },
+    uniforms: { uColor: { value: new THREE.Color(color) }, uTime: arcTime, uHalf: { value: size / 2 }, uRange: { value: range } },
     vertexShader: /* glsl */ `
       #include <clipping_planes_pars_vertex>
       varying vec2 vP;
@@ -469,17 +469,28 @@ function makeArcs(size: number, arcs: string[], color: number): THREE.Group {
   const to3 = (p: THREE.Vector2) => new THREE.Vector3(p.x, 0, -p.y);
   for (const arc of arcs) {
     const a = new THREE.Group();
-    const fan = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(arcOutline(size, ARC_RANGE, true)), 4).rotateX(Math.PI / 2), mat);
+    const fan = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(arcOutline(size, range, true)), 4).rotateX(Math.PI / 2), mat);
     fan.scale.z = -1; // rotateX(+90°) sends shape y to +z; board-left is three's -z
     a.add(fan);
-    a.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(arcOutline(size, ARC_RANGE, true).map(to3)), edge));
-    for (let r = ARC_BAND; r < ARC_RANGE; r += ARC_BAND) {
+    a.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(arcOutline(size, range, true).map(to3)), edge));
+    for (let r = ARC_BAND; r < range; r += ARC_BAND) {
       a.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(arcOutline(size, r, false).map(to3)), band));
     }
-    if (arc === 'rear') a.rotation.y = Math.PI;
+    a.rotation.y = ({ front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 } as Record<string, number>)[arc] ?? 0;
     g.add(a);
   }
   g.position.y = 0.8;
   g.traverse((o) => { o.raycast = () => {}; o.renderOrder = 1; });
   return g;
+}
+
+/** Turret-arc pointer for a ship's base: a small chevron at the base edge, pointing out of the arc. */
+export function buildTurretPointer(size: number): THREE.Mesh {
+  const s = size / 2;
+  const shape = new THREE.Shape([new THREE.Vector2(s - 9, -5), new THREE.Vector2(s - 1, 0), new THREE.Vector2(s - 9, 5), new THREE.Vector2(s - 6, 0)]);
+  const m = new THREE.Mesh(new THREE.ShapeGeometry(shape).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: hot(0xffd166, 1.4), side: THREE.DoubleSide }));
+  m.scale.z = -1;
+  m.position.y = 2.6;
+  m.raycast = () => {};
+  return m;
 }
