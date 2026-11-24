@@ -1,6 +1,6 @@
 import {
-  BASE_SIZE, SHIP_TYPES, aiDecide, apply, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath, quickSkirmish,
-  viewFor, type ActionChoice, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  BASE_SIZE, SHIP_TYPES, aiDecide, apply, attackOdds, legalTargets, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath, quickSkirmish,
+  viewFor, type ActionChoice, type Pose, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 
@@ -157,6 +157,8 @@ async function animate(e: GameEvent) {
       return;
     case 'moved': {
       scene.highlight(e.shipId);
+      scene.showArcs([]);
+      scene.setOdds({});
       await scene.animatePath(e.shipId, e.path, e.final, 500 + e.path.length * 15);
       const d = dispShip(e.shipId);
       if (d) d.pose = e.final;
@@ -227,6 +229,8 @@ async function showAttack(e: AttackEvent) {
 
   // 1. Who shoots whom
   scene.setRings({ [a.id]: GREEN, [d.id]: RED });
+  scene.showArcs([a.id]);
+  scene.setOdds({});
   if (compact) framePoints([ap, dp], 150, 350);
   scene.showLine(ap, dp, incoming ? RED : 0xffd166, `${a.name} → ${d.name}`);
   await scene.wait(compact ? 650 : 450);
@@ -283,6 +287,7 @@ async function showAttack(e: AttackEvent) {
     `${o.cls}${incoming ? ' incoming' : ''}`);
   roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);
   await scene.wait(1100);
+  scene.showArcs([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +367,8 @@ function renderDecision() {
   scene.clearGhost();
   scene.clearOverlay();
   scene.clearChips();
+  scene.showArcs([]);
+  scene.setOdds({});
   mode = null;
   const d = state.pending;
   if (state.phase === 'over' || !d) {
@@ -460,6 +467,8 @@ function refreshBoard() {
   planningBar();
   const cand = document.getElementById('cand');
   if (!selected) {
+    scene.showArcs([]);
+    scene.setOdds({});
     scene.setMarkers([]);
     scene.clearGhost();
     if (cand) cand.innerHTML = '';
@@ -472,6 +481,12 @@ function refreshBoard() {
     color: DIFF_COLOR[maneuverOf(s, g.idx[0]).difficulty],
     active: candidate?.group[0] === g.idx[0],
   })));
+  // Firing arcs: from where the ship will end up once a move is picked, else from where it is now.
+  scene.showArcs(candidate ? [] : [s.id]);
+  if (candidate) {
+    const poses = ghostPoses(s, candidate.group[candidate.flip]);
+    showOddsFrom(s, poses[poses.length - 1], true);
+  } else showOddsFrom(s, s.pose, true);
   if (!candidate) {
     scene.clearGhost();
     if (cand) cand.innerHTML = `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
@@ -481,7 +496,7 @@ function refreshBoard() {
   const m = maneuverOf(s, i);
   const alt = candidate.group.length > 1 ? candidate.group[(candidate.flip + 1) % candidate.group.length] : null;
   const flipHint = alt !== null ? `<div class="hint">F / Flip: ${BEARING_NAME[maneuverOf(s, alt).bearing]}</div>` : '';
-  scene.showGhost(sizeOf(s), ghostPoses(s, i), DIFF_COLOR[m.difficulty], `${maneuverName(s, i)}${flipHint}`);
+  scene.showGhost(sizeOf(s), ghostPoses(s, i), DIFF_COLOR[m.difficulty], `${maneuverName(s, i)}${flipHint}`, s.id);
   if (cand) {
     cand.innerHTML = `<div class="cand-row"><span>${maneuverName(s, i)} <span class="hint">(${m.difficulty})</span></span>
       ${alt !== null ? '<button class="opt mini" id="flip">Flip</button>' : ''}
@@ -846,8 +861,11 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   const show = () => {
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(locks.map((l) => [l.targetId, ACTION_COLOR.lock])) });
     scene.setMarkers(spots.map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
+    const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
+    scene.showArcs(repositioning ? [] : [s.id]);
+    showOddsFrom(s, cand && (cand.type === 'barrelRoll' || cand.type === 'boost') ? cand.to : s.pose, true);
     if (cand && (cand.type === 'barrelRoll' || cand.type === 'boost')) {
-      scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand));
+      scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand), s.id);
     } else scene.clearGhost();
     if (cand?.type === 'lock') {
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR.lock, `Lock ${shipById(cand.targetId).name}`);
@@ -914,6 +932,25 @@ type Target = { targetId: string; range: number; arc: string; attack: number; ob
 const targetText = (t: Target) =>
   `${shipById(t.targetId).name}: range ${t.range}, ${t.attack + (t.range <= 1 ? 1 : 0)} dice${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}`;
 
+/** "62% hit · 1.4 dmg · 18% kill" for one attack, from the engine's exact odds. */
+function oddsHtml(attacker: ShipState, t: Target): string {
+  const o = attackOdds(attacker, shipById(t.targetId), t);
+  const pct = (p: number) => `${Math.round(p * 100)}%`;
+  const cls = o.hit >= 0.66 ? 'hi' : o.hit >= 0.4 ? 'mid' : 'lo';
+  return `<span class="${cls}"><b>${pct(o.hit)}</b> hit</span> · ${o.expected.toFixed(1)} dmg` +
+    (o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : '');
+}
+
+/**
+ * Hit odds over every enemy `s` could shoot from `pose` (default: where it is). Used wherever its arc
+ * is shown; while planning the enemies' current positions are used, so it is a preview.
+ */
+function showOddsFrom(s: ShipState, pose: Pose = s.pose, preview = false) {
+  const me = { ...s, pose };
+  scene.setOdds(Object.fromEntries(legalTargets(state, me).map((t) =>
+    [t.targetId, `${preview ? '<span class="pv">if here</span> ' : ''}${oddsHtml(me, t)}`])));
+}
+
 function renderAttack(shipId: string, targets: Target[]) {
   const s = shipById(shipId);
   let cand: Target | null = null;
@@ -921,6 +958,8 @@ function renderAttack(shipId: string, targets: Target[]) {
 
   const show = () => {
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(targets.map((t) => [t.targetId, RED])) });
+    scene.showArcs([s.id]);
+    scene.setOdds(Object.fromEntries(targets.map((t) => [t.targetId, oddsHtml(s, t)])));
     if (cand) scene.showLine(s.pose, shipById(cand.targetId).pose, RED, targetText(cand));
     else scene.clearOverlay();
     const c = cand;
@@ -958,7 +997,8 @@ function renderAttack(shipId: string, targets: Target[]) {
     const b = document.createElement('button');
     b.className = 'opt';
     b.innerHTML = `<b>${e.name}</b>: range ${t.range}, ${t.arc} arc, ${t.attack + (t.range <= 1 ? 1 : 0)} dice` +
-      `${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
+      `${t.obstructed ? ', obstructed' : ''}${t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
+      `<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
     b.onmouseenter = () => { cand = t; show(); };
     b.onmouseleave = () => { cand = null; show(); };
     b.onclick = () => fire(t);

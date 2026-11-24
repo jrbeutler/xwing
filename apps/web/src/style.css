@@ -134,3 +134,10 @@ html.compact.landscape #banner { left: calc((100vw - min(270px, 40vw)) / 2); }
 html.compact #recap { top: calc(84px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); width: auto; }
 html.compact.landscape #recap { right: calc(min(270px, 40vw) + 10px); }
 html.compact #speedbtn { padding: 4px 8px; min-height: 30px; }
+
+/* ---------- hit odds on enemy labels ---------- */
+.label .odds { margin-top: 2px; padding-top: 2px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.odds .hi { color: #5cf08a; } .odds .mid { color: #ffd166; } .odds .lo { color: #ff7a7a; }
+.odds .kill { color: #ff9f43; font-weight: 600; }
+.odds .pv { color: var(--muted); font-style: italic; }
+.opt .odds { font-size: 12px; color: var(--muted); }

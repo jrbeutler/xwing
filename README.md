@@ -13,6 +13,7 @@ npm run dev        # http://localhost:5173
 npm test           # engine unit tests
 npm run typecheck
 npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts (apps/web/dist/artifact.html)
+node apps/web/scripts/bake-freighter.mjs path/to/Freighter.fbx   # re-bake the freighter model (source FBX is not in the repo)
 ```
 
 ## How to play
@@ -23,6 +24,10 @@ npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts 
 4. Destroy the enemy squadron, or have more hull and shields left after round 12.
 
 **Watching combat:** every shot plays out on the board. Bolts that land hit the target and misses streak past. A blue bubble means shields took it; sparks and a shake mean hull damage. A banner spells out the result (HIT, CRITICAL HIT, EVADED, MISS) and turns red when your ship is the target. Health markers drop the moment a shot lands, and a recap of the round's shots appears when the next round starts. **1×/2×** sets animation speed; tap or click the board to skip the current animation.
+
+**Firing arcs:** the translucent fan in front of a ship (and behind the Bulwark) is where it can shoot, out to range 3, with faint lines at ranges 1 and 2. While planning it follows the ghost, so you can see where you'll be able to shoot from after the move; it also shows for the ship taking an action, choosing a target, or firing.
+
+**Hit odds:** enemies inside the arc show your exact chance to land at least one damage, the expected damage, and the chance to destroy them. These come from the dice, range bonuses, obstruction and both ships' tokens. While picking a target the numbers are exact. While planning or previewing a boost/roll they're marked *if here*: computed from where your ghost ends up, against enemies where they stand now (they'll move too).
 
 Drag to orbit the camera; scroll to zoom.
 

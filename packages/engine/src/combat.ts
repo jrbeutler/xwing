@@ -142,6 +142,90 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   return { attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, hits: finalHits, crits: finalCrits, ...dmg };
 }
 
+// ---------------------------------------------------------------------------
+// Odds: the exact outcome distribution of resolveAttack, without rolling
+// ---------------------------------------------------------------------------
+
+export interface AttackOdds {
+  /** Chance of at least one damage getting through. */
+  hit: number;
+  /** Expected damage (hits + crits after evades), before shields/hull caps. */
+  expected: number;
+  /** Chance the attack destroys the defender outright. */
+  kill: number;
+  /** dist[k] = chance of exactly k damage. */
+  dist: number[];
+  attackDice: number;
+  defenseDice: number;
+}
+
+const fact = (n: number): number => (n <= 1 ? 1 : n * fact(n - 1));
+
+/** Every way n dice with the given face weights can land, as face counts with their probability. */
+function faceCounts(n: number, weights: number[]): { counts: number[]; p: number }[] {
+  const total = weights.reduce((a, b) => a + b, 0);
+  const out: { counts: number[]; p: number }[] = [];
+  const rec = (i: number, left: number, counts: number[]) => {
+    if (i === weights.length - 1) {
+      const c = [...counts, left];
+      let p = fact(n);
+      c.forEach((k, j) => { p *= Math.pow(weights[j] / total, k) / fact(k); });
+      out.push({ counts: c, p });
+      return;
+    }
+    for (let k = 0; k <= left; k++) rec(i + 1, left - k, [...counts, k]);
+  };
+  rec(0, n, []);
+  return out;
+}
+
+const faceWeights = <F extends string>(die: F[], faces: F[]) => faces.map((f) => die.filter((d) => d === f).length);
+const ATK_FACES: AttackFace[] = ['hit', 'crit', 'focus', 'blank'];
+const DEF_FACES: DefenseFace[] = ['evade', 'focus', 'blank'];
+
+/**
+ * Exact odds for `resolveAttack(attacker, defender, t)` given both ships' current tokens. Mirrors its
+ * automated policy step by step (lock reroll → attacker focus → defender focus → evade token);
+ * keep the two in sync (the test suite checks them against each other).
+ */
+export function attackOdds(attacker: ShipState, defender: ShipState, t: Pick<TargetInfo, 'attack' | 'range' | 'obstructed'>): AttackOdds {
+  const attackDice = t.attack + (t.range <= 1 ? 1 : 0);
+  const defenseDice = shipType(defender).agility + (t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0);
+  const aw = faceWeights(ATTACK_DIE, ATK_FACES), dw = faceWeights(DEFENSE_DIE, DEF_FACES);
+
+  // Attack: distribution of hits + crits after modification (evades cancel either, so only the total matters).
+  const landed = new Map<number, number>();
+  const add = (k: number, p: number) => landed.set(k, (landed.get(k) ?? 0) + p);
+  const useLock = attacker.lock === defender.id;
+  for (const { counts: [h, c, f, b], p } of faceCounts(attackDice, aw)) {
+    const rerollFocus = attacker.focus === 0;
+    const r = useLock ? b + (rerollFocus ? f : 0) : 0;
+    const keptFocus = useLock && rerollFocus ? 0 : f;
+    const finish = (hh: number, cc: number, ff: number, pp: number) => add(hh + cc + (attacker.focus > 0 ? ff : 0), pp);
+    if (r === 0) finish(h, c, f, p);
+    else for (const rr of faceCounts(r, aw)) finish(h + rr.counts[0], c + rr.counts[1], keptFocus + rr.counts[2], p * rr.p);
+  }
+
+  // Defense against each attack total.
+  const defRolls = faceCounts(defenseDice, dw);
+  const dist: number[] = Array(attackDice + 1).fill(0);
+  for (const [total, pa] of landed) {
+    for (const { counts: [e0, fo], p } of defRolls) {
+      let e = e0;
+      if (defender.focus > 0 && e < total && fo > 0) e += fo;
+      if (defender.evade > 0 && e < total && e < defenseDice) e += 1;
+      dist[Math.max(0, total - e)] += pa * p;
+    }
+  }
+  const health = defender.shields + defender.hull;
+  return {
+    hit: 1 - dist[0],
+    expected: dist.reduce((a, p, k) => a + p * k, 0),
+    kill: dist.reduce((a, p, k) => a + (k >= health ? p : 0), 0),
+    dist, attackDice, defenseDice,
+  };
+}
+
 /** Shields absorb damage first (hits, then crits); the rest is hull damage. */
 export function dealDamage(ship: ShipState, hits: number, crits: number) {
   const total = hits + crits;
