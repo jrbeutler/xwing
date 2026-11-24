@@ -416,6 +416,34 @@ let pointerDown: { x: number; y: number; moved: boolean } | null = null;
 
 interface SnapGroup { pos: { x: number; y: number }; idx: number[] }
 
+/** Maneuvers that end on the same spot as a plain one (K-turn, loops, rolls...), so they hide behind its dot. */
+const SPECIAL = new Set<Bearing>(['kturn', 'sloopLeft', 'sloopRight', 'trollLeft', 'trollRight', 'stop', 'reverseStraight', 'reverseBankLeft', 'reverseBankRight']);
+const isSpecial = (s: ShipState, i: number) => SPECIAL.has(maneuverOf(s, i).bearing);
+
+/** Choose dial entry `i` directly (from a special-move chip); choosing the one already shown sets it. */
+function pickManeuver(s: ShipState, i: number) {
+  if (candidate && candidate.group[candidate.flip] === i) { commit(); return; }
+  const g = snapGroups(s).find((x) => x.idx.includes(i));
+  if (!g) return;
+  candidate = { group: g.idx, flip: g.idx.indexOf(i) };
+  refreshBoard();
+}
+
+/** A row of chips under the selected ship for its special maneuvers: tap to preview, tap again to set. */
+function specialChips(s: ShipState) {
+  const specials = legalDial(state, s).filter((i) => isSpecial(s, i));
+  const cur = candidate ? candidate.group[candidate.flip] : -1;
+  const chips = specials.map((i) => {
+    const m = maneuverOf(s, i);
+    return {
+      label: `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}${i === cur ? ' <b>· set</b>' : ''}`,
+      cls: `special${i === cur ? ' on' : ''}`,
+      onClick: () => pickManeuver(s, i),
+    };
+  });
+  scene.showChips(s.pose, chips, { key: `${s.id}|${specials.join(',')}|${cur}`, cls: 'special-row' });
+}
+
 /** Legal maneuvers grouped by end position (e.g. 4 straight and 4 K-turn end in the same spot). */
 function snapGroups(s: ShipState): SnapGroup[] {
   const dial = SHIP_TYPES[s.typeId].dial;
@@ -467,6 +495,7 @@ function refreshBoard() {
   planningBar();
   const cand = document.getElementById('cand');
   if (!selected) {
+    scene.clearChips();
     scene.showArcs([]);
     scene.setOdds({});
     scene.setMarkers([]);
@@ -480,7 +509,10 @@ function refreshBoard() {
     ...g.pos,
     color: DIFF_COLOR[maneuverOf(s, g.idx[0]).difficulty],
     active: candidate?.group[0] === g.idx[0],
+    // ring the dots that hide a special maneuver, in its colour
+    ring: g.idx.filter((i) => isSpecial(s, i)).map((i) => DIFF_COLOR[maneuverOf(s, i).difficulty])[0],
   })));
+  specialChips(s);
   // Firing arcs: from where the ship will end up once a move is picked, else from where it is now.
   scene.showArcs(candidate ? [] : [s.id]);
   if (candidate) {
@@ -779,7 +811,8 @@ function planningBar() {
 function renderPlanning() {
   const mine = myShips();
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
-    Click to set it. <b>F</b> flips between moves that end in the same spot (e.g. straight / K-turn). Blue clears stress, red adds it.</p>`;
+    Click to set it. Special moves (K-turn, loops, rolls) are the buttons under the ship: click once to preview, again to set.
+    A ringed dot hides one; <b>F</b> flips to it. Blue clears stress, red adds it.</p>`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
     const card = document.createElement('div');

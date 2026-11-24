@@ -340,12 +340,19 @@ export class BattleScene {
     }
   }
 
-  /** Clickable HTML buttons floating just below a ship. */
-  showChips(pose: Pose, chips: { label: string; cls?: string; onClick: () => void }[]) {
+  private chipsKey = '';
+
+  /**
+   * Clickable HTML buttons floating just below a ship. With `key`, an identical row is left in place
+   * rather than rebuilt (rebuilding under the pointer can swallow a tap).
+   */
+  showChips(pose: Pose, chips: { label: string; cls?: string; onClick: () => void }[], opts: { key?: string; cls?: string } = {}) {
+    if (opts.key !== undefined && opts.key === this.chipsKey) return;
     this.clearChips();
+    this.chipsKey = opts.key ?? '';
     if (!chips.length) return;
     const el = document.createElement('div');
-    el.className = 'chips';
+    el.className = `chips ${opts.cls ?? ''}`;
     for (const c of chips) {
       const b = document.createElement('button');
       b.className = `chip ${c.cls ?? ''}`;
@@ -358,7 +365,7 @@ export class BattleScene {
     obj.center.set(0.5, -1.6); // sit well below the ship, clear of its label and preview labels
     this.chips.add(obj);
   }
-  clearChips() { clearGroup(this.chips); }
+  clearChips() { clearGroup(this.chips); this.chipsKey = ''; }
 
   /** A ghost base at the end of a path, with the dashed path itself and an optional label. */
   private ghostGroup(size: number, poses: Pose[], color: number, opacity = 1, label?: string,
@@ -421,7 +428,8 @@ export class BattleScene {
   }
 
   /** Small dots on the table showing every spot the selected ship can reach. */
-  setMarkers(points: { x: number; y: number; color: number; active?: boolean }[]) {
+  /** `ring` circles a dot that hides more maneuvers (e.g. a K-turn behind a straight), in that colour. */
+  setMarkers(points: { x: number; y: number; color: number; active?: boolean; ring?: number }[]) {
     this.markers.clear();
     for (const p of points) {
       const m = new THREE.Mesh(
@@ -431,6 +439,12 @@ export class BattleScene {
       m.rotation.x = -Math.PI / 2;
       m.position.copy(toV3(p.x, p.y, 0.6));
       this.markers.add(m);
+      if (p.ring !== undefined) {
+        const r = new THREE.Mesh(new THREE.RingGeometry(7, 8.6, 24), new THREE.MeshBasicMaterial({ color: p.ring, transparent: true, opacity: 0.9 }));
+        r.rotation.x = -Math.PI / 2;
+        r.position.copy(toV3(p.x, p.y, 0.7));
+        this.markers.add(r);
+      }
     }
   }
 

@@ -141,3 +141,10 @@ html.compact #speedbtn { padding: 4px 8px; min-height: 30px; }
 .odds .kill { color: #ff9f43; font-weight: 600; }
 .odds .pv { color: var(--muted); font-style: italic; }
 .opt .odds { font-size: 12px; color: var(--muted); }
+
+/* ---------- special maneuvers (K-turn, loops, rolls) under the selected ship ---------- */
+.chips.special-row { flex-wrap: wrap; justify-content: center; max-width: 320px; }
+html.compact .chips.special-row { display: flex; }
+.chip.special { font-size: 13px; padding: 6px 12px; min-height: 32px; }
+.chip.special .blue { color: var(--blue); } .chip.special .white { color: var(--white); } .chip.special .red { color: var(--red); }
+.chip.special.on { border-color: var(--accent); color: var(--accent); background: rgba(18, 51, 43, .95); }
