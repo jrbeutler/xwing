@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PILOTS, SHIP_TYPES } from '../src/content';
+import { PILOTS, SHIP_TYPES, UPGRADES } from '../src/content';
 import { attackOdds, defenseDiceFor, sufferDamage } from '../src/combat';
 import { createGame } from '../src/game';
 import { BASE_SIZE } from '../src/maneuvers';
@@ -27,7 +27,8 @@ describe('points and slots', () => {
     expect(fitsSlots('tobin-reyes', ['shield-booster', 'hull-plating'])).toBe(false); // one modification slot
     expect(fitsSlots('drav-okono', ['shield-booster', 'hull-plating'])).toBe(true); // two
     expect(fitsSlots('drav-okono', ['shield-booster', 'shield-booster'])).toBe(false);
-    expect(upgradeOptions(ship('tobin-reyes', ['shield-booster']))).toEqual([]);
+    expect(upgradeOptions(ship('tobin-reyes', ['shield-booster'])).map((u) => UPGRADES[u].slot)).not.toContain('modification');
+    expect(upgradeOptions(ship('grunt-seven', ['shield-booster']))).toEqual([]); // no talent slot below initiative 3
   });
 });
 

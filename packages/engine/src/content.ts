@@ -51,8 +51,30 @@ export const PILOTS: Record<string, PilotDef> = {
   'rook-twelve': { id: 'rook-twelve', name: 'Rook Twelve', shipType: 'anvil', initiative: 2, cost: 18, unique: false },
 };
 
-/** Power-ups. Step one: stat boosts (modifications). Talents, ordnance, turrets and bombs come next. */
+/** Power-ups: stat boosts (modifications) and pilot talents. Ordnance, turrets and bombs come next. */
 export const UPGRADES: Record<string, UpgradeDef> = {
+  // Talents (pilots of initiative 3+). Mechanics follow X-Wing 2nd edition talents.
+  marksman: {
+    id: 'marksman', name: 'Marksman', slot: 'talent', cost: 3,
+    text: 'When attacking a ship in your bullseye, reroll 1 attack die.',
+  },
+  'crack-shot': {
+    id: 'crack-shot', name: 'Crack Shot', slot: 'talent', cost: 2, charges: 1,
+    text: 'Once per battle, when attacking a ship in your bullseye, cancel 1 of its evade results.',
+  },
+  elusive: {
+    id: 'elusive', name: 'Elusive', slot: 'talent', cost: 3, charges: 1,
+    text: 'When defending, spend the charge to reroll 1 defense die. Recover it after you fully execute a red maneuver.',
+  },
+  outmaneuver: {
+    id: 'outmaneuver', name: 'Outmaneuver', slot: 'talent', cost: 5,
+    text: "Your front-arc attacks from outside the defender's firing arc make it roll 1 fewer defense die.",
+  },
+  hotshot: {
+    id: 'hotshot', name: 'Hotshot', slot: 'talent', cost: 3,
+    text: 'After you fully execute a red maneuver, gain 1 focus.',
+  },
+  // Modifications (stat boosts).
   'hull-plating': {
     id: 'hull-plating', name: 'Hull Plating', slot: 'modification', text: '+1 hull.',
     cost: { small: 4, medium: 6, large: 8 }, stats: { hull: 1 },

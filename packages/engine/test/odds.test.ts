@@ -15,7 +15,7 @@ const [baseA, baseD] = game.ships;
 
 /** Fraction of `n` real resolveAttack rolls with each damage total, for comparison with attackOdds. */
 function simulate(a: ShipState, d: ShipState, t: TargetInfo, n: number) {
-  const rng = { rng: 12345 } as GameState;
+  const rng = { rng: 12345, log: [] } as unknown as GameState;
   const counts: number[] = [];
   for (let i = 0; i < n; i++) {
     const r = resolveAttack(rng, structuredClone(a), structuredClone({ ...d, shields: 99, hull: 99 }), t);
@@ -25,8 +25,9 @@ function simulate(a: ShipState, d: ShipState, t: TargetInfo, n: number) {
   return counts.map((c) => (c ?? 0) / n);
 }
 
-const target = (range: number, obstructed = false): TargetInfo =>
-  ({ targetId: baseD.id, arc: 'front', attack: 3, range, obstructed, bullseye: false });
+const target = (range: number, obstructed = false, bullseye = false): TargetInfo =>
+  ({ targetId: baseD.id, arc: 'front', attack: 3, range, obstructed, bullseye });
+const up = (...ids: string[]) => ids.map((id) => ({ id, charges: 1 }));
 
 const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: TargetInfo }[] = [
   { name: 'no tokens, range 2', a: {}, d: {}, t: target(2) },
@@ -40,14 +41,23 @@ const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: Ta
   { name: 'Weapons Failure: one fewer attack die', a: { focus: 1, crits: ['weaponsFailure'] }, d: {}, t: target(2) },
   { name: 'Structural Damage: one fewer defense die', a: {}, d: { evade: 1, crits: ['structuralDamage'] }, t: target(3) },
   { name: 'Blinded Pilot: tokens cannot modify the attack', a: { focus: 1, lock: baseD.id, crits: ['blindedPilot'] }, d: { focus: 1 }, t: target(1) },
+  { name: 'Marksman rerolls a blank in the bullseye', a: { upgrades: up('marksman') }, d: {}, t: target(2, false, true) },
+  { name: 'Marksman does nothing outside the bullseye', a: { upgrades: up('marksman') }, d: {}, t: target(2) },
+  { name: 'Marksman then lock: no die rerolled twice', a: { upgrades: up('marksman'), lock: baseD.id }, d: {}, t: target(2, false, true) },
+  { name: 'Marksman + lock + focus', a: { upgrades: up('marksman'), lock: baseD.id, focus: 1 }, d: { focus: 1 }, t: target(1, false, true) },
+  { name: 'Crack Shot cancels an evade', a: { upgrades: up('crack-shot'), focus: 1 }, d: { evade: 1 }, t: target(2, false, true) },
+  { name: 'Elusive rerolls a defense die', a: { focus: 1 }, d: { upgrades: up('elusive') }, t: target(2) },
+  { name: 'Elusive with focus and evade tokens', a: { focus: 1, lock: baseD.id }, d: { upgrades: up('elusive'), focus: 1, evade: 1 }, t: target(3) },
+  { name: 'all talents at once', a: { upgrades: up('marksman', 'crack-shot'), lock: baseD.id, focus: 1 }, d: { upgrades: up('elusive', 'stealth-coating'), focus: 1, evade: 1 }, t: target(2, true, true) },
+  { name: 'Blinded Pilot stops Marksman and Crack Shot', a: { upgrades: up('marksman', 'crack-shot'), crits: ['blindedPilot'], focus: 1 }, d: { evade: 1 }, t: target(2, false, true) },
   { name: 'everything', a: { focus: 1, lock: baseD.id }, d: { focus: 1, evade: 1 }, t: target(3, true) },
 ];
 
 describe('attackOdds matches resolveAttack', () => {
   for (const c of cases) {
     it(c.name, () => {
-      const a = { ...baseA, focus: 0, lock: null, crits: [], ...c.a } as ShipState;
-      const d = { ...baseD, focus: 0, evade: 0, crits: [], ...c.d } as ShipState;
+      const a = { ...baseA, focus: 0, lock: null, crits: [], upgrades: [], ...c.a } as ShipState;
+      const d = { ...baseD, focus: 0, evade: 0, crits: [], upgrades: [], ...c.d } as ShipState;
       const odds = attackOdds(a, d, c.t);
       expect(odds.dist.reduce((x, y) => x + y, 0)).toBeCloseTo(1, 9);
       const sim = simulate(a, d, c.t, 40000);

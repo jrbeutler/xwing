@@ -1,7 +1,7 @@
 import { Pose, convexHull, normalizeAngle, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
-import { cardDamage, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { cardDamage, upgradeOf, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import type {
@@ -304,6 +304,7 @@ function continueActivation(s: GameState) {
     s.log.push({ type: 'moved', shipId: sh.id, path: mv.path, final: mv.final, partial: mv.partial, bumped: mv.bumped, obstacles: mv.obstacles, fled: mv.fled });
 
     if (m.difficulty === 'red') { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
+    if (m.difficulty === 'red' && !mv.partial) afterRedManeuver(s, sh);
     if (m.difficulty === 'blue' && sh.stress > 0) { sh.stress--; s.log.push({ type: 'stress', shipId: sh.id, delta: -1 }); }
 
     if (mv.fled) {
@@ -332,6 +333,19 @@ function continueActivation(s: GameState) {
     s.queueIndex++;
   }
   beginEngagement(s);
+}
+
+/** Talents that reward fully executing a red maneuver. */
+function afterRedManeuver(s: GameState, sh: ShipState) {
+  const elusive = upgradeOf(sh, 'elusive');
+  if (elusive && elusive.charges < (UPGRADES.elusive.charges ?? 1)) {
+    elusive.charges++;
+    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'elusive', what: 'recovered' });
+  }
+  if (upgradeOf(sh, 'hotshot')) {
+    sh.focus++;
+    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'hotshot', what: 'used' });
+  }
 }
 
 /** Damage cards that react to the maneuver a ship just flew. */

@@ -133,7 +133,7 @@ export type GameEvent =
       /** Damage, stress and ions this step caused, for the UI to animate. */
       shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
     }
-  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' }
+  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered' }
   | { type: 'destroyed'; shipId: string }
   | { type: 'gameOver'; winner: PlayerId | 'draw' }
   | { type: 'info'; text: string };
