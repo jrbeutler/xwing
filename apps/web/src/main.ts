@@ -1,8 +1,10 @@
 import {
-  BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, aiDecide, apply, attackOdds, legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath, quickSkirmish,
+  BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, aiDecide, apply, attackOdds, autoDeploy, canDeployAt, createGame, generateAsteroids,
+  legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, type ActionChoice, type Pose, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
+import { openSetup, type BattleSetup } from './setup';
 
 const HUMAN = 'p1';
 const AI = 'p2';
@@ -41,6 +43,9 @@ speedBtn.onclick = () => setSpeed(scene.speed === 1 ? 2 : 1);
 try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setSpeed(1); }
 
 let state: GameState;
+/** Where we are: building squads, placing ships, or fighting. */
+let stage: 'setup' | 'deploy' | 'battle' = 'setup';
+let lastSetup: BattleSetup | null = null;
 let shown = 0; // index of the next log event to present
 let plan: Record<string, number> = {};
 let busy = false;
@@ -55,18 +60,119 @@ const shipById = (id: string) => state.ships.find((s) => s.id === id)!;
 const sizeOf = (s: ShipState) => BASE_SIZE[SHIP_TYPES[s.typeId].size];
 const nameHtml = (id: string) => { const s = shipById(id); return `<span class="${s.owner}c">${s.name}</span>`; };
 
-function newGame() {
-  state = quickSkirmish((Math.random() * 1e9) | 0);
+/** Open the squad builder (keeping the last opponent when coming back from deployment). */
+function newGame(keep?: BattleSetup) {
+  stage = 'setup';
+  mode = null;
+  scene.setDeployZone(null);
+  hideRecap();
+  openSetup(startDeployment, keep);
+}
+
+// ---------------------------------------------------------------------------
+// Deployment: both squads are spread along their edges; the player may move theirs
+// within their setup area before the battle starts.
+// ---------------------------------------------------------------------------
+function startDeployment(setup: BattleSetup) {
+  lastSetup = setup;
+  stage = 'deploy';
+  const seed = (Math.random() * 1e9) | 0;
+  const near = autoDeploy(setup.player, 'near'), far = autoDeploy(setup.ai, 'far');
+  state = createGame({
+    seed,
+    players: [{ id: HUMAN, name: 'Coalition', faction: 'coalition' }, { id: AI, name: 'Syndicate', faction: 'syndicate' }],
+    squads: {
+      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: near[i] })),
+      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: far[i] })),
+    },
+    obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
+  });
   shown = 0;
   plan = {};
   logEl.innerHTML = '';
   roundShots = [];
-  hideRecap();
   disp = structuredClone(state.ships);
   scene.clearShips();
   scene.setObstacles(state.obstacles);
   scene.syncShips(state.ships);
+  scene.setDeployZone('near');
+  roundEl.textContent = 'Setup';
+  phaseEl.textContent = 'deployment';
+  carrying = null;
+  mode = deployMode;
+  renderDeployment();
+  applyCamera();
+}
+
+/** The ship being moved during deployment, the last legal spot it had, and whether where it is now is legal. */
+let carrying: string | null = null;
+let carryFrom: Pose | null = null;
+let carryValid = true;
+const deployedOthers = (id: string) => state.ships.filter((x) => x.id !== id).map((x) => ({ pose: x.pose, size: sizeOf(x) }));
+
+function renderDeployment() {
+  const hint = compact ? 'Drag your ships along your edge.' : 'Click one of your ships to pick it up, move it, and click to put it down.';
+  detail.innerHTML = `<h2>Deployment</h2><p class="hint">${hint} Ships must sit inside your setup area (the lit strip) and not overlap.
+    The opponent has deployed along the far edge.</p>
+    <div class="row"><button class="opt mini" id="dp-auto">Auto-arrange</button><button class="opt mini" id="dp-back">Back to squad</button></div>
+    <button class="go" id="dp-go">Begin battle</button>`;
+  document.getElementById('dp-auto')!.onclick = autoArrange;
+  document.getElementById('dp-back')!.onclick = () => newGame(lastSetup ?? undefined);
+  document.getElementById('dp-go')!.onclick = beginBattle;
+  setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : 'Deploy: drag your ships, then begin', buttons: [
+    { label: 'Auto', onClick: autoArrange },
+    { label: 'Begin battle', cls: 'primary', onClick: beginBattle },
+  ] });
+}
+
+function autoArrange() {
+  if (!lastSetup) return;
+  const near = autoDeploy(lastSetup.player, 'near');
+  state.ships.filter((x) => x.owner === HUMAN).forEach((x, i) => { x.pose = near[i]; });
+  carrying = null;
+  scene.setRings({});
+  scene.syncShips(state.ships);
+}
+
+function beginBattle() {
+  if (stage !== 'deploy') return;
+  if (carrying) dropCarried();
+  stage = 'battle';
+  mode = null;
+  scene.setDeployZone(null);
+  scene.setRings({});
+  disp = structuredClone(state.ships);
   pump();
+}
+
+function moveCarried(p: P) {
+  if (!carrying) return;
+  const s = shipById(carrying);
+  const pt = scene.boardPoint(p.clientX, p.clientY);
+  if (!pt) return;
+  const half = sizeOf(s) / 2;
+  // Keep the base on the board and in the setup area; it may still overlap another ship (shown red).
+  const pose = { x: Math.min(914 - half, Math.max(half, pt.x)), y: Math.min(100 - half, Math.max(half, pt.y)), h: s.pose.h };
+  carryValid = canDeployAt(pose, sizeOf(s), 'near', deployedOthers(s.id));
+  s.pose = pose;
+  scene.syncShips(state.ships);
+  scene.setRings({ [s.id]: carryValid ? GREEN : RED });
+}
+
+function pickUp(id: string) {
+  carrying = id;
+  carryFrom = { ...shipById(id).pose };
+  carryValid = true;
+  scene.setRings({ [id]: GREEN });
+  renderDeployment();
+}
+
+function dropCarried() {
+  if (!carrying) return;
+  if (!carryValid && carryFrom) { shipById(carrying).pose = carryFrom; scene.syncShips(state.ships); }
+  carrying = null;
+  scene.setRings({});
+  renderDeployment();
 }
 
 /** Send a human command, then let the AI act until a human decision is needed. */
@@ -201,6 +307,13 @@ async function animate(e: GameEvent) {
     case 'damageCard':
       await showDamageCard(e);
       return;
+    case 'upgrade': {
+      const d = dispShip(e.shipId);
+      const u = d?.upgrades.find((x) => x.id === e.upgrade);
+      if (u) u.charges = 0;
+      await scene.floatText(e.shipId, `${UPGRADES[e.upgrade].name.toUpperCase()} SPENT`, 'p2c');
+      return;
+    }
     case 'destroyed': {
       const name = shipById(e.shipId).name;
       roundShots.push(`<b>${nameHtml(e.shipId)} destroyed</b>`);
@@ -383,6 +496,7 @@ function describe(e: GameEvent): string | null {
       }
       return null;
     }
+    case 'upgrade': return `${nameHtml(e.shipId)}'s ${UPGRADES[e.upgrade].name} is spent`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -425,7 +539,7 @@ function renderDecision() {
     const title = state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat';
     detail.innerHTML = `<h2>${title}</h2>
       <p class="hint">Battle ended in round ${state.round}.</p><button class="go" id="again">New battle</button>`;
-    document.getElementById('again')!.onclick = newGame;
+    document.getElementById('again')!.onclick = () => newGame();
     setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [{ label: 'New battle', cls: 'primary', onClick: newGame }] });
     return;
   }
@@ -720,6 +834,24 @@ const planningMode: BoardMode = {
   },
 };
 
+const deployMode: BoardMode = {
+  press(p) {
+    const picked = scene.pickShip(p.clientX, p.clientY);
+    if (picked && shipById(picked).owner === HUMAN) pickUp(picked);
+  },
+  hover(p) { moveCarried(p); },
+  click(p) {
+    if (carrying) return dropCarried();
+    const picked = scene.pickShip(p.clientX, p.clientY);
+    if (picked && shipById(picked).owner === HUMAN) pickUp(picked);
+  },
+  release() { dropCarried(); },
+  key(e) {
+    if (e.key === 'Escape' && carrying) { carryValid = false; dropCarried(); }
+    if (e.key === 'Enter') beginBattle();
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Phone layout: a compact bar (bottom when upright, side rail when sideways),
 // a camera that frames the uncovered part of the screen, and a log ticker.
@@ -740,7 +872,8 @@ function updateLayout() {
     panel.classList.remove('expanded');
     logEl.classList.remove('open');
     if (!c) scene.resetView();
-    if (state && !busy) renderDecision();
+    if (stage === 'deploy') renderDeployment();
+    else if (stage === 'battle' && state && !busy) renderDecision();
   }
   applyCamera(250);
 }
@@ -757,6 +890,8 @@ function uiInsets() {
 
 function applyCamera(ms = 500) {
   if (!compact || !state) return;
+  if (stage === 'deploy') { viewBtn.hidden = true; scene.frameRect(457, 200, 470, 200, uiInsets(), 0.45, ms); return; }
+  if (stage !== 'battle') return;
   const d = state.pending;
   // Points of interest for the current decision; null = show the whole table.
   let pts: { x: number; y: number }[] | null = null;
@@ -869,7 +1004,8 @@ function renderPlanning() {
     const card = document.createElement('div');
     card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
-      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${t.hull} · shields ${s.shields}/${t.shields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${s.maxHull} · shields ${s.shields}/${s.maxShields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => `${UPGRADES[u.id].name}${UPGRADES[u.id].charges && !u.charges ? ' (spent)' : ''}`).join(' · ')}</div>` : ''}
       ${critList(s)}
       <div class="planned">${s.ion > 0 ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
         : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;

@@ -326,6 +326,26 @@ export class BattleScene {
     }
   }
 
+  private deployZone = new THREE.Group();
+
+  /** Light up a player's setup area (within range 1 of their edge), or clear it with null. */
+  setDeployZone(side: 'near' | 'far' | null) {
+    clearGroup(this.deployZone);
+    if (!this.deployZone.parent) this.scene.add(this.deployZone);
+    if (!side) return;
+    const depth = 100;
+    const cy = side === 'near' ? depth / 2 : BOARD_SIZE - depth / 2;
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(BOARD_SIZE, depth),
+      new THREE.MeshBasicMaterial({ color: 0x7cf0c5, transparent: true, opacity: 0.12, depthWrite: false }));
+    strip.rotation.x = -Math.PI / 2;
+    strip.position.copy(toV3(HALF, cy, 0.4));
+    strip.raycast = () => {};
+    const edgeY = side === 'near' ? depth : BOARD_SIZE - depth;
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([toV3(0, edgeY, 0.6), toV3(BOARD_SIZE, edgeY, 0.6)]),
+      new THREE.LineBasicMaterial({ color: 0x7cf0c5, transparent: true, opacity: 0.8 }));
+    this.deployZone.add(strip, line);
+  }
+
   /** Show the firing arcs of exactly these ships (none when empty). */
   showArcs(ids: string[]) {
     for (const [id, v] of this.ships) v.arcs.visible = ids.includes(id);

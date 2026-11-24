@@ -159,3 +159,55 @@ html.compact .chips.special-row { display: flex; }
 #banner.card .detail { max-width: 340px; }
 .float.crit-float { color: #ff8a65; } .float.repair-float { color: var(--accent); }
 #log b.crit, #recap b.crit { color: #ff8a65; }
+
+/* ---------- squad builder (before a battle) ---------- */
+#setup { position: fixed; inset: 0; z-index: 20; overflow: auto; background: rgba(3, 6, 12, .82); backdrop-filter: blur(3px);
+  padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+.setup-inner { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.setup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.setup-head h1 { margin: 0; font-size: 22px; letter-spacing: .04em; }
+.setup-head select, #setup input { background: #0d1526; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.setup-cols { display: grid; grid-template-columns: 3fr 2fr; gap: 14px; align-items: start; }
+.setup-col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.col-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.col-head h2 { margin: 0; }
+.points { display: flex; align-items: center; gap: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.points b { color: var(--text); font-size: 16px; }
+.points .meter { width: 90px; height: 6px; border-radius: 3px; background: #1a2540; overflow: hidden; }
+.points .meter i { display: block; height: 100%; background: var(--accent); }
+.points.over b { color: var(--red); } .points.over .meter i { background: var(--red); }
+.ships { display: flex; flex-direction: column; gap: 8px; }
+.sq-ship { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: rgba(8, 13, 24, .6); }
+.sq-ship.compact { padding: 6px 10px; }
+.sq-top { display: flex; align-items: center; gap: 6px; }
+.sq-top .who { flex: 1; min-width: 0; }
+.sq-top .cost, .pick-pilot .cost { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.init { display: inline-block; min-width: 18px; text-align: center; border-radius: 4px; background: #3a2a0c; color: #ffb347; font-weight: 700; font-size: 12px; }
+.sq-ship .rm, .slot button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
+.sq-ship .rm:hover, .slot button:hover { color: var(--red); }
+.slots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.slot { font-size: 12px; border: 1px solid var(--line); border-radius: 14px; padding: 3px 8px; background: #0d1526; color: var(--text); max-width: 100%; }
+.slot i { font-style: normal; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; margin-right: 2px; }
+.slot em { font-style: normal; color: #ffd166; }
+.slot.full { border-color: #2f5f52; }
+.slot.soon { opacity: .45; }
+select.slot.pick { cursor: pointer; color: var(--accent); }
+option.dear { color: #ff9a9a; }
+.picker { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+.pick-group h3 { font-size: 13px; margin: 0 0 6px; } .pick-group h3 .hint { font-weight: 400; }
+.pick-pilot { display: flex !important; align-items: center; gap: 6px; }
+.pick-pilot.dear { opacity: .6; }
+.setup-col .row, .detail .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+#setup input { flex: 1; min-width: 120px; }
+.problems { margin: 0; padding-left: 18px; color: #ff9a9a; font-size: 12px; }
+.saved-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; }
+.saved-row > span { flex: 1; }
+.setup-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; position: sticky; bottom: 0; padding: 10px 0; background: linear-gradient(transparent, rgba(3, 6, 12, .95) 40%); }
+.setup-foot .go { width: auto; padding: 10px 22px; }
+@media (max-width: 760px) {
+  .setup-cols { grid-template-columns: 1fr; }
+  .setup-head h1 { font-size: 18px; }
+  .setup-foot .hint { flex: 1; }
+}
+
+#log:empty { display: none; }
