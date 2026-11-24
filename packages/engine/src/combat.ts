@@ -3,6 +3,9 @@ import {
 } from './geometry';
 import { BASE_SIZE, RANGE_BAND, TEMPLATE_WIDTH } from './maneuvers';
 import { nextInt } from './rng';
+import {
+  attackDicePenalty, canModifyAttack, defenseDicePenalty, discardCard, drawDamageCard, hasCard,
+} from './damage';
 import { SHIP_TYPES } from './content';
 import type { ArcName, AttackFace, DefenseFace, GameState, Obstacle, ShipState, TargetInfo } from './types';
 
@@ -92,14 +95,22 @@ export function rollDefense(state: GameState, n: number): DefenseFace[] {
  * Resolve one primary attack. Dice modification is automated for now with a sensible
  * policy (lock reroll → focus → defender focus → evade token); interactive mods come later.
  */
+/** Attack dice for a shot: primary value, +1 at range 1, minus damage-card penalties. Shared with attackOdds. */
+export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' | 'range'>) =>
+  Math.max(0, t.attack + (t.range <= 1 ? 1 : 0) - attackDicePenalty(attacker));
+/** Defense dice: agility, +1 at range 3, +1 obstructed, minus damage-card penalties. Shared with attackOdds. */
+export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed'>) =>
+  Math.max(0, shipType(defender).agility + (t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0) - defenseDicePenalty(defender));
+
 export function resolveAttack(state: GameState, attacker: ShipState, defender: ShipState, t: TargetInfo) {
   const spent: string[] = [];
-  const attackDice = t.attack + (t.range <= 1 ? 1 : 0);
-  const defenseDice = shipType(defender).agility + (t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0);
+  const attackDice = attackDiceFor(attacker, t);
+  const defenseDice = defenseDiceFor(defender, t);
+  const mods = canModifyAttack(attacker); // Blinded Pilot: no focus / lock spending
 
   const attackRoll = rollAttack(state, attackDice);
   let atk = [...attackRoll];
-  if (attacker.lock === defender.id) {
+  if (mods && attacker.lock === defender.id) {
     const rerollFocus = attacker.focus === 0;
     const idx = atk.map((f, i) => (f === 'blank' || (rerollFocus && f === 'focus') ? i : -1)).filter((i) => i >= 0);
     if (idx.length) {
@@ -109,7 +120,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
       spent.push('attacker:lock');
     }
   }
-  if (attacker.focus > 0 && atk.includes('focus')) {
+  if (mods && attacker.focus > 0 && atk.includes('focus')) {
     atk = atk.map((f) => (f === 'focus' ? 'hit' : f));
     attacker.focus--;
     spent.push('attacker:focus');
@@ -138,7 +149,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const finalHits = Math.max(0, hits - e);
   e = Math.max(0, e - hits);
   const finalCrits = Math.max(0, crits - e);
-  const dmg = dealDamage(defender, finalHits, finalCrits);
+  const dmg = sufferDamage(state, defender, finalHits, finalCrits);
   return { attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, hits: finalHits, crits: finalCrits, ...dmg };
 }
 
@@ -189,19 +200,22 @@ const DEF_FACES: DefenseFace[] = ['evade', 'focus', 'blank'];
  * keep the two in sync (the test suite checks them against each other).
  */
 export function attackOdds(attacker: ShipState, defender: ShipState, t: Pick<TargetInfo, 'attack' | 'range' | 'obstructed'>): AttackOdds {
-  const attackDice = t.attack + (t.range <= 1 ? 1 : 0);
-  const defenseDice = shipType(defender).agility + (t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0);
+  // Note: dice odds only. Damage-card cascades (Direct Hit!, Fuel Leak...) are not included in `dist`.
+  const attackDice = attackDiceFor(attacker, t);
+  const defenseDice = defenseDiceFor(defender, t);
+  const mods = canModifyAttack(attacker);
   const aw = faceWeights(ATTACK_DIE, ATK_FACES), dw = faceWeights(DEFENSE_DIE, DEF_FACES);
 
   // Attack: distribution of hits + crits after modification (evades cancel either, so only the total matters).
   const landed = new Map<number, number>();
   const add = (k: number, p: number) => landed.set(k, (landed.get(k) ?? 0) + p);
-  const useLock = attacker.lock === defender.id;
+  const useLock = mods && attacker.lock === defender.id;
+  const useFocus = mods && attacker.focus > 0;
   for (const { counts: [h, c, f, b], p } of faceCounts(attackDice, aw)) {
     const rerollFocus = attacker.focus === 0;
     const r = useLock ? b + (rerollFocus ? f : 0) : 0;
     const keptFocus = useLock && rerollFocus ? 0 : f;
-    const finish = (hh: number, cc: number, ff: number, pp: number) => add(hh + cc + (attacker.focus > 0 ? ff : 0), pp);
+    const finish = (hh: number, cc: number, ff: number, pp: number) => add(hh + cc + (useFocus ? ff : 0), pp);
     if (r === 0) finish(h, c, f, p);
     else for (const rr of faceCounts(r, aw)) finish(h + rr.counts[0], c + rr.counts[1], keptFocus + rr.counts[2], p * rr.p);
   }
@@ -226,12 +240,59 @@ export function attackOdds(attacker: ShipState, defender: ShipState, t: Pick<Tar
   };
 }
 
-/** Shields absorb damage first (hits, then crits); the rest is hull damage. */
-export function dealDamage(ship: ShipState, hits: number, crits: number) {
-  const total = hits + crits;
-  const shieldDamage = Math.min(ship.shields, total);
-  ship.shields -= shieldDamage;
-  const hullDamage = Math.min(ship.hull, total - shieldDamage);
-  ship.hull -= hullDamage;
+/**
+ * Apply damage: hits before crits, shields absorb first. Each crit that reaches the hull deals a face-up
+ * damage card (and may trigger cards already in play); hits just remove hull. Cards' follow-on damage
+ * is applied here too, logged as `damageCard` events. Returns the dice damage only (not cascades).
+ */
+export function sufferDamage(s: GameState, ship: ShipState, hits: number, crits: number) {
+  if (hasCard(ship, 'hullBreach')) { crits += hits; hits = 0; }
+  let shieldDamage = 0, hullDamage = 0;
+  const one = (crit: boolean) => {
+    if (ship.hull <= 0) return;
+    if (ship.shields > 0) { ship.shields--; shieldDamage++; return; }
+    ship.hull--;
+    hullDamage++;
+    if (crit) critToHull(s, ship);
+  };
+  for (let i = 0; i < hits; i++) one(false);
+  for (let i = 0; i < crits; i++) one(true);
   return { shieldDamage, hullDamage };
 }
+
+/** Follow-on damage from a card: applied like any other damage and logged on the card's event. */
+export function cardDamage(s: GameState, ship: ShipState, ev: { shieldDamage?: number; hullDamage?: number }, hits: number) {
+  const d = sufferDamage(s, ship, hits, 0);
+  ev.shieldDamage = (ev.shieldDamage ?? 0) + d.shieldDamage;
+  ev.hullDamage = (ev.hullDamage ?? 0) + d.hullDamage;
+}
+
+/** A crit reached the hull: cards already in play react, then a new face-up card is dealt. */
+function critToHull(s: GameState, ship: ShipState) {
+  if (hasCard(ship, 'fuelLeak')) {
+    const ev = { type: 'damageCard' as const, shipId: ship.id, card: 'fuelLeak' as const, what: 'triggered' as const, shieldDamage: 0, hullDamage: 0 };
+    s.log.push(ev);
+    discardCard(s, ship, 'fuelLeak');
+    cardDamage(s, ship, ev, 1);
+    s.log.push({ type: 'damageCard', shipId: ship.id, card: 'fuelLeak', what: 'discarded' });
+  }
+  if (ship.hull <= 0) return; // destroyed: no card to deal
+  const id = drawDamageCard(s);
+  if (!id) return;
+  ship.crits.push(id);
+  const ev: Extract<GameState['log'][number], { type: 'damageCard' }> = { type: 'damageCard', shipId: ship.id, card: id, what: 'dealt' };
+  s.log.push(ev);
+  // Cards that act once, the moment they are dealt.
+  if (id === 'panickedPilot') {
+    ship.stress += 2;
+    ev.stress = 2;
+    discardCard(s, ship, id);
+    s.log.push({ type: 'damageCard', shipId: ship.id, card: id, what: 'discarded' });
+  }
+  if (id === 'directHit') {
+    discardCard(s, ship, id);
+    cardDamage(s, ship, ev, 1);
+    s.log.push({ type: 'damageCard', shipId: ship.id, card: id, what: 'discarded' });
+  }
+}
+

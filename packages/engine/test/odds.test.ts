@@ -37,14 +37,17 @@ const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: Ta
   { name: 'lock with focus rerolls blanks only', a: { lock: baseD.id, focus: 1 }, d: {}, t: target(2) },
   { name: 'defender focus and evade', a: { focus: 1 }, d: { focus: 1, evade: 1 }, t: target(2) },
   { name: 'evade token is wasted when every die already shows an evade', a: { focus: 1 }, d: { evade: 1 }, t: target(1) },
+  { name: 'Weapons Failure: one fewer attack die', a: { focus: 1, crits: ['weaponsFailure'] }, d: {}, t: target(2) },
+  { name: 'Structural Damage: one fewer defense die', a: {}, d: { evade: 1, crits: ['structuralDamage'] }, t: target(3) },
+  { name: 'Blinded Pilot: tokens cannot modify the attack', a: { focus: 1, lock: baseD.id, crits: ['blindedPilot'] }, d: { focus: 1 }, t: target(1) },
   { name: 'everything', a: { focus: 1, lock: baseD.id }, d: { focus: 1, evade: 1 }, t: target(3, true) },
 ];
 
 describe('attackOdds matches resolveAttack', () => {
   for (const c of cases) {
     it(c.name, () => {
-      const a = { ...baseA, focus: 0, lock: null, ...c.a } as ShipState;
-      const d = { ...baseD, focus: 0, evade: 0, ...c.d } as ShipState;
+      const a = { ...baseA, focus: 0, lock: null, crits: [], ...c.a } as ShipState;
+      const d = { ...baseD, focus: 0, evade: 0, crits: [], ...c.d } as ShipState;
       const odds = attackOdds(a, d, c.t);
       expect(odds.dist.reduce((x, y) => x + y, 0)).toBeCloseTo(1, 9);
       const sim = simulate(a, d, c.t, 40000);

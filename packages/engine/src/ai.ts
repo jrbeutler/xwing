@@ -4,7 +4,8 @@
 import { Pose, dist, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
 import { clipToArc, legalTargets, shipPolygon, shipSize, shipType } from './combat';
-import { activeShips, inBounds, legalDial, pendingFor } from './game';
+import { activeShips, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
 import type { Command, GameState, PlayerId, ShipState, TargetInfo } from './types';
@@ -25,7 +26,7 @@ function predictEnemy(e: ShipState): Pose {
 }
 
 export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number): number {
-  const m = shipType(sh).dial[dialIndex];
+  const m = maneuverFor(sh, dialIndex); // as damage cards make it fly
   const size = shipSize(sh);
   const pose = maneuverFinalPose(sh.pose, size, m);
   const poly = basePolygon(pose, size);
@@ -72,7 +73,13 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     const sh = s.ships.find((x) => x.id === d.shipId)!;
     const hasShot = legalTargets(s, sh).length > 0;
     const pick = (t: string) => d.options.find((o) => o.type === t);
-    const choice = hasShot ? pick('focus') ?? pick('lock') : pick('evade') ?? pick('focus') ?? pick('lock');
+    const repair = (cards: DamageCardId[]) => d.options.find((o) => o.type === 'repair' && cards.includes(o.card));
+    // Fix what hurts most right now: cards that cost hull first, then ones that blunt this turn's shot.
+    const urgent = repair(['consoleFire', 'hullBreach', 'fuelLeak']);
+    const blunted = hasShot ? repair(['blindedPilot', 'weaponsFailure']) : undefined;
+    const choice = urgent ?? blunted
+      ?? (hasShot ? pick('focus') ?? pick('lock') : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot'])
+        ?? pick('evade') ?? pick('focus') ?? pick('lock'));
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
   }
 
