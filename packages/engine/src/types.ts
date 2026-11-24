@@ -7,6 +7,25 @@ export type ArcName = 'front' | 'rear';
 export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair';
 
 export interface ActionDef { type: ActionType; red?: boolean }
+
+/** Kinds of upgrade slot a ship can have (power-ups go in matching slots). */
+export type SlotType = 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device';
+
+export interface UpgradeDef {
+  id: string;
+  name: string;
+  slot: SlotType;
+  text: string;
+  /** Points, either flat or by base size (bigger ships pay more for the same boost). */
+  cost: number | Record<BaseSize, number>;
+  /** Flat changes to starting stats. */
+  stats?: { hull?: number; shields?: number };
+  /** Starting charges, for upgrades that run out. */
+  charges?: number;
+}
+
+/** An upgrade fitted to a ship in play, with its remaining charges. */
+export interface UpgradeState { id: string; charges: number }
 export interface PrimaryWeapon { arc: ArcName; attack: number }
 
 export interface ShipType {
@@ -19,9 +38,20 @@ export interface ShipType {
   shields: number;
   actions: ActionDef[];
   dial: Maneuver[];
+  /** Upgrade slots (the talent slot is only open to pilots of initiative 3+). */
+  slots: SlotType[];
 }
 
-export interface PilotDef { id: string; name: string; shipType: string; initiative: number }
+export interface PilotDef {
+  id: string;
+  name: string;
+  shipType: string;
+  initiative: number;
+  /** Squad points. */
+  cost: number;
+  /** Named pilots: at most one per battle. Generic pilots can be fielded several times. */
+  unique: boolean;
+}
 
 export interface ShipState {
   id: string;
@@ -33,6 +63,11 @@ export interface ShipState {
   pose: Pose;
   hull: number;
   shields: number;
+  /** Starting hull and shields, including upgrades. */
+  maxHull: number;
+  maxShields: number;
+  /** Fitted upgrades (power-ups) and their charges. */
+  upgrades: UpgradeState[];
   stress: number;
   focus: number;
   evade: number;
@@ -98,6 +133,7 @@ export type GameEvent =
       /** Damage, stress and ions this step caused, for the UI to animate. */
       shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
     }
+  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' }
   | { type: 'destroyed'; shipId: string }
   | { type: 'gameOver'; winner: PlayerId | 'draw' }
   | { type: 'info'; text: string };

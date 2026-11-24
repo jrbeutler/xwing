@@ -100,7 +100,11 @@ export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' 
   Math.max(0, t.attack + (t.range <= 1 ? 1 : 0) - attackDicePenalty(attacker));
 /** Defense dice: agility, +1 at range 3, +1 obstructed, minus damage-card penalties. Shared with attackOdds. */
 export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed'>) =>
-  Math.max(0, shipType(defender).agility + (t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0) - defenseDicePenalty(defender));
+  Math.max(0, shipType(defender).agility + (t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
+    - defenseDicePenalty(defender));
+
+/** Stealth Coating: an extra defense die while its charge lasts (lost on first damage). */
+const stealthActive = (sh: ShipState) => sh.upgrades.some((u) => u.id === 'stealth-coating' && u.charges > 0);
 
 export function resolveAttack(state: GameState, attacker: ShipState, defender: ShipState, t: TargetInfo) {
   const spent: string[] = [];
@@ -257,6 +261,11 @@ export function sufferDamage(s: GameState, ship: ShipState, hits: number, crits:
   };
   for (let i = 0; i < hits; i++) one(false);
   for (let i = 0; i < crits; i++) one(true);
+  const stealth = ship.upgrades.find((u) => u.id === 'stealth-coating' && u.charges > 0);
+  if (stealth && shieldDamage + hullDamage > 0) {
+    stealth.charges = 0;
+    s.log.push({ type: 'upgrade', shipId: ship.id, upgrade: stealth.id, what: 'spent' });
+  }
   return { shieldDamage, hullDamage };
 }
 

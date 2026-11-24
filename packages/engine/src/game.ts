@@ -1,6 +1,6 @@
 import { Pose, convexHull, normalizeAngle, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, STRAIGHT_UNIT } from './maneuvers';
-import { PILOTS, SHIP_TYPES } from './content';
+import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import { cardDamage, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
@@ -8,7 +8,7 @@ import type {
   ActionChoice, Command, Decision, GameState, Obstacle, Player, PlayerId, ShipState,
 } from './types';
 
-export interface SquadEntry { pilotId: string; pose: Pose }
+export interface SquadEntry { pilotId: string; pose: Pose; upgrades?: string[] }
 export interface GameSetup {
   seed: number;
   players: [Player, Player];
@@ -32,13 +32,20 @@ export function createGame(setup: GameSetup): GameState {
     // Shuffled from its own seed so the dice sequence is unchanged by the deck.
     damageDeck: newDamageDeck({ rng: (setup.seed ^ 0xdec4) | 0 }), damageDiscard: [],
   };
+  const fielded = new Map<string, number>(); // generic pilots flown more than once get numbered
   for (const p of setup.players) {
     setup.squads[p.id].forEach((e, i) => {
       const pilot = PILOTS[e.pilotId];
       const t = SHIP_TYPES[pilot.shipType];
+      const ups = (e.upgrades ?? []).map((id) => UPGRADES[id]);
+      const hull = t.hull + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
+      const shields = t.shields + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
+      const n = (fielded.get(pilot.id) ?? 0) + 1;
+      fielded.set(pilot.id, n);
       state.ships.push({
-        id: `${p.id}-${i}`, pilotId: pilot.id, name: pilot.name, typeId: t.id, owner: p.id,
-        initiative: pilot.initiative, pose: e.pose, hull: t.hull, shields: t.shields,
+        id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
+        initiative: pilot.initiative, pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
+        upgrades: ups.map((u) => ({ id: u.id, charges: u.charges ?? 0 })),
         stress: 0, focus: 0, evade: 0, lock: null, ion: 0, crits: [], dial: null, destroyed: false, removed: false,
       });
     });
