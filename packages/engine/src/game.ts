@@ -1,7 +1,8 @@
 import { Pose, convexHull, normalizeAngle, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES } from './content';
-import { dealDamage, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType } from './combat';
+import { cardDamage, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import type {
   ActionChoice, Command, Decision, GameState, Obstacle, Player, PlayerId, ShipState,
@@ -28,6 +29,8 @@ export function createGame(setup: GameSetup): GameState {
     version: 1, rng: setup.seed | 0, round: 0, maxRounds: setup.maxRounds ?? 12, phase: 'planning',
     players: setup.players, firstPlayer: setup.players[0].id, ships: [], obstacles: setup.obstacles ?? [],
     queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null,
+    // Shuffled from its own seed so the dice sequence is unchanged by the deck.
+    damageDeck: newDamageDeck({ rng: (setup.seed ^ 0xdec4) | 0 }), damageDiscard: [],
   };
   for (const p of setup.players) {
     setup.squads[p.id].forEach((e, i) => {
@@ -36,7 +39,7 @@ export function createGame(setup: GameSetup): GameState {
       state.ships.push({
         id: `${p.id}-${i}`, pilotId: pilot.id, name: pilot.name, typeId: t.id, owner: p.id,
         initiative: pilot.initiative, pose: e.pose, hull: t.hull, shields: t.shields,
-        stress: 0, focus: 0, evade: 0, lock: null, dial: null, destroyed: false, removed: false,
+        stress: 0, focus: 0, evade: 0, lock: null, ion: 0, crits: [], dial: null, destroyed: false, removed: false,
       });
     });
   }
@@ -73,9 +76,15 @@ export function generateAsteroids(seedState: { rng: number }, count = 5): Obstac
 
 export const activeShips = (s: GameState) => s.ships.filter((x) => !x.destroyed);
 
+/** A ship's dial entry as it must fly it now (damage cards can make it harder). */
+export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => effectiveManeuver(sh, shipType(sh).dial[dialIndex]);
+
+/** The white 1-straight an ionized ship flies instead of its dial. */
+export const ION_MANEUVER: Maneuver = { bearing: 'straight', speed: 1, difficulty: 'white' };
+
 /** Dial indices a ship may select this round (stressed ships cannot pick red). */
 export function legalDial(s: GameState, sh: ShipState): number[] {
-  return shipType(sh).dial.map((m, i) => (sh.stress > 0 && m.difficulty === 'red' ? -1 : i)).filter((i) => i >= 0);
+  return shipType(sh).dial.map((_, i) => (sh.stress > 0 && maneuverFor(sh, i).difficulty === 'red' ? -1 : i)).filter((i) => i >= 0);
 }
 
 export function inBounds(poly: { x: number; y: number }[]): boolean {
@@ -125,9 +134,11 @@ function downsample<T>(xs: T[], n: number): T[] {
   return Array.from({ length: n }, (_, i) => xs[Math.round((i / (n - 1)) * (xs.length - 1))]);
 }
 
-export function actionOptions(s: GameState, sh: ShipState): ActionChoice[] {
+/** `ionized`: the ship just flew an ion maneuver, which leaves it only the Focus action. */
+export function actionOptions(s: GameState, sh: ShipState, ionized = false): ActionChoice[] {
   const opts: ActionChoice[] = [{ type: 'none' }];
   for (const a of shipType(sh).actions) {
+    if (!actionAllowed(sh, a.type) || (ionized && a.type !== 'focus')) continue;
     if (a.type === 'focus') opts.push({ type: 'focus' });
     if (a.type === 'evade') opts.push({ type: 'evade' });
     if (a.type === 'lock') {
@@ -162,6 +173,7 @@ export function actionOptions(s: GameState, sh: ShipState): ActionChoice[] {
       }
     }
   }
+  if (!ionized) for (const card of repairableCards(sh)) opts.push({ type: 'repair', card });
   return opts;
 }
 
@@ -169,6 +181,7 @@ export function actionOptions(s: GameState, sh: ShipState): ActionChoice[] {
 export function viewFor(s: GameState, playerId: PlayerId): GameState {
   const v = clone(s);
   v.rng = 0;
+  v.damageDeck.sort(); // contents are public, order is not
   if (v.phase === 'planning') for (const sh of v.ships) if (sh.owner !== playerId) sh.dial = null;
   return v;
 }
@@ -219,8 +232,10 @@ export function apply(prev: GameState, cmd: Command): GameState {
       const t = d.targets.find((x) => x.targetId === cmd.targetId);
       if (!t) throw new Error('Illegal target');
       const defender = ship(s, t.targetId);
+      const mark = s.log.length;
       const r = resolveAttack(s, attacker, defender, t);
-      s.log.push({ type: 'attack', attackerId: attacker.id, defenderId: defender.id, arc: t.arc, range: t.range, obstructed: t.obstructed, ...r });
+      const cards = s.log.splice(mark); // damage cards the shot dealt are logged after the shot itself
+      s.log.push({ type: 'attack', attackerId: attacker.id, defenderId: defender.id, arc: t.arc, range: t.range, obstructed: t.obstructed, ...r }, ...cards);
       if (defender.hull <= 0) destroy(s, defender);
     }
     s.pending = null;
@@ -270,7 +285,12 @@ function continueActivation(s: GameState) {
   while (s.queueIndex < s.queue.length) {
     const sh = ship(s, s.queue[s.queueIndex]);
     if (sh.destroyed || sh.dial === null) { s.queueIndex++; continue; }
-    const m = shipType(sh).dial[sh.dial];
+    const ionized = sh.ion > 0;
+    const m = ionized ? ION_MANEUVER : maneuverFor(sh, sh.dial);
+    if (ionized) {
+      sh.ion = 0;
+      s.log.push({ type: 'info', text: `${sh.name} is ionized and drifts 1 straight.` });
+    }
     s.log.push({ type: 'dialRevealed', shipId: sh.id, maneuver: m });
     const mv = resolveMovement(s, sh, m);
     sh.pose = mv.final;
@@ -288,14 +308,15 @@ function continueActivation(s: GameState) {
     for (const oid of mv.obstacles) {
       const [face] = rollAttack(s, 1);
       s.log.push({ type: 'obstacleHit', shipId: sh.id, obstacleId: oid, result: face });
-      if (face === 'hit') dealDamage(sh, 1, 0);
-      if (face === 'crit') dealDamage(sh, 0, 1);
+      if (face === 'hit') sufferDamage(s, sh, 1, 0);
+      if (face === 'crit') sufferDamage(s, sh, 0, 1);
     }
+    afterManeuver(s, sh, m, mv.obstacles.length > 0, ionized);
     if (sh.hull <= 0) { destroy(s, sh); s.queueIndex++; continue; }
 
     const canAct = !mv.partial && mv.obstacles.length === 0 && sh.stress === 0;
     if (canAct) {
-      const options = actionOptions(s, sh);
+      const options = actionOptions(s, sh, ionized);
       if (options.length > 1) {
         s.pending = { kind: 'action', playerId: sh.owner, shipId: sh.id, options };
         return;
@@ -306,6 +327,26 @@ function continueActivation(s: GameState) {
   beginEngagement(s);
 }
 
+/** Damage cards that react to the maneuver a ship just flew. */
+function afterManeuver(s: GameState, sh: ShipState, m: Maneuver, touchedObstacle: boolean, ionManeuver: boolean) {
+  if (touchedObstacle && hasCard(sh, 'stunnedPilot')) {
+    const ev: Extract<GameState['log'][number], { type: 'damageCard' }> = { type: 'damageCard', shipId: sh.id, card: 'stunnedPilot', what: 'triggered' };
+    s.log.push(ev);
+    cardDamage(s, sh, ev, 1);
+  }
+  if (m.bearing !== 'straight' && hasCard(sh, 'looseStabilizer')) {
+    const ev: Extract<GameState['log'][number], { type: 'damageCard' }> = { type: 'damageCard', shipId: sh.id, card: 'looseStabilizer', what: 'triggered' };
+    s.log.push(ev);
+    discardCard(s, sh, 'looseStabilizer');
+    cardDamage(s, sh, ev, 1);
+    s.log.push({ type: 'damageCard', shipId: sh.id, card: 'looseStabilizer', what: 'discarded' });
+  }
+  if (ionManeuver && hasCard(sh, 'disabledPowerRegulator')) {
+    discardCard(s, sh, 'disabledPowerRegulator');
+    s.log.push({ type: 'damageCard', shipId: sh.id, card: 'disabledPowerRegulator', what: 'discarded' });
+  }
+}
+
 function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
   if (a.type === 'none') return;
   const def = shipType(sh).actions.find((x) => x.type === a.type);
@@ -314,7 +355,32 @@ function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
   if (a.type === 'lock') sh.lock = a.targetId;
   if (a.type === 'barrelRoll' || a.type === 'boost') sh.pose = a.to;
   s.log.push({ type: 'action', shipId: sh.id, action: a });
+  if (a.type === 'repair') {
+    discardCard(s, sh, a.card);
+    s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
+  }
   if (def?.red) { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
+  if (hasCard(sh, 'woundedPilot')) {
+    const [roll] = rollAttack(s, 1);
+    const hurt = roll === 'hit' || roll === 'crit';
+    if (hurt) sh.stress++;
+    s.log.push({ type: 'damageCard', shipId: sh.id, card: 'woundedPilot', what: 'triggered', roll, stress: hurt ? 1 : 0 });
+  }
+}
+
+/** Damage cards that act just before a ship engages. */
+function beforeEngage(s: GameState, sh: ShipState) {
+  if (hasCard(sh, 'consoleFire')) {
+    const [roll] = rollAttack(s, 1);
+    const ev: Extract<GameState['log'][number], { type: 'damageCard' }> = { type: 'damageCard', shipId: sh.id, card: 'consoleFire', what: 'triggered', roll };
+    s.log.push(ev);
+    if (roll === 'hit') cardDamage(s, sh, ev, 1);
+  }
+  if (hasCard(sh, 'disabledPowerRegulator')) {
+    sh.ion++;
+    s.log.push({ type: 'damageCard', shipId: sh.id, card: 'disabledPowerRegulator', what: 'triggered', ion: 1 });
+  }
+  if (sh.hull <= 0) destroy(s, sh);
 }
 
 function beginEngagement(s: GameState) {
@@ -337,6 +403,7 @@ function continueEngagement(s: GameState) {
     s.engagementInitiative = sh.initiative;
     // A ship destroyed earlier in this same initiative step still fires (simultaneous fire).
     if (sh.removed) { s.queueIndex++; continue; }
+    if (!sh.destroyed) beforeEngage(s, sh);
     const targets = legalTargets(s, sh);
     if (targets.length) {
       s.pending = { kind: 'attack', playerId: sh.owner, shipId: sh.id, targets };

@@ -10,7 +10,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
 import { arcTime, bakeBoardTexture, buildArcs, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
-import { BASE_SIZE, BOARD_SIZE, SHIP_TYPES, type Obstacle, type Pose, type ShipState } from '@xw/engine';
+import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, type Obstacle, type Pose, type ShipState } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
 const FLY_HEIGHT = 18;
@@ -303,7 +303,8 @@ export class BattleScene {
     v.label.element.querySelector('.info')!.innerHTML =
       `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +
-      `${s.stress ? `<span class="st"> ⚠${s.stress}</span>` : ''} ${tokens}</div>`;
+      `${s.stress ? `<span class="st"> ⚠${s.stress}</span>` : ''} ${tokens}${s.ion ? '<span class="ion"> ⚡</span>' : ''}</div>` +
+      (s.crits.length ? `<div class="crits">${s.crits.map((c) => `<span title="${DAMAGE_CARDS[c].title}: ${DAMAGE_CARDS[c].text}">${DAMAGE_CARDS[c].tag}</span>`).join('')}</div>` : '');
   }
 
   clearShips() {

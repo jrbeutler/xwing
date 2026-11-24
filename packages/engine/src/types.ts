@@ -1,9 +1,10 @@
 import type { Pose, Polygon } from './geometry';
 import type { BaseSize, Maneuver } from './maneuvers';
+import type { DamageCardId } from './damage';
 
 export type PlayerId = string;
 export type ArcName = 'front' | 'rear';
-export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost';
+export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair';
 
 export interface ActionDef { type: ActionType; red?: boolean }
 export interface PrimaryWeapon { arc: ArcName; attack: number }
@@ -37,6 +38,10 @@ export interface ShipState {
   evade: number;
   /** Id of the ship this ship has locked (one lock at a time). */
   lock: string | null;
+  /** Ion tokens: an ionized ship flies a white 1-straight instead of its dial. */
+  ion: number;
+  /** Face-up damage cards (critical damage) in effect. */
+  crits: DamageCardId[];
   /** Index into the ship type's dial; hidden from opponents during planning. */
   dial: number | null;
   destroyed: boolean;
@@ -54,7 +59,8 @@ export type ActionChoice =
   | { type: 'evade' }
   | { type: 'lock'; targetId: string }
   | { type: 'barrelRoll'; dir: 'left' | 'right'; shift: -1 | 0 | 1; to: Pose }
-  | { type: 'boost'; bearing: 'straight' | 'bankLeft' | 'bankRight'; to: Pose };
+  | { type: 'boost'; bearing: 'straight' | 'bankLeft' | 'bankRight'; to: Pose }
+  | { type: 'repair'; card: DamageCardId };
 
 export interface TargetInfo {
   targetId: string;
@@ -86,6 +92,12 @@ export type GameEvent =
       attackRoll: AttackFace[]; attackFinal: AttackFace[]; defenseRoll: DefenseFace[]; defenseFinal: DefenseFace[];
       spent: string[]; hits: number; crits: number; shieldDamage: number; hullDamage: number;
     }
+  | {
+      /** A face-up damage card was dealt, triggered, or left the ship (repaired / discarded). */
+      type: 'damageCard'; shipId: string; card: DamageCardId; what: 'dealt' | 'triggered' | 'repaired' | 'discarded';
+      /** Damage, stress and ions this step caused, for the UI to animate. */
+      shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
+    }
   | { type: 'destroyed'; shipId: string }
   | { type: 'gameOver'; winner: PlayerId | 'draw' }
   | { type: 'info'; text: string };
@@ -103,6 +115,9 @@ export interface GameState {
   firstPlayer: PlayerId;
   ships: ShipState[];
   obstacles: Obstacle[];
+  /** Face-down damage deck (draws come off the end) and its discard pile. */
+  damageDeck: DamageCardId[];
+  damageDiscard: DamageCardId[];
   queue: string[];
   queueIndex: number;
   /** Initiative currently resolving in engagement (for simultaneous fire). */

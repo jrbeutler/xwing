@@ -1,5 +1,5 @@
 import {
-  BASE_SIZE, SHIP_TYPES, aiDecide, apply, attackOdds, legalTargets, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath, quickSkirmish,
+  BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, aiDecide, apply, attackOdds, legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath, quickSkirmish,
   viewFor, type ActionChoice, type Pose, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
@@ -120,7 +120,7 @@ function logLine(e: GameEvent) {
   if (!text) return;
   const div = document.createElement('div');
   div.innerHTML = text;
-  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart') div.className = 'hl';
+  if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart' || (e.type === 'damageCard' && e.what === 'dealt')) div.className = 'hl';
   logEl.appendChild(div);
   logEl.scrollTop = logEl.scrollHeight;
   ticker.innerHTML = text;
@@ -198,6 +198,9 @@ async function animate(e: GameEvent) {
       await scene.floatText(e.shipId, hit ? 'ASTEROID −1' : 'ASTEROID', 'p2c');
       return;
     }
+    case 'damageCard':
+      await showDamageCard(e);
+      return;
     case 'destroyed': {
       const name = shipById(e.shipId).name;
       roundShots.push(`<b>${nameHtml(e.shipId)} destroyed</b>`);
@@ -210,6 +213,39 @@ async function animate(e: GameEvent) {
 }
 
 type AttackEvent = Extract<GameEvent, { type: 'attack' }>;
+
+/** A damage card dealt, triggered, repaired or discarded: update the board and say what it does. */
+async function showDamageCard(e: Extract<GameEvent, { type: 'damageCard' }>) {
+  const d = dispShip(e.shipId);
+  const c = DAMAGE_CARDS[e.card];
+  const mine = shipById(e.shipId).owner === HUMAN;
+  if (d) {
+    if (e.what === 'dealt') d.crits.push(e.card);
+    if (e.what === 'repaired' || e.what === 'discarded') {
+      const i = d.crits.indexOf(e.card);
+      if (i >= 0) d.crits.splice(i, 1);
+    }
+    d.shields -= e.shieldDamage ?? 0;
+    d.hull -= e.hullDamage ?? 0;
+    d.stress += e.stress ?? 0;
+    d.ion += e.ion ?? 0;
+    relabel(e.shipId);
+  }
+  if (e.shieldDamage) void scene.shieldFlash(e.shipId);
+  if (e.hullDamage) { void scene.sparks(e.shipId); void scene.shake(e.shipId); }
+  if (e.what === 'dealt') {
+    roundShots.push(`${nameHtml(e.shipId)}: <b class="crit">${c.title}</b>`);
+    showBanner(`<span class="who">${shipById(e.shipId).name} · critical damage</span><b>${c.title.toUpperCase()}</b><span class="detail">${c.text}</span>`,
+      `crit card${mine ? ' incoming' : ''}`, 2600);
+    await scene.wait(1500);
+  } else if (e.what === 'triggered') {
+    const dmg = (e.hullDamage ?? 0) + (e.shieldDamage ?? 0);
+    const extra = dmg ? ` −${dmg}` : e.stress ? ' +stress' : e.ion ? ' ION' : '';
+    await scene.floatText(e.shipId, `${c.tag}${e.roll ? ` (${e.roll})` : ''}${extra}`, 'crit-float');
+  } else if (e.what === 'repaired') {
+    await scene.floatText(e.shipId, `REPAIRED ${c.tag}`, 'repair-float');
+  }
+}
 
 /** Plain-language outcome of an attack (no dice). */
 function attackOutcome(e: AttackEvent) {
@@ -299,13 +335,13 @@ banner.setAttribute('role', 'status');
 banner.setAttribute('aria-live', 'polite');
 document.body.appendChild(banner);
 let bannerTimer = 0;
-function showBanner(html: string, cls: string) {
+function showBanner(html: string, cls: string, ms = 1600) {
   banner.className = cls;
   banner.innerHTML = html;
   void banner.offsetWidth; // restart the pop-in animation
   banner.classList.add('show');
   clearTimeout(bannerTimer);
-  bannerTimer = window.setTimeout(() => banner.classList.remove('show'), 1600 / scene.speed);
+  bannerTimer = window.setTimeout(() => banner.classList.remove('show'), ms / scene.speed);
 }
 
 const recap = document.createElement('div');
@@ -336,6 +372,17 @@ function describe(e: GameEvent): string | null {
       return `${nameHtml(e.attackerId)} fires at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}): ` +
         `<b>${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? `${o.word.toLowerCase()}, ${o.detail}` : o.word.toLowerCase()}</b>`;
     }
+    case 'damageCard': {
+      const c = DAMAGE_CARDS[e.card];
+      const dmg = (e.hullDamage ?? 0) + (e.shieldDamage ?? 0);
+      if (e.what === 'dealt') return `⚠ ${nameHtml(e.shipId)} takes critical damage: <b>${c.title}</b> — ${c.text}`;
+      if (e.what === 'repaired') return `${nameHtml(e.shipId)} repairs ${c.title}`;
+      if (e.what === 'triggered') {
+        const parts = [e.roll ? `rolls ${e.roll}` : '', dmg ? `${dmg} damage` : '', e.stress ? `${e.stress} stress` : '', e.ion ? 'ionized' : ''].filter(Boolean);
+        return `${nameHtml(e.shipId)}: ${c.title}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+      }
+      return null;
+    }
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -351,6 +398,7 @@ function actionText(a: ActionChoice): string {
     case 'lock': return `Lock on ${shipById(a.targetId).name}`;
     case 'barrelRoll': return `Barrel roll ${a.dir}${a.shift ? (a.shift > 0 ? ' (forward)' : ' (back)') : ''}`;
     case 'boost': return `Boost ${a.bearing === 'straight' ? 'straight' : a.bearing === 'bankLeft' ? 'left' : 'right'}`;
+    case 'repair': return `Repair ${DAMAGE_CARDS[a.card].title}`;
   }
 }
 
@@ -456,7 +504,8 @@ function snapGroups(s: ShipState): SnapGroup[] {
   return groups;
 }
 
-const maneuverOf = (s: ShipState, i: number) => SHIP_TYPES[s.typeId].dial[i];
+/** A dial entry as the ship must fly it now (damage cards can make turns harder). */
+const maneuverOf = (s: ShipState, i: number) => maneuverFor(s, i);
 const maneuverName = (s: ShipState, i: number) => {
   const m = maneuverOf(s, i);
   return `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}`;
@@ -810,6 +859,8 @@ function planningBar() {
 
 function renderPlanning() {
   const mine = myShips();
+  // An ionized ship ignores its dial (it drifts 1 straight), so plan it automatically.
+  for (const s of mine) if (s.ion > 0 && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click to set it. Special moves (K-turn, loops, rolls) are the buttons under the ship: click once to preview, again to set.
     A ringed dot hides one; <b>F</b> flips to it. Blue clears stress, red adds it.</p>`;
@@ -819,7 +870,9 @@ function renderPlanning() {
     card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
       <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${t.hull} · shields ${s.shields}/${t.shields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
-      <div class="planned">${plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
+      ${critList(s)}
+      <div class="planned">${s.ion > 0 ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
+        : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
     if (s.id === selected) {
       const cand = document.createElement('div');
@@ -839,6 +892,12 @@ function renderPlanning() {
 }
 
 /** The classic dial grid, kept as a collapsed fallback. */
+/** The ship's face-up damage cards, with what each one does. */
+function critList(s: ShipState): string {
+  if (!s.crits.length) return '';
+  return `<ul class="crit-list">${s.crits.map((c) => `<li><b>${DAMAGE_CARDS[c].title}</b> ${DAMAGE_CARDS[c].text}${DAMAGE_CARDS[c].repairable ? ' <span class="hint">(repairable)</span>' : ''}</li>`).join('')}</ul>`;
+}
+
 function dialFallback(s: ShipState): HTMLElement {
   const t = SHIP_TYPES[s.typeId];
   const legal = new Set(legalDial(state, s));
@@ -858,7 +917,7 @@ function dialFallback(s: ShipState): HTMLElement {
     for (const ci of usedCols) {
       const i = t.dial.findIndex((m) => rowKey(m) === r && COLS[ci].includes(m.bearing));
       if (i < 0) { dial.appendChild(document.createElement('span')); continue; }
-      const m = t.dial[i];
+      const m = maneuverOf(s, i);
       const b = document.createElement('button');
       b.innerHTML = `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span>`;
       b.title = `${maneuverLabel(m)} (${m.difficulty})`;
@@ -887,7 +946,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   const s = shipById(shipId);
   const spots = options.filter((o): o is Spot => o.type === 'barrelRoll' || o.type === 'boost');
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
-  const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade'), { type: 'none' } as ActionChoice];
+  const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'repair'), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
 
@@ -945,7 +1004,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     spots.some((o) => o.type === 'boost') ? 'a <b style="color:#9be37c">green</b> dot to boost' : '',
     locks.length ? 'click a <b style="color:#ffd166">ringed enemy</b> to lock it' : '',
   ].filter(Boolean);
-  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the buttons under the ship.</p>`;
+  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">On the board: ${parts.length ? parts.join(', ') + ', or ' : ''}use the buttons under the ship.</p>${critList(s)}`;
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
