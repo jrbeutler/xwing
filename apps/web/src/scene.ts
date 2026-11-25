@@ -887,7 +887,14 @@ export class BattleScene {
       const dur = ms / this.speed;
       const step = () => {
         const t = this.skipping ? 1 : Math.min(1, (performance.now() - t0) / dur);
-        fn(t);
+        try {
+          fn(t);
+        } catch (err) {
+          // Never leave the caller awaiting forever: a broken frame would freeze the game loop.
+          console.error('tween frame failed', err);
+          resolve();
+          return;
+        }
         if (t < 1) requestAnimationFrame(step); else resolve();
       };
       requestAnimationFrame(step);
@@ -1100,7 +1107,9 @@ export class BattleScene {
 
   async animatePath(shipId: string, path: Pose[], final: Pose, ms = 900) {
     const v = this.ships.get(shipId);
-    if (!v || !path.length) return;
+    if (!v) return;
+    // A ship bumped at the very start of its move gets a one-pose path: nothing to animate.
+    if (path.length < 2) { placeObject(v.root, final); return; }
     await this.tween(ms, (t) => {
       v.thrust = 1 + Math.sin(t * Math.PI) * 1.4;
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
