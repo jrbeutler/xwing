@@ -32,9 +32,9 @@ export function createGame(setup: GameSetup): GameState {
     version: 1, rng: setup.seed | 0, round: 0, maxRounds: setup.maxRounds ?? 12, phase: 'planning',
     players: setup.players, firstPlayer: setup.players[0].id, ships: [], obstacles: setup.obstacles ?? [],
     queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null, devices: [],
-    // Shuffled from its own seed so the dice sequence is unchanged by the deck.
-    damageDeck: newDamageDeck({ rng: (setup.seed ^ 0xdec4) | 0 }), damageDiscard: [],
+    damageDeck: [], damageDiscard: [],
   };
+  state.damageDeck = newDamageDeck(state); // shuffled with the game's own RNG
   const fielded = new Map<string, number>(); // generic pilots flown more than once get numbered
   for (const p of setup.players) {
     setup.squads[p.id].forEach((e, i) => {
@@ -96,29 +96,6 @@ export function generateObstacles(seedState: { rng: number }, mix: Partial<Recor
     }
   }
   return out.map(({ id, kind, polygon }) => ({ id, kind, polygon }));
-}
-
-/** Random convex asteroids in the middle of the board, kept apart from each other (the original asteroid-only board). */
-export function generateAsteroids(seedState: { rng: number }, count = 5): Obstacle[] {
-  const out: Obstacle[] = [];
-  let tries = 0;
-  while (out.length < count && tries++ < 500) {
-    const cx = 200 + nextFloat(seedState) * (BOARD_SIZE - 400);
-    const cy = 250 + nextFloat(seedState) * (BOARD_SIZE - 500);
-    const r = 28 + nextFloat(seedState) * 22;
-    const pts = Array.from({ length: 8 }, (_, i) => {
-      const a = (i / 8) * Math.PI * 2 + nextFloat(seedState) * 0.5;
-      const rr = r * (0.75 + nextFloat(seedState) * 0.35);
-      return vec(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
-    });
-    const poly = convexHull(pts);
-    const tooClose = out.some((o) => {
-      const c = o.polygon.reduce((a, p) => ({ x: a.x + p.x / o.polygon.length, y: a.y + p.y / o.polygon.length }), { x: 0, y: 0 });
-      return Math.hypot(c.x - cx, c.y - cy) < 150;
-    });
-    if (!tooClose) out.push({ id: `rock-${out.length}`, kind: 'asteroid', polygon: poly });
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -740,9 +717,9 @@ export function pendingFor(s: GameState, playerId: PlayerId): Decision | null {
   return d.playerId === playerId ? d : null;
 }
 
-/** A standard skirmish: the two placeholder squads facing each other across asteroids. */
+/** A standard skirmish: the two placeholder squads facing each other across a random board. */
 export function quickSkirmish(seed: number): GameState {
-  const rocks = generateAsteroids({ rng: seed ^ 0x5eed }, 5);
+  const obstacles = generateObstacles({ rng: seed ^ 0x5eed });
   const h1 = Math.PI / 2, h2 = -Math.PI / 2;
   return createGame({
     seed,
@@ -764,6 +741,6 @@ export function quickSkirmish(seed: number): GameState {
         { pilotId: 'grunt-seven', pose: { x: 694, y: 844, h: h2 } },
       ],
     },
-    obstacles: rocks,
+    obstacles,
   });
 }

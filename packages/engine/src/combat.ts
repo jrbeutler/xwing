@@ -1,7 +1,7 @@
 import {
   Polygon, Pose, basePolygon, clipHalfPlane, fwd, leftOf, polygonDistance, scale, segmentIntersectsPolygon, toWorld, vec,
 } from './geometry';
-import { BASE_SIZE, RANGE_BAND, TEMPLATE_WIDTH } from './maneuvers';
+import { BASE_SIZE, TEMPLATE_WIDTH } from './maneuvers';
 import { nextInt } from './rng';
 import {
   attackDicePenalty, canModifyAttack, defenseDicePenalty, discardCard, drawDamageCard, hasCard,

@@ -83,8 +83,8 @@ export type EffectOp =
   | { op: 'loseCharges' };
 
 /**
- * An effect of an upgrade (later also of a pilot). `cost: 'charge'` spends one of the upgrade's charges each
- * time it is used (and needs one left); `needsCharge` needs a charge but does not spend it.
+ * An effect of an upgrade or a pilot ability. `cost: 'charge'` spends one of its source's charges each time it
+ * is used (and needs one left); `needsCharge` needs a charge but does not spend it.
  */
 export type Effect =
   /** Change how many dice are rolled while this ship attacks or defends: `dice` says which side's dice. */

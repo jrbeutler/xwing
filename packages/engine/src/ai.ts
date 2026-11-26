@@ -1,7 +1,7 @@
 // Baseline AI: one-ply lookahead. Scores each candidate maneuver by the position it
 // produces against a naive prediction of enemy movement. Fast, beatable, good enough
 // to test rules; later AIs can plug into the same `decide` contract.
-import { Pose, dist, fwd } from './geometry';
+import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
