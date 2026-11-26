@@ -30,6 +30,12 @@ import freighterUrl from './assets/freighter/freighter.bin?url'; // packed by sc
 const FREIGHTER_LENGTH = 78;
 
 export type Skin = 'blue' | 'red';
+
+/** Engine exhaust per side: the glow and the hot core of the nozzle (blue for the player, orange for the opponent). */
+export const EXHAUST: Record<Skin, { glow: number; core: number }> = {
+  blue: { glow: 0x7fd8ff, core: 0xbdefff },
+  red: { glow: 0xff8a2a, core: 0xffd2a0 },
+};
 export interface ShipTemplate {
   /** A fresh copy of the model, +X forward, centred, in procedural-model units. */
   build(skin: Skin, color: number): THREE.Object3D;
@@ -241,7 +247,9 @@ async function loadInterceptor() {
   const obj = new OBJLoader().parse(interceptorObj);
   // No .mtl or UVs came with it, but its parts are separate objects: colour each one by name.
   const glass = new THREE.MeshStandardMaterial({ color: 0x0b1626, metalness: 0.9, roughness: 0.08, emissive: 0x0c2f4a, emissiveIntensity: 0.6 });
-  const exhaust = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x7fd8ff).multiplyScalar(3) });
+  // Its own exhaust part glows in the side's exhaust colour.
+  const exhaustMat = { blue: new THREE.MeshBasicMaterial({ color: new THREE.Color(EXHAUST.blue.glow).multiplyScalar(3) }),
+    red: new THREE.MeshBasicMaterial({ color: new THREE.Color(EXHAUST.red.glow).multiplyScalar(3) }) };
   const byColor = new Map<number, { hull: THREE.Material; lights: THREE.Material }>();
   const mats = (color: number) => {
     let m = byColor.get(color);
@@ -258,13 +266,13 @@ async function loadInterceptor() {
   markAccents(outer, { wing: 0.62, nose: 0.8 });
   castShadows(outer);
   templates.wasp = {
-    build(_skin, color) {
+    build(skin, color) {
       const o = outer.clone(true);
       const m = mats(color);
       o.traverse((n) => {
         const mesh = n as THREE.Mesh;
         if (!mesh.isMesh) return;
-        if (/engine_glow/i.test(mesh.name)) { mesh.material = exhaust; mesh.castShadow = false; }
+        if (/engine_glow/i.test(mesh.name)) { mesh.material = exhaustMat[skin]; mesh.castShadow = false; }
         else if (/lights/i.test(mesh.name)) { mesh.material = m.lights; mesh.castShadow = false; }
         else if (/^WindS/i.test(mesh.name)) mesh.material = glass;
         else mesh.material = m.hull;

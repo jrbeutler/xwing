@@ -1,7 +1,7 @@
 // Procedural art: ship models, asteroids, the table surface and the sky. No rules, no game state.
 import * as THREE from 'three';
 import { BOARD_SIZE } from '@xw/engine';
-import { shipTemplate, type Skin } from './shipAsset';
+import { EXHAUST, shipTemplate, type Skin } from './shipAsset';
 
 // ---------------- noise ----------------
 function hash3(x: number, y: number, z: number) {
@@ -76,7 +76,7 @@ export function buildShip(typeId: string, color: number, skin: Skin): ShipModel 
   const trim = new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.35, emissive: color, emissiveIntensity: 0.35 });
   const glass = new THREE.MeshStandardMaterial({ color: 0x0b1626, metalness: 0.9, roughness: 0.08, emissive: 0x0c2f4a, emissiveIntensity: 0.6 });
   const light = new THREE.MeshBasicMaterial({ color: hot(color, 2.4) });
-  const nozzle = new THREE.MeshBasicMaterial({ color: hot(0xbdefff, 2.2) });
+  const nozzle = new THREE.MeshBasicMaterial({ color: hot(EXHAUST[skin].core, 2.2) });
 
   const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0) => {
     const m = new THREE.Mesh(geo, mat);
@@ -91,7 +91,7 @@ export function buildShip(typeId: string, color: number, skin: Skin): ShipModel 
     disc.rotation.y = -Math.PI / 2;
     disc.castShadow = false;
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: glowTexture(), color: hot(0x7fd8ff, 2.2), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      map: glowTexture(), color: hot(EXHAUST[skin].glow, 2.2), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
     }));
     sp.position.set(x - r * 0.9, y, z);
     sp.scale.setScalar(r * 5);
