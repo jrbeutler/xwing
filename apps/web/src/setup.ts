@@ -38,7 +38,7 @@ const clean = (q: Squad): Squad => ({
   }),
 });
 
-/** The upgrades from `wanted` that still fit, in order (after a hull change, or from an old save). */
+/** The upgrades from `wanted` that still fit, in order (talents after a hull change, or anything from an old save). */
 function keepFitting(s: SquadShip, wanted: string[]): string[] {
   const kept: string[] = [];
   for (const u of wanted) if (fitsSlots({ ...s, upgrades: [...kept, u] })) kept.push(u);
@@ -286,7 +286,8 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     root.querySelectorAll<HTMLSelectElement>('[data-hull]').forEach((sel) => { sel.onchange = () => {
       const s = player.ships[Number(sel.dataset.hull)];
       s.shipType = sel.value;
-      s.upgrades = keepFitting({ ...s, upgrades: [] }, s.upgrades); // a smaller hull drops what no longer fits
+      // A new ship starts bare: the pilot keeps their talents (if they still have the slots), ship upgrades are cleared.
+      s.upgrades = keepFitting({ ...s, upgrades: [] }, s.upgrades.filter((u) => UPGRADES[u].slot === 'talent'));
       render();
     }; });
     root.querySelectorAll<HTMLSelectElement>('[data-fit]').forEach((sel) => { sel.onchange = () => {
