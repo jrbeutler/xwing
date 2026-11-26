@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { isObstructed } from '../src/combat';
+import { isObstructed, shipPolygon } from '../src/combat';
+import { OBSTACLE_AVOID, scoreManeuver } from '../src/ai';
 import { OBSTACLE_RULES, SHIP_TYPES } from '../src/content';
-import { apply, createGame, DEFAULT_OBSTACLE_MIX, generateObstacles } from '../src/game';
+import { apply, createGame, DEFAULT_OBSTACLE_MIX, generateObstacles, resolveMovement } from '../src/game';
 import { polygonsOverlap } from '../src/geometry';
 import type { GameEvent, GameState, Obstacle, ObstacleKind } from '../src/types';
 
@@ -117,5 +118,56 @@ describe('random boards', () => {
       obstacles: [block('gas'), { ...block('debris'), id: 'debris-1', polygon: block('debris').polygon.map((p) => ({ x: p.x + 200, y: p.y + 200 })) }],
     });
     expect(g.obstacles.map((o) => o.kind)).toEqual(['gas', 'debris']);
+  });
+});
+
+describe('AI obstacle avoidance', () => {
+  // Syl Ketch's Wasp at y = 150 heading up the board; a 3 straight crosses the block at y = 200-240 and ends clear of it.
+  const game = (obstacles: Obstacle[]) => createGame({
+    seed: 1,
+    players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],
+    squads: { a: [{ pilotId: 'syl-ketch', pose: { x: 300, y: 150, h: Math.PI / 2 } }], b: [{ pilotId: 'kira-solace', pose: { x: 700, y: 850, h: -Math.PI / 2 } }] },
+    obstacles,
+  });
+  const threeStraight = SHIP_TYPES.wasp.dial.findIndex((m) => m.bearing === 'straight' && m.speed === 3);
+  const noJitter = () => 0;
+
+  it('penalises a maneuver that flies through an obstacle even when it ends clear', () => {
+    const clear = game([]), rock = game([block('asteroid')]);
+    const flown = resolveMovement(rock, rock.ships[0], SHIP_TYPES.wasp.dial[threeStraight]);
+    expect(flown.obstacles).toEqual(['asteroid-0']); // the rules count it
+    expect(polygonsOverlap(shipPolygon(rock.ships[0], flown.final), block('asteroid').polygon)).toBe(false); // ends clear
+    const delta = scoreManeuver(clear, clear.ships[0], threeStraight, noJitter) - scoreManeuver(rock, rock.ships[0], threeStraight, noJitter);
+    expect(delta).toBeCloseTo(OBSTACLE_AVOID.asteroid, 9);
+  });
+
+  it('weighs the kinds differently', () => {
+    const score = (kind: ObstacleKind) => { const g = game([block(kind)]); return scoreManeuver(g, g.ships[0], threeStraight, noJitter); };
+    expect(score('asteroid')).toBeLessThan(score('debris'));
+    expect(score('debris')).toBeLessThan(score('gas'));
+  });
+
+  it('does not penalise a path that misses', () => {
+    const clear = game([]), away = game([{ ...block('asteroid'), polygon: block('asteroid').polygon.map((p) => ({ x: p.x + 300, y: p.y })) }]);
+    expect(scoreManeuver(away, away.ships[0], threeStraight, noJitter)).toBe(scoreManeuver(clear, clear.ships[0], threeStraight, noJitter));
+  });
+});
+
+describe('AI lookahead', () => {
+  it('avoids ending nose-up to an obstacle it would have to fly into next round', () => {
+    // A wide wall across the board at y = 330-370: a 3 straight from y = 150 ends just short of it (boxed in).
+    const wall: Obstacle = { id: 'asteroid-w', kind: 'asteroid', polygon: [{ x: 150, y: 330 }, { x: 450, y: 330 }, { x: 450, y: 370 }, { x: 150, y: 370 }] };
+    const g = createGame({
+      seed: 1,
+      players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],
+      squads: { a: [{ pilotId: 'syl-ketch', pose: { x: 300, y: 150, h: Math.PI / 2 } }], b: [{ pilotId: 'kira-solace', pose: { x: 750, y: 850, h: -Math.PI / 2 } }] },
+      obstacles: [wall],
+    });
+    const open = createGame({ seed: 1, players: [g.players[0], g.players[1]], squads: { a: [{ pilotId: 'syl-ketch', pose: { x: 300, y: 150, h: Math.PI / 2 } }], b: [{ pilotId: 'kira-solace', pose: { x: 750, y: 850, h: -Math.PI / 2 } }] } });
+    const threeStraight = SHIP_TYPES.wasp.dial.findIndex((m) => m.bearing === 'straight' && m.speed === 3);
+    const flown = resolveMovement(g, g.ships[0], SHIP_TYPES.wasp.dial[threeStraight]);
+    expect(flown.obstacles).toEqual([]); // the move itself is clean
+    const delta = scoreManeuver(open, open.ships[0], threeStraight, () => 0) - scoreManeuver(g, g.ships[0], threeStraight, () => 0);
+    expect(delta).toBeCloseTo(OBSTACLE_AVOID.boxedIn, 9);
   });
 });

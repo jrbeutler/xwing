@@ -2,7 +2,7 @@
 // produces against a naive prediction of enemy movement. Fast, beatable, good enough
 // to test rules; later AIs can plug into the same `decide` contract.
 import { Pose, fwd } from './geometry';
-import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
+import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
 import { activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
@@ -54,8 +54,13 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   const poly = basePolygon(pose, size);
   if (!inBounds(poly)) return -1000;
   let score = 0;
-  // Landing on an obstacle: asteroids cost the action and maybe hull, debris a stress, gas clouds an ion token.
-  for (const o of s.obstacles) if (polygonsOverlap(poly, o.polygon)) score -= OBSTACLE_AVOID[o.kind];
+  // Flying through or onto an obstacle (the rules treat both the same): asteroids cost the action and maybe
+  // hull, debris a stress, gas clouds an ion token. Ignores bumps that might stop the ship short of it.
+  if (s.obstacles.length) {
+    score -= obstacleCost(s, sh.pose, size, m);
+    // Don't end nose-up to an obstacle: if every gentle move from there runs into one, next round is a contact too.
+    if (ESCAPES.every((next) => obstacleCost(s, pose, size, next) > 0)) score -= OBSTACLE_AVOID.boxedIn;
+  }
   if (s.devices.some((d) => d.kind === 'mine' && polygonsOverlap(poly, devicePolygon(d)))) score -= 45;
   const edge = Math.min(pose.x, pose.y, BOARD_SIZE - pose.x, BOARD_SIZE - pose.y);
   if (edge < 80) score -= (80 - edge) * 0.5;
@@ -87,8 +92,29 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   return score + jitter() * 6;
 }
 
-/** How much the AI dislikes ending a maneuver on each kind of obstacle. */
-export const OBSTACLE_AVOID: Record<ObstacleKind, number> = { asteroid: 40, debris: 30, gas: 22 };
+/** Spacing (mm) of the base positions the AI checks along a maneuver for obstacles: well under any base or obstacle size. */
+const PATH_STEP = 8;
+
+/**
+ * How much the AI dislikes flying through or onto each kind of obstacle, and (boxedIn) ending where a short
+ * straight and both gentle banks would all hit one next round. Heavier than one good firing position (up to 30),
+ * so the AI gives up a shot rather than take a contact. In 300 mirrored games against 40/30/22 without the
+ * lookahead, these won 183-104 (13 draws) with 0.2 contacts per side per game instead of 4.6. Mutable for experiments.
+ */
+export const OBSTACLE_AVOID: Record<ObstacleKind | 'boxedIn', number> = { asteroid: 120, debris: 90, gas: 60, boxedIn: 40 };
+
+/** Gentle moves a ship can usually make next round; if all of them hit an obstacle, it is boxed in. */
+const ESCAPES: Maneuver[] = [
+  { bearing: 'straight', speed: 2, difficulty: 'white' },
+  { bearing: 'bankLeft', speed: 2, difficulty: 'white' },
+  { bearing: 'bankRight', speed: 2, difficulty: 'white' },
+];
+
+/** Penalty for the obstacles a maneuver from `from` flies through or onto (each counted once, by kind). */
+function obstacleCost(s: GameState, from: Pose, size: number, m: Maneuver): number {
+  const swept = [...maneuverPath(from, size, m, PATH_STEP).path, maneuverFinalPose(from, size, m)].map((p) => basePolygon(p, size));
+  return s.obstacles.reduce((cost, o) => cost + (swept.some((b) => polygonsOverlap(b, o.polygon)) ? OBSTACLE_AVOID[o.kind] : 0), 0);
+}
 
 /** How good a shot is (as the attack decision weighs it): expected damage, plus kills and ion tokens. */
 const shotWorth = (s: GameState, a: ShipState, d: ShipState, t: TargetInfo) => {

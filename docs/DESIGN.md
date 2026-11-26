@@ -106,7 +106,7 @@ Keep these rules so this stays cheap:
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
 - Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, and a scenario format (missions) that would lay out obstacles by design.
-- The AI only checks where a maneuver ends, not what it flies through, so it still clips obstacles on the way (about 10 contacts a game in AI-vs-AI). It dislikes ending on asteroids most, then debris, then gas (`OBSTACLE_AVOID`).
+- The AI checks the whole path of a maneuver for obstacles (the rules count flying through the same as landing on one), weighted asteroid > debris > gas, and looks one move ahead: it avoids ending nose-up to an obstacle when a short straight and both gentle banks would all hit one next round (`OBSTACLE_AVOID` in `ai.ts`). AI-vs-AI games average about half an obstacle contact per game (down from about 10). It does not predict bumps, so it may skip a move that a collision would have stopped short of an obstacle.
 - Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
 - The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`), and never barrel rolls or boosts yet, so it never uses the Wasp/Javelin links.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
@@ -159,8 +159,8 @@ it never barrel rolls or boosts yet, so Slipstream never fires for it.
 ## AI
 
 v1 is a one-ply lookahead. For each legal maneuver it scores the end position: enemies in
-my arc (closer is better), me in their predicted arc (bad), board edges, obstacles,
-distance to the nearest enemy, and stress. It adds a small jitter so it isn't predictable.
+my arc (closer is better), me in their predicted arc (bad), board edges, obstacles flown
+through or onto (and ending boxed in by one), distance to the nearest enemy, and stress. It adds a small jitter so it isn't predictable.
 
 Next steps:
 - Sample enemy maneuvers instead of predicting straight-2.
