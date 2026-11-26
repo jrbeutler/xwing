@@ -1,23 +1,29 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
-  legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
+  legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
 import { handoff, hideHandoff } from './handoff';
+import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
+import { openLobby, type LobbyUi } from './lobby';
 import { ICONS } from './icons';
 import type { RadialItem } from './scene';
 
 const P1 = 'p1';
 const P2 = 'p2';
 const other = (id: string) => (id === P1 ? P2 : P1);
-/** Against the AI, or two people taking turns on one device. */
-let versus: 'ai' | 'human' = 'ai';
-/** The player at the controls (and whose point of view the board shows). Always P1 against the AI. */
+/** Against the AI, two people taking turns on one device, or two people online (see online.ts). */
+let versus: 'ai' | 'human' | 'online' = 'ai';
+/**
+ * The player at the controls (and whose point of view the board shows). Always P1 against the AI; online,
+ * P1 for the host and P2 for the guest.
+ */
 let me = P1;
-const isHuman = (id: string) => id === P1 || versus === 'human';
-const seatName = (id: string) => (versus === 'human' ? `Player ${id === P1 ? 1 : 2}` : id === P1 ? 'You' : 'AI');
+/** Whether this device gives `id`'s commands (online, only our own seat; the other player is remote). */
+const isHuman = (id: string) => (versus === 'online' ? id === me : id === P1 || versus === 'human');
+const seatName = (id: string) => (versus === 'human' ? `Player ${id === P1 ? 1 : 2}` : versus === 'online' ? (id === me ? 'You' : 'Opponent') : id === P1 ? 'You' : 'AI');
 const factionName = (id: string) => (id === P1 ? 'Coalition' : 'Syndicate');
 
 const scene = new BattleScene(document.getElementById('viewport')!);
@@ -81,6 +87,7 @@ const nameHtml = (id: string) => { const s = shipById(id); return `<span class="
 
 /** Open the squad builder (keeping the last opponent when coming back from deployment). */
 function newGame(keep?: BattleSetup) {
+  leaveOnline();
   hideFinale();
   hideHandoff();
   stage = 'setup';
@@ -96,6 +103,8 @@ function newGame(keep?: BattleSetup) {
 // within their setup area before the battle starts.
 // ---------------------------------------------------------------------------
 function startDeployment(setup: BattleSetup) {
+  // Online: the lobby comes first; the host starts deployment once a friend has joined (hostAccept).
+  if (setup.versus === 'online' && !net) return openOnlineLobby(setup);
   lastSetup = setup;
   versus = setup.versus;
   stage = 'deploy';
@@ -149,28 +158,33 @@ const deployedOthers = (id: string) => state.ships.filter((x) => x.id !== id).ma
 
 function renderDeployment() {
   const hint = compact ? 'Drag your ships along your edge.' : 'Click one of your ships to pick it up, move it, and click to put it down.';
-  // With two players, Player 1 deploys first and hands over; Player 2's "done" starts the battle.
+  // With two players, Player 1 deploys first and hands over; Player 2's "done" starts the battle. Online,
+  // both deploy at once and the battle starts when both are ready.
   const handsOver = versus === 'human' && me === P1;
-  const goLabel = handsOver ? 'Done: Player 2 deploys' : 'Begin battle';
+  const online = versus === 'online';
+  if (online && ready[net?.role === 'host' ? 'host' : 'guest']) return renderDeployWait();
+  const goLabel = handsOver ? 'Done: Player 2 deploys' : online ? 'Ready' : 'Begin battle';
   const who = versus === 'human' ? `<span class="${me}c">${seatName(me)}</span>: ` : '';
-  const them = versus === 'human' && me === P1 ? 'Player 2 deploys along the far edge next.' : 'The opponent has deployed along the far edge.';
+  const them = online ? `Your opponent is deploying along the ${me === P1 ? 'far' : 'near'} edge${ready[net?.role === 'host' ? 'guest' : 'host'] ? ' and is ready' : ''}.`
+    : versus === 'human' && me === P1 ? 'Player 2 deploys along the far edge next.' : 'The opponent has deployed along the far edge.';
   detail.innerHTML = `<h2>${who}Deployment</h2><p class="hint">${hint} Ships must sit inside your setup area (the lit strip) and not overlap.
     ${them}</p>
     <div class="row"><button class="opt mini" id="dp-auto">Auto-arrange</button><button class="opt mini" id="dp-back">Back to squad</button></div>
     <button class="go" id="dp-go">${goLabel}</button>`;
   document.getElementById('dp-auto')!.onclick = autoArrange;
-  document.getElementById('dp-back')!.onclick = () => newGame(lastSetup ?? undefined);
+  document.getElementById('dp-back')!.onclick = () => { if (!online || confirm('Leave this online game?')) newGame(lastSetup ?? undefined); };
   document.getElementById('dp-go')!.onclick = beginBattle;
   setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : `${who}Deploy: drag your ships, then ${handsOver ? 'hand over' : 'begin'}`, buttons: [
     { label: 'Auto', onClick: autoArrange },
-    { label: handsOver ? 'Done' : 'Begin battle', cls: 'primary', onClick: beginBattle },
+    { label: handsOver ? 'Done' : online ? 'Ready' : 'Begin battle', cls: 'primary', onClick: beginBattle },
   ] });
 }
 
 function autoArrange() {
-  if (!lastSetup) return;
   const side = deploySide();
-  const poses = autoDeploy(side === 'near' ? lastSetup.player : lastSetup.opponent, side);
+  // The squad as flown (pilots and hulls), from the game itself: online the guest has no setup for both sides.
+  const mine: Squad = { ships: state.ships.filter((x) => x.owner === me).map((x) => ({ pilotId: x.pilotId, shipType: x.typeId, upgrades: [] })) };
+  const poses = autoDeploy(mine, side);
   state.ships.filter((x) => x.owner === me).forEach((x, i) => { x.pose = poses[i]; });
   carrying = null;
   scene.setRings({});
@@ -181,6 +195,7 @@ function beginBattle() {
   if (stage !== 'deploy') return;
   if (carrying) dropCarried();
   if (versus === 'human' && me === P1) return startDeploying(P2);
+  if (versus === 'online') return onlineReady();
   stage = 'battle';
   mode = null;
   scene.setDeployZone(null);
@@ -228,6 +243,13 @@ async function send(cmd: Command) {
   scene.clearGhost();
   scene.clearOverlay();
   scene.setMarkers([]);
+  // Online guest: the host's browser runs the game; send it the command and wait for the updated view.
+  if (net?.role === 'guest') {
+    awaitingHost = true;
+    net.link?.send({ t: 'cmd', cmd });
+    renderDecision();
+    return;
+  }
   try {
     state = apply(state, cmd);
   } catch (err) {
@@ -235,6 +257,7 @@ async function send(cmd: Command) {
     render(); // put the controls back so the player can choose again
     return;
   }
+  syncGuest();
   await pump();
 }
 
@@ -256,7 +279,7 @@ async function pump() {
         disp = structuredClone(state.ships);
       }
       const d = state.pending;
-      if (!d || versus === 'human') break;
+      if (!d || versus !== 'ai') break;
       const aiTurn = d.kind === 'planning' ? d.waitingOn.includes(P2) : d.playerId === P2;
       if (!aiTurn) break;
       // The AI sees the same redacted view a network client would (RNG kept for its private jitter seed).
@@ -302,14 +325,364 @@ function nextSeat(): string | null {
  */
 function setSeat(who: string, turn = false) {
   me = who;
-  seatEl.hidden = versus !== 'human';
+  seatEl.hidden = versus === 'ai';
   seatEl.className = who;
-  seatEl.innerHTML = `${seatName(who)} <span>· ${factionName(who)}</span>`;
-  const facing = versus === 'human' && who === P2 ? -1 : 1;
-  if ((turn || versus === 'ai') && scene.facing !== facing) {
+  seatEl.innerHTML = versus === 'online' ? `Online ${net?.code ?? ''} <span>· ${factionName(who)}</span>` : `${seatName(who)} <span>· ${factionName(who)}</span>`;
+  // Player 2 (or the online guest) looks up the board from the far edge.
+  const facing = versus !== 'ai' && who === P2 ? -1 : 1;
+  if ((turn || versus !== 'human') && scene.facing !== facing) {
     scene.facing = facing;
     scene.resetView(0);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Online play (see online.ts). The host's browser runs the game exactly as a local game and tells the
+// guest's browser what it may see (viewFor). The guest sends its commands to the host, which checks them
+// with the engine like any other command. Both deploy at the same time; the battle starts when both are ready.
+// ---------------------------------------------------------------------------
+let net: { role: 'host' | 'guest'; code: string; link: Link | null; seat: string; stop: () => void; budget: number } | null = null;
+/** Online deployment: who has pressed Ready. */
+let ready = { host: false, guest: false };
+/** Guest: a command has gone to the host and its answer has not come back yet. */
+let awaitingHost = false;
+/** Host: how many log events the guest already has. */
+let sentLog = 0;
+/** Guest: trying to reconnect after the connection dropped. */
+let reconnecting = false;
+
+const netStatus = document.createElement('div');
+netStatus.id = 'netstatus';
+netStatus.hidden = true;
+netStatus.setAttribute('role', 'status');
+document.body.appendChild(netStatus);
+const showNet = (text: string | null) => { netStatus.hidden = !text; netStatus.textContent = text ?? ''; };
+
+/** A code from an invite link (?join=CODE): open the online lobby with it filled in. */
+const inviteCode = normalizeCode(new URLSearchParams(location.search).get('join') ?? '');
+if (inviteCode) { try { localStorage.setItem('xw-versus', JSON.stringify('online')); } catch { /* storage unavailable */ } }
+
+function openOnlineLobby(setup: BattleSetup) {
+  let hosting: { stop: () => void } | null = null;
+  const sh = savedHost(), sg = savedGuest();
+  const lobby = openLobby({
+    host: async (ui) => {
+      const code = newCode();
+      const h = await hostGame(code, (link) => hostConnection(link, setup, ui));
+      hosting = h;
+      net = { role: 'host', code, link: null, seat: '', stop: h.stop, budget: setup.budget };
+      ui.showCode(code);
+    },
+    join: async (code, ui) => {
+      const seat = newSeatToken();
+      await guestConnect(code, seat, setup.player, ui, { ...setup, opponent: { ships: [] } });
+    },
+    resumeHost: sh ? { code: sh.code, round: sh.state.round, run: (ui) => resumeHosting(sh, ui) } : undefined,
+    rejoin: sg ? { code: sg.code, run: (ui) => guestConnect(sg.code, sg.seat, null, ui, { budget: setup.budget, versus: 'online', player: setup.player, opponent: { ships: [] }, hints: { you: sg.hints, them: false } }) } : undefined,
+    cancel: () => { hosting?.stop(); hosting = null; net = null; },
+    back: () => newGame(setup),
+  }, { budget: setup.budget, joinCode: inviteCode || undefined });
+  void lobby;
+}
+
+/** Host: a browser connected. Wait for its join (a new guest with a squad, or our guest coming back). */
+function hostConnection(link: Link, setup: BattleSetup | null, ui: LobbyUi | null) {
+  link.onClose = () => {
+    if (net?.link === link) { net.link = null; if (stage !== 'setup') showNet('Your opponent disconnected. Waiting for them to come back…'); }
+  };
+  link.onMessage = (m) => {
+    if (!net || net.role !== 'host') return;
+    if (m.t === 'join') {
+      if (net.seat && m.seat === net.seat) {
+        // Our guest is back (reload or dropped connection): give it everything again.
+        if (net.link && net.link !== link) net.link.close();
+        net.link = link;
+        showNet(null);
+        syncGuest(true);
+        return;
+      }
+      if (net.seat || !setup || !m.squad) {
+        link.send({ t: 'reject', reason: net.seat ? 'This game already has two players.' : 'That game has ended.' });
+        setTimeout(() => link.close(), 500);
+        return;
+      }
+      const problems = validateSquad(m.squad, net.budget);
+      if (problems.length) {
+        link.send({ t: 'reject', reason: `Your squad doesn't fit this game: ${problems[0]}` });
+        setTimeout(() => link.close(), 500);
+        return;
+      }
+      net.seat = m.seat;
+      net.link = link;
+      ui?.close();
+      ready = { host: false, guest: false };
+      startDeployment({ ...setup, versus: 'online', opponent: m.squad });
+      syncGuest(true);
+      return;
+    }
+    if (net.link !== link) return; // a stale connection
+    hostReceive(m);
+  };
+}
+
+function hostReceive(m: Msg) {
+  if (m.t === 'resync') return syncGuest(true);
+  if (m.t === 'bye') { if (state.phase !== 'over') showNet('Your opponent left the game.'); saveHost(null); return; }
+  if (m.t === 'deploy' && stage === 'deploy') {
+    // Check the guest's placement like a local one: its own ships, inside its setup area, not overlapping.
+    const theirs = state.ships.filter((x) => x.owner === P2);
+    const placed: { pose: Pose; size: number }[] = [];
+    for (const x of theirs) {
+      const pose = m.poses[x.id];
+      if (!pose || !canDeployAt(pose, sizeOf(x), 'far', placed)) { net!.link?.send({ t: 'refused', reason: 'That deployment is not legal.' }); return syncGuest(true); }
+      placed.push({ pose, size: sizeOf(x) });
+    }
+    theirs.forEach((x) => { x.pose = m.poses[x.id]; });
+    scene.syncShips(state.ships);
+    ready.guest = true;
+    syncGuest();
+    if (ready.host) return startOnlineBattle();
+    if (!carrying) renderDeployment();
+    return;
+  }
+  if (m.t === 'cmd' && stage === 'battle') {
+    const cmd = m.cmd;
+    // The guest may only act for its own seat; the engine checks the rest.
+    if (cmd.playerId !== P2) { net!.link?.send({ t: 'refused', reason: 'Not your seat.' }); return syncGuest(true); }
+    try {
+      state = apply(state, cmd);
+    } catch (err) {
+      net!.link?.send({ t: 'refused', reason: (err as Error).message });
+      return syncGuest(true);
+    }
+    syncGuest();
+    if (!busy) void pump();
+  }
+}
+
+/** Host: send the guest its view and the log events it has not had yet (everything if `full`), and save the game. */
+function syncGuest(full = false) {
+  if (!net || net.role !== 'host' || stage === 'setup') return;
+  // A finished game is not offered for resuming.
+  if (state.phase === 'over') saveHost(null);
+  else saveHost({ code: net.code, seat: net.seat, budget: net.budget, stage: stage === 'battle' ? 'battle' : 'deploy', state, ready, hints: !!lastSetup?.hints.you });
+  if (!net.link) return;
+  const from = full ? 0 : sentLog;
+  const view = viewFor(state, P2);
+  const events = state.log.slice(from);
+  view.log = [];
+  net.link.send({ t: 'sync', stage: stage === 'battle' ? 'battle' : 'deploy', view, from, events, budget: net.budget, ready });
+  sentLog = state.log.length;
+}
+
+/** Ready pressed in online deployment. */
+function onlineReady() {
+  if (!net) return;
+  if (net.role === 'host') {
+    ready.host = true;
+    syncGuest();
+    if (ready.guest) return startOnlineBattle();
+    return renderDeployWait();
+  }
+  const poses = Object.fromEntries(state.ships.filter((x) => x.owner === me).map((x) => [x.id, x.pose]));
+  ready.guest = true;
+  net.link?.send({ t: 'deploy', poses });
+  renderDeployWait();
+}
+
+/** Deployment: we are ready; waiting for the other player. */
+function renderDeployWait() {
+  mode = null;
+  scene.setDeployZone(null);
+  scene.setRings({});
+  detail.innerHTML = `<h2>Ready</h2><p class="hint">Waiting for your opponent to finish placing their ships…</p>`;
+  setBar({ status: 'Ready. Waiting for your opponent to deploy…' });
+}
+
+/** Host: both ready. The battle starts here and the guest follows when the next sync arrives. */
+function startOnlineBattle() {
+  stage = 'battle';
+  mode = null;
+  scene.setDeployZone(null);
+  scene.setRings({});
+  disp = structuredClone(state.ships);
+  syncGuest();
+  void pump();
+}
+
+/** Guest: connect to `code` and join (with a squad, or as a returning player with none). */
+async function guestConnect(code: string, seat: string, squad: Squad | null, ui: LobbyUi | null, setup: BattleSetup) {
+  const { link, stop } = await joinGame(code);
+  net = { role: 'guest', code, link, seat, stop, budget: setup.budget };
+  lastSetup = setup;
+  versus = 'online';
+  saveGuest({ code, seat, hints: setup.hints.you });
+  attachGuestLink(link, ui);
+  link.send({ t: 'join', seat, squad });
+}
+
+function attachGuestLink(link: Link, ui: LobbyUi | null) {
+  link.onClose = () => { if (net?.link === link) { net.link = null; void guestReconnect(); } };
+  link.onMessage = (m) => {
+    if (!net || net.role !== 'guest') return;
+    if (m.t === 'reject') {
+      saveGuest(null);
+      const n = net;
+      net = null;
+      n.stop();
+      if (ui) ui.status(m.reason, true); else { showNet(m.reason); }
+      return;
+    }
+    if (m.t === 'refused') { awaitingHost = false; showBanner(`<b>REFUSED</b><span class="detail">${m.reason}</span>`, 'miss', 2000); if (!busy) render(); return; }
+    if (m.t === 'bye') { if (state?.phase !== 'over') showNet('The host ended the game.'); saveGuest(null); return; }
+    if (m.t === 'sync') { ui?.close(); ui = null; guestSync(m); }
+  };
+}
+
+/** Guest: the connection dropped. Keep trying to get back in with the same seat. */
+async function guestReconnect() {
+  if (reconnecting || !net || net.role !== 'guest') return;
+  reconnecting = true;
+  showNet('Connection lost. Reconnecting…');
+  for (let tries = 0; net && net.role === 'guest' && !net.link; tries++) {
+    try {
+      net.stop();
+      const { link, stop } = await joinGame(net.code);
+      if (!net) { stop(); break; }
+      net.link = link;
+      net.stop = stop;
+      attachGuestLink(link, null);
+      link.send({ t: 'join', seat: net.seat, squad: null });
+      showNet(null);
+    } catch {
+      showNet(`Connection lost. Reconnecting… (the host must keep their game open)`);
+      await new Promise((r) => setTimeout(r, Math.min(15000, 2000 + tries * 1000)));
+    }
+  }
+  reconnecting = false;
+}
+
+/** Guest: a view (and new log events) from the host. */
+function guestSync(m: Extract<Msg, { t: 'sync' }>) {
+  const fresh = stage === 'setup';
+  let log: GameEvent[];
+  if (m.from === 0) log = m.events;
+  else if (!fresh && m.from === state.log.length) log = state.log.concat(m.events);
+  else { net?.link?.send({ t: 'resync' }); return; }
+  const next: GameState = { ...m.view, log };
+  ready = m.ready;
+  awaitingHost = false;
+  if (m.stage === 'deploy') {
+    if (fresh) return enterOnlineDeployment(next, P2);
+    // Still placing our own ships: keep where we have put them, take the rest from the host.
+    if (!ready.guest) next.ships.forEach((x) => { if (x.owner === me) x.pose = shipById(x.id).pose; });
+    state = next;
+    scene.syncShips(state.ships);
+    if (!carrying) renderDeployment();
+    return;
+  }
+  if (fresh) return enterOnlineBattle(next, P2);
+  if (stage === 'deploy') {
+    state = next;
+    stage = 'battle';
+    mode = null;
+    scene.setDeployZone(null);
+    scene.setRings({});
+    disp = structuredClone(state.ships);
+    void pump();
+    return;
+  }
+  state = next;
+  if (state.phase === 'over') saveGuest(null);
+  if (!busy) void pump();
+}
+
+/** Show a game we did not create here (guest joining, or anyone resuming) at deployment. */
+function enterOnlineDeployment(s: GameState, seat: string) {
+  versus = 'online';
+  stage = 'deploy';
+  state = s;
+  me = seat;
+  shown = 0;
+  plan = {};
+  logEl.innerHTML = '';
+  roundShots = [];
+  disp = structuredClone(state.ships);
+  scene.clearShips();
+  scene.setObstacles(state.obstacles);
+  scene.syncShips(state.ships);
+  scene.setDevices(state.devices);
+  roundEl.textContent = 'Setup';
+  phaseEl.textContent = 'deployment';
+  setSeat(seat, true);
+  startDeploying(seat);
+}
+
+/** Show a battle already in progress (rejoining or resuming): jump to now instead of replaying it. */
+function enterOnlineBattle(s: GameState, seat: string) {
+  versus = 'online';
+  stage = 'battle';
+  state = s;
+  me = seat;
+  plan = {};
+  logEl.innerHTML = '';
+  roundShots = [];
+  for (const e of state.log) logLine(e);
+  shown = state.log.length;
+  disp = structuredClone(state.ships);
+  scene.clearShips();
+  scene.setDeployZone(null);
+  scene.setObstacles(state.obstacles);
+  scene.syncShips(state.ships);
+  scene.setDevices(state.devices);
+  roundEl.textContent = `Round ${state.round}`;
+  phaseEl.textContent = state.phase;
+  setSeat(seat, true);
+  void pump();
+}
+
+/** Host: pick a saved game back up after a reload; the guest rejoins with the same code. */
+async function resumeHosting(saved: SavedHost, ui: LobbyUi) {
+  // The matchmaking service can hold our old registration for a while after a reload: keep trying for a minute.
+  const h = await hostGame(saved.code, (link) => hostConnection(link, null, null), 60000);
+  net = { role: 'host', code: saved.code, link: null, seat: saved.seat, stop: h.stop, budget: saved.budget };
+  ready = saved.ready;
+  lastSetup = { budget: saved.budget, versus: 'online', player: { ships: [] }, opponent: { ships: [] }, hints: { you: saved.hints, them: false } };
+  ui.close();
+  showNet('Waiting for your opponent to rejoin…');
+  if (saved.stage === 'deploy') enterOnlineDeployment(saved.state, P1);
+  else enterOnlineBattle(saved.state, P1);
+  if (saved.stage === 'deploy' && ready.host) renderDeployWait();
+}
+
+/** Leave any online game (a new battle, or back to the squad builder). */
+function leaveOnline() {
+  if (!net) return;
+  net.link?.send({ t: 'bye' });
+  const n = net;
+  net = null;
+  setTimeout(() => n.stop(), 300);
+  if (n.role === 'host') saveHost(null); else saveGuest(null);
+  ready = { host: false, guest: false };
+  awaitingHost = false;
+  showNet(null);
+  versus = 'ai';
+}
+
+/** Online: what the other player is doing while it is their turn (or while ours is on its way to the host). */
+function renderOpponentTurn(d: NonNullable<GameState['pending']>) {
+  mode = null;
+  scene.setPlanned([]);
+  scene.setMarkers([]);
+  const ship = d.kind === 'planning' ? null : shipById(d.shipId);
+  scene.highlight(ship?.id ?? null);
+  const what = awaitingHost ? 'Sent. Waiting for the host…'
+    : d.kind === 'planning' ? 'Your opponent is planning their maneuvers.'
+    : d.kind === 'action' ? `${ship!.name} is choosing an action.`
+    : d.kind === 'attack' ? `${ship!.name} is choosing a target.`
+    : `${ship!.name} is deciding whether to drop a device.`;
+  detail.innerHTML = `<h2>${awaitingHost ? 'Sent' : "Opponent's turn"}</h2><p class="hint"><span class="spinner"></span> ${what}</p>`;
+  setBar({ status: `<span class="hint">${what}</span>` });
 }
 
 // ---------------------------------------------------------------------------
@@ -815,6 +1188,10 @@ function renderDecision() {
   scene.setOdds({});
   mode = null;
   const d = state.pending;
+  // Online: the other player's decision (or ours, sent and waiting for the host) shows what they are doing.
+  if (versus === 'online' && d && state.phase !== 'over' && (awaitingHost || !(d.kind === 'planning' ? d.waitingOn.includes(me) : d.playerId === me))) {
+    return renderOpponentTurn(d);
+  }
   if (state.phase === 'over' || !d) {
     scene.highlight(null);
     const title = resultTitle();
@@ -876,23 +1253,23 @@ function killsBy(): Map<string, number> {
 function resultTitle() {
   if (state.winner === 'draw') return 'Draw';
   if (versus === 'human') return `${seatName(state.winner!)} wins`;
-  return state.winner === P1 ? 'Victory' : 'Defeat';
+  return state.winner === me ? 'Victory' : 'Defeat';
 }
 
 function showFinale(first = false) {
   const two = versus === 'human';
   // Two players: told from the winner's side (it's their celebration), and named rather than "you".
-  const hero = two && state.winner && state.winner !== 'draw' ? state.winner : P1;
-  const result = state.winner === 'draw' ? 'draw' : two || state.winner === P1 ? 'victory' : 'defeat';
+  const hero = two && state.winner && state.winner !== 'draw' ? state.winner : me;
+  const result = state.winner === 'draw' ? 'draw' : two || state.winner === me ? 'victory' : 'defeat';
   const title = resultTitle();
   const mine = state.ships.filter((s) => s.owner === hero), theirs = state.ships.filter((s) => s.owner === other(hero));
   const down = (xs: ShipState[]) => xs.filter((s) => s.destroyed).length;
   const wiped = (xs: ShipState[]) => down(xs) === xs.length;
-  const loser = two ? `${seatName(other(hero))}'s ${factionName(other(hero))}` : 'Syndicate';
+  const loser = two ? `${seatName(other(hero))}'s ${factionName(other(hero))}` : factionName(other(hero));
   const why = result === 'draw' ? (wiped(mine) && wiped(theirs) ? 'Both squadrons were wiped out.' : 'Time ran out with the squadrons dead even.')
     : result === 'victory' ? (wiped(theirs) ? `The ${loser} squadron has been wiped out.`
       : `Time ran out after round ${state.round}, with ${two ? `${seatName(hero)}'s` : 'your'} squadron ahead on hull and shields.`)
-    : (wiped(mine) ? 'Your squadron has been wiped out.' : `Time ran out after round ${state.round}, with the Syndicate ahead on hull and shields.`);
+    : (wiped(mine) ? 'Your squadron has been wiped out.' : `Time ran out after round ${state.round}, with the ${factionName(other(hero))} ahead on hull and shields.`);
   const kills = killsBy();
   // The top ace: the winner's (or anyone's, in a draw) ship with the most kills.
   const aces = [...kills].filter(([id]) => result === 'draw' || shipById(id).owner === state.winner).sort((a, b) => b[1] - a[1]);
@@ -1106,7 +1483,9 @@ let hintCache: { key: string; sug: Record<string, Suggestion> } | null = null;
 
 /** The suggestions for the player planning now (computed once per round from their own view), or null if they are off. */
 function suggestions(): Record<string, Suggestion> | null {
-  if (!lastSetup || state.phase !== 'planning' || !(me === P1 ? lastSetup.hints.you : lastSetup.hints.them)) return null;
+  // Each device's own choice: online that is always "you"; two players on one device each have their own.
+  const on = versus === 'online' ? lastSetup?.hints.you : me === P1 ? lastSetup?.hints.you : lastSetup?.hints.them;
+  if (!lastSetup || state.phase !== 'planning' || !on) return null;
   const key = `${state.round}:${me}`;
   if (hintCache?.key !== key) hintCache = { key, sug: suggestManeuvers(viewFor(state, me), me) };
   return hintCache.sug;
@@ -2023,6 +2402,10 @@ newGame();
   /** The player this device is acting for, and a way to send its commands (as the UI would). */
   get me() { return me; },
   send: (cmd: Command) => send(cmd),
+  /** Legal dial indices for one of the ships (for test scripts that plan moves). */
+  legalDial: (id: string) => legalDial(state, shipById(id)),
+  get stage() { return stage; },
+  get online() { return net && { role: net.role, code: net.code, connected: !!net.link, awaitingHost, ready }; },
   /** Input state, for diagnosing taps that do nothing. */
   get input() { return { busy, stage, mode: !!mode, multi, touches: [...touches], pointerDown, selected, compact }; },
   finalPose: (shipId: string, dialIndex: number) => {

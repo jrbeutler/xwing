@@ -286,7 +286,9 @@ export function viewFor(s: GameState, playerId: PlayerId): GameState {
   const v = clone(s);
   v.rng = 0;
   v.damageDeck.sort(); // contents are public, order is not
-  if (v.phase === 'planning') for (const sh of v.ships) if (sh.owner !== playerId) sh.dial = null;
+  // Opponents' dials stay hidden in every phase: each one becomes public only when its ship moves (the
+  // `dialRevealed` event), and ships later in the activation order have not revealed theirs yet.
+  for (const sh of v.ships) if (sh.owner !== playerId) sh.dial = null;
   return v;
 }
 
