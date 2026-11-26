@@ -20,7 +20,7 @@ describe('which weapons can fire', () => {
     expect(weapons(g)).toEqual(['primary']); // no lock yet
     g.ships[0].lock = g.ships[1].id;
     expect(weapons(g)).toEqual(['primary', 'proton-torpedoes']);
-    g.ships[0].upgrades[0].charges = 0;
+    g.ships[0].upgrades.at(-1)!.charges = 0;
     expect(weapons(g)).toEqual(['primary']);
     const close = lineUp(50, ['proton-torpedoes']); // range 1
     close.ships[0].lock = close.ships[1].id;
@@ -50,7 +50,7 @@ describe('firing ordnance', () => {
     const g = lineUp(150, ['concussion-missiles']);
     const [a, d] = g.ships;
     resolveAttack(g, a, d, shot('concussion-missiles', 3));
-    expect(a.upgrades[0].charges).toBe(2);
+    expect(a.upgrades.at(-1)!.charges).toBe(2);
   });
 
   it('Proton Torpedoes turn a hit into a crit', () => {
@@ -97,7 +97,7 @@ describe('firing ordnance', () => {
     const ev = g.log.find((e) => e.type === 'attack');
     expect(ev).toMatchObject({ weapon: 'rocket-pods' });
     expect((ev as { attackRoll: unknown[] }).attackRoll).toHaveLength(3);
-    expect(g.ships[0].upgrades[0].charges).toBe(1);
+    expect(g.ships[0].upgrades.at(-1)!.charges).toBe(1);
     expect(() => apply(g0, { type: 'attack', playerId: 'a', targetId: d.id, weapon: 'proton-torpedoes' })).toThrow('Illegal target');
   });
 });

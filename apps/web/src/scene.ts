@@ -77,7 +77,8 @@ export class BattleScene {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   labels = new CSS2DRenderer();
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(45, 1, 1, 6000);
+  // Near plane well off 1: depth precision near the board matters more than seeing things 1 mm away.
+  camera = new THREE.PerspectiveCamera(45, 1, 10, 6000);
   controls: OrbitControls;
   ships = new Map<string, ShipView>();
   ghost = new THREE.Group();
@@ -150,6 +151,7 @@ export class BattleScene {
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.bias = -0.0005;
+    sun.shadow.normalBias = 1.5; // no shadow acne stripes on the flat board
     sun.shadow.radius = 3;
     Object.assign(sun.shadow.camera, { left: -600, right: 600, top: 600, bottom: -600, far: 2500 });
     this.scene.add(sun);
@@ -220,7 +222,9 @@ export class BattleScene {
     // table slab and a raised, lit frame around the play area
     const slab = new THREE.Mesh(new THREE.BoxGeometry(BOARD_SIZE + 40, 14, BOARD_SIZE + 40),
       new THREE.MeshStandardMaterial({ color: 0x0b111d, metalness: 0.6, roughness: 0.5 }));
-    slab.position.y = -7.2;
+    // Top 3 mm under the board: much closer and phones' depth buffers can't separate them (the slab shows
+    // through the board in black stripes).
+    slab.position.y = -10;
     slab.receiveShadow = true;
     this.scene.add(slab);
     const frameMat = new THREE.MeshStandardMaterial({ color: 0x1a2436, metalness: 0.8, roughness: 0.3 });
@@ -850,25 +854,46 @@ export class BattleScene {
     this.flyTo(new THREE.Vector3(0, 0, 60), new THREE.Vector3(0, 1080, 640), ms);
   }
 
+  private fitCam = new THREE.PerspectiveCamera();
+
   /**
    * Frame a rectangle of the board (centre cx, cy; half sizes hw, hh in mm) inside the part of
    * the screen not covered by UI (insets in CSS px). `tilt` is the camera's angle from vertical.
+   * The fit is measured on screen (perspective makes the near edge wider than the far one), then
+   * the rectangle is centred in the uncovered area. `zoom` > 1 lets it be that much wider than the
+   * uncovered area (spilling past the sides, e.g. a wide board on an upright phone), never taller.
    */
   frameRect(cx: number, cy: number, hw: number, hh: number,
-    insets: { top: number; right: number; bottom: number; left: number }, tilt = 0.3, ms = 500) {
+    insets: { top: number; right: number; bottom: number; left: number }, tilt = 0.3, ms = 500, zoom = 1) {
     const w = this.host.clientWidth, h = this.host.clientHeight;
     const availW = Math.max(120, w - insets.left - insets.right);
     const availH = Math.max(120, h - insets.top - insets.bottom);
+    const midX = insets.left + availW / 2, midY = insets.top + availH / 2;
     const tv = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
-    const th = tv * (w / h);
-    const d = 1.08 * Math.max(hw / (th * (availW / w)), (hh * Math.cos(tilt)) / (tv * (availH / h)));
-    const mmPerPx = (2 * d * tv) / h;
+    const cam = this.fitCam;
+    cam.fov = this.camera.fov; cam.aspect = w / h; cam.near = this.camera.near; cam.far = this.camera.far;
+    cam.updateProjectionMatrix();
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toV3(cx + sx * hw, cy + sy * hh, 0));
     const target = toV3(cx, cy, 0);
-    // Shift the look-at point so the framed area sits in the middle of the uncovered region.
-    target.x += ((insets.right - insets.left) / 2) * mmPerPx;
-    target.z += (((insets.bottom - insets.top) / 2) * mmPerPx) / Math.cos(tilt);
-    const pos = target.clone().add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
-    this.flyTo(target, pos, ms);
+    let d = Math.max(hw / (tv * (w / h) * (availW / w)), hh / (tv * (availH / h)));
+    const place = () => {
+      cam.position.copy(target).add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
+      cam.lookAt(target);
+      cam.updateMatrixWorld();
+    };
+    // A few rounds of: measure where the corners land, rescale to fit, recentre.
+    for (let i = 0; i < 6; i++) {
+      place();
+      const px = corners.map((c) => { const v = c.clone().project(cam); return { x: ((v.x + 1) / 2) * w, y: ((1 - v.y) / 2) * h }; });
+      const x0 = Math.min(...px.map((p) => p.x)), x1 = Math.max(...px.map((p) => p.x));
+      const y0 = Math.min(...px.map((p) => p.y)), y1 = Math.max(...px.map((p) => p.y));
+      d *= Math.max((x1 - x0) / (availW * zoom), (y1 - y0) / availH) * 1.04;
+      const mmPerPx = (2 * d * tv) / h;
+      target.x -= (midX - (x0 + x1) / 2) * mmPerPx;
+      target.z -= ((midY - (y0 + y1) / 2) * mmPerPx) / Math.cos(tilt);
+    }
+    place();
+    this.flyTo(target, cam.position.clone(), ms);
   }
 
   /** Screen direction (degrees clockwise from screen-up) of the board heading `h` seen from point (x, y). */
@@ -937,6 +962,93 @@ export class BattleScene {
       };
       requestAnimationFrame(step);
     });
+  }
+
+  // ---------------- end of battle ----------------
+  private celebration = 0;
+
+  /**
+   * The winner's moment: their surviving ships barrel-roll one after another, and fireworks in their
+   * colour (with gold and white) go off over the board until stopCelebration(). `owner` null: a draw,
+   * which gets no fireworks. Runs at normal speed whatever the animation speed, and calmly under
+   * reduced motion (a few slow bursts, no rolls).
+   */
+  celebrate(owner: string | null) {
+    const id = ++this.celebration;
+    if (!owner) return;
+    const color = COLORS[owner] ?? 0xffffff;
+    const winners = [...this.ships.values()].filter((v) => v.owner === owner);
+    if (!this.reducedMotion) {
+      winners.forEach((v, i) => setTimeout(() => { if (id === this.celebration) void this.victoryRoll(v); }, 500 + i * 380));
+    }
+    let n = 0;
+    const next = () => {
+      if (id !== this.celebration) return;
+      const opening = n < 8; // a quick volley first, then a steady show
+      this.firework([color, 0xffd166, 0xffffff][n % 3 === 2 ? 1 : n % 5 === 4 ? 2 : 0]);
+      n++;
+      const gap = this.reducedMotion ? 1800 : opening ? 260 + Math.random() * 200 : 700 + Math.random() * 600;
+      setTimeout(next, gap);
+    };
+    setTimeout(next, 250);
+  }
+
+  stopCelebration() { this.celebration++; }
+
+  /** Rise, barrel roll with the engines lit, settle back. */
+  private async victoryRoll(v: ShipView) {
+    const y0 = v.model.position.y;
+    const thrust = v.thrust;
+    await this.tween(1300 * this.speed, (t) => {
+      const lift = Math.sin(t * Math.PI);
+      v.model.position.y = y0 + lift * 22;
+      v.model.rotation.x = Math.PI * 2 * (t < 0.15 ? 0 : t > 0.85 ? 1 : (1 - Math.cos(((t - 0.15) / 0.7) * Math.PI)) / 2);
+      v.thrust = thrust + lift * 2;
+    });
+    v.model.position.y = y0;
+    v.model.rotation.x = 0;
+    v.thrust = thrust;
+  }
+
+  /** One firework over a random spot of the board: a bright flash and a drooping, fading shell of sparks. */
+  private async firework(color: number) {
+    const at = new THREE.Vector3((Math.random() - 0.5) * BOARD_SIZE * 0.7, 120 + Math.random() * 120, (Math.random() - 0.5) * BOARD_SIZE * 0.7);
+    // Two single-colour layers: the main shell, and a few white sparkles.
+    const layers = [this.shell(at, hot(color, 4), 140, 230, 40), this.shell(at, hot(0xffffff, 3.5), 30, 200, 30)];
+    const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(color, 4), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+    flash.position.copy(at);
+    this.scene.add(flash);
+    this.flash(at, color, 6000, 700);
+    await this.tween(1800 * this.speed, (t) => {
+      const fade = t < 0.55 ? 1 : ((1 - t) / 0.45) * (0.75 + 0.25 * Math.sin(t * 90)); // twinkle out
+      layers.forEach((l) => l.update(t, fade));
+      flash.scale.setScalar(160 * (1 + t * 2));
+      flash.material.opacity = Math.max(0, 1 - t * 4);
+    });
+    layers.forEach((l) => l.dispose());
+    this.scene.remove(flash);
+    flash.material.dispose();
+  }
+
+  /** Sparks bursting from `at` that slow, droop under gravity and fade (update(t, opacity) per frame). */
+  private shell(at: THREE.Vector3, color: THREE.Color, count: number, speed: number, size: number) {
+    const pos = new Float32Array(count * 3);
+    const vel = Array.from({ length: count }, () => new THREE.Vector3().randomDirection().multiplyScalar(speed * (0.85 + Math.random() * 0.3)));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color, size, map: glowTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    this.scene.add(pts);
+    return {
+      update: (t: number, opacity: number) => {
+        const k = 1 - Math.pow(1 - t, 3), fall = 90 * t * t;
+        vel.forEach((v, i) => pos.set([at.x + v.x * k, at.y + v.y * k - fall, at.z + v.z * k], i * 3));
+        geo.attributes.position.needsUpdate = true;
+        mat.opacity = opacity;
+      },
+      dispose: () => { this.scene.remove(pts); geo.dispose(); mat.dispose(); },
+    };
   }
 
   /** A pause that respects speed and skipping. */

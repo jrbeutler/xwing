@@ -59,7 +59,7 @@ describe('dropping devices', () => {
     expect(g.pending).toMatchObject({ kind: 'system', playerId: 'a' });
     g = apply(g, { type: 'drop', playerId: 'a', choice: dropFirst((g.pending as { options: any[] }).options) });
     expect(events(g, 'deviceDropped')).toHaveLength(1);
-    expect(g.ships[0].upgrades[0].charges).toBe(1);
+    expect(g.ships[0].upgrades.at(-1)!.charges).toBe(2); // 2 + 1 from Bram's Payload Expert, minus the drop
     expect(g.phase).toBe('activation');
   });
 });

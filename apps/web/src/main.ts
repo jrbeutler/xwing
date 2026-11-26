@@ -66,6 +66,7 @@ const nameHtml = (id: string) => { const s = shipById(id); return `<span class="
 
 /** Open the squad builder (keeping the last opponent when coming back from deployment). */
 function newGame(keep?: BattleSetup) {
+  hideFinale();
   stage = 'setup';
   mode = null;
   scene.setDeployZone(null);
@@ -86,8 +87,8 @@ function startDeployment(setup: BattleSetup) {
     seed,
     players: [{ id: HUMAN, name: 'Coalition', faction: 'coalition' }, { id: AI, name: 'Syndicate', faction: 'syndicate' }],
     squads: {
-      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: near[i] })),
-      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: far[i] })),
+      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: near[i] })),
+      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: far[i] })),
     },
     obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
   });
@@ -383,7 +384,9 @@ async function animate(e: GameEvent) {
       if (e.what === 'recovered') { if (u) u.charges++; await scene.floatText(e.shipId, `${name} READY`, 'talent-float'); }
       if (e.what === 'used') {
         if (d && e.upgrade === 'hotshot') { d.focus++; relabel(e.shipId); }
-        await scene.floatText(e.shipId, e.upgrade === 'hotshot' ? `${name} +FOCUS` : name, 'talent-float');
+        if (d && e.upgrade === 'damage-control') { d.shields++; if (u) u.charges--; relabel(e.shipId); }
+        const extra = e.upgrade === 'hotshot' ? ' +FOCUS' : e.upgrade === 'damage-control' ? ' +SHIELD' : '';
+        await scene.floatText(e.shipId, name + extra, 'talent-float');
       }
       return;
     }
@@ -503,7 +506,8 @@ async function showAttack(e: AttackEvent) {
   const ad = dispShip(a.id);
   // Talents the dice policy used: spend their charges on the board and say so over the ship.
   const TALENT_USED: Record<string, [ShipState | undefined, string, string]> = {
-    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
+    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:ordnance-specialist': [ad, a.id, 'ordnance-specialist'],
+    'attacker:steady-gunner': [ad, a.id, 'steady-gunner'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
   };
   for (const t of e.spent) {
     if (t === 'attacker:focus' && ad) ad.focus--;
@@ -606,7 +610,9 @@ function describe(e: GameEvent): string | null {
     case 'upgrade': {
       const n = UPGRADES[e.upgrade].name;
       if (e.what === 'recovered') return `${nameHtml(e.shipId)}'s ${n} is ready again`;
-      if (e.what === 'used') return e.upgrade === 'hotshot' ? `${nameHtml(e.shipId)}: ${n} (gains focus)` : `${nameHtml(e.shipId)} uses ${n}`;
+      if (e.what === 'used' && e.upgrade === 'hotshot') return `${nameHtml(e.shipId)}: ${n} (gains focus)`;
+      if (e.what === 'used' && e.upgrade === 'damage-control') return `${nameHtml(e.shipId)}: ${n} (recovers 1 shield)`;
+      if (e.what === 'used') return `${nameHtml(e.shipId)} uses ${n}`;
       return `${nameHtml(e.shipId)}'s ${n} is spent`;
     }
     case 'deviceDropped': { const n = UPGRADES[e.device.upgrade].name; return `${nameHtml(e.shipId)} drops ${/^[AEIOU]/.test(n) ? 'an' : 'a'} ${n}`; }
@@ -668,9 +674,13 @@ function renderDecision() {
     const won = state.winner === HUMAN;
     const title = state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat';
     detail.innerHTML = `<h2>${title}</h2>
-      <p class="hint">Battle ended in round ${state.round}.</p><button class="go" id="again">New battle</button>`;
+      <p class="hint">Battle ended in round ${state.round}.</p>
+      <div class="row"><button class="go" id="again">New battle</button><button class="opt mini" id="results">Results</button></div>`;
     document.getElementById('again')!.onclick = () => newGame();
-    setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [{ label: 'New battle', cls: 'primary', onClick: newGame }] });
+    document.getElementById('results')!.onclick = () => showFinale();
+    setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [
+      { label: 'Results', onClick: () => showFinale() }, { label: 'New battle', cls: 'primary', onClick: () => newGame() }] });
+    if (finaleFor !== state) { finaleFor = state; showFinale(true); }
     return;
   }
   if (d.kind === 'planning') {
@@ -687,6 +697,82 @@ function renderDecision() {
   if (d.kind === 'action') return renderAction(d.shipId, d.options);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
+}
+
+// ---------------------------------------------------------------------------
+// End of battle: a full-screen result with the battle's numbers, and the winner's
+// fireworks over the board. "View board" tucks it away; Results brings it back.
+// ---------------------------------------------------------------------------
+let finaleFor: GameState | null = null;
+const finale = document.createElement('div');
+finale.id = 'finale';
+finale.hidden = true;
+document.body.appendChild(finale);
+
+/** Kills per ship: the last ship to hit a ship (shot or bomb) gets the credit when it is destroyed. */
+function killsBy(): Map<string, number> {
+  const lastHit = new Map<string, string>(), dropper = new Map<string, string>(), kills = new Map<string, number>();
+  for (const e of state.log) {
+    if (e.type === 'attack' && e.hullDamage + e.shieldDamage + (e.ion ?? 0) > 0) lastHit.set(e.defenderId, e.attackerId);
+    if (e.type === 'deviceDropped') dropper.set(e.device.id, e.shipId);
+    if (e.type === 'deviceDetonated') {
+      const by = dropper.get(e.device.id);
+      if (by) for (const h of e.ships) if (h.shipId !== by && h.hullDamage + h.shieldDamage > 0) lastHit.set(h.shipId, by);
+    }
+    if (e.type === 'destroyed') {
+      const by = lastHit.get(e.shipId);
+      if (by && shipById(by).owner !== shipById(e.shipId).owner) kills.set(by, (kills.get(by) ?? 0) + 1);
+    }
+  }
+  return kills;
+}
+
+function showFinale(first = false) {
+  const result = state.winner === 'draw' ? 'draw' : state.winner === HUMAN ? 'victory' : 'defeat';
+  const title = { victory: 'Victory', defeat: 'Defeat', draw: 'Draw' }[result];
+  const mine = state.ships.filter((s) => s.owner === HUMAN), theirs = state.ships.filter((s) => s.owner === AI);
+  const down = (xs: ShipState[]) => xs.filter((s) => s.destroyed).length;
+  const wiped = (xs: ShipState[]) => down(xs) === xs.length;
+  const why = result === 'draw' ? (wiped(mine) && wiped(theirs) ? 'Both squadrons were wiped out.' : 'Time ran out with the squadrons dead even.')
+    : result === 'victory' ? (wiped(theirs) ? 'The Syndicate squadron has been wiped out.' : `Time ran out after round ${state.round}, with your squadron ahead on hull and shields.`)
+    : (wiped(mine) ? 'Your squadron has been wiped out.' : `Time ran out after round ${state.round}, with the Syndicate ahead on hull and shields.`);
+  const kills = killsBy();
+  // The top ace: the winner's (or anyone's, in a draw) ship with the most kills.
+  const aces = [...kills].filter(([id]) => result === 'draw' || shipById(id).owner === state.winner).sort((a, b) => b[1] - a[1]);
+  const ace = aces[0];
+  const survivors = state.ships.filter((s) => !s.destroyed && (result === 'draw' || s.owner === state.winner));
+  const letters = [...title.toUpperCase()].map((c, i) => `<span style="--i:${i}">${c}</span>`).join('');
+  finale.className = result;
+  finale.innerHTML = `
+    <div class="finale-rays" aria-hidden="true"></div>
+    <div class="finale-card" role="dialog" aria-modal="true" aria-labelledby="finale-title">
+      <div class="finale-kicker">Battle over · round ${state.round}</div>
+      <h1 id="finale-title" aria-label="${title}">${letters}</h1>
+      <p class="finale-why">${why}</p>
+      <div class="finale-stats">
+        <div><b>${down(theirs)}<i>/${theirs.length}</i></b><span>enemy ships destroyed</span></div>
+        <div><b>${down(mine)}<i>/${mine.length}</i></b><span>of your ships lost</span></div>
+        <div><b>${state.round}</b><span>rounds</span></div>
+      </div>
+      ${ace ? `<div class="finale-ace"><span class="medal" aria-hidden="true">★</span><div><span class="hint">Top ace</span><br>
+        <b class="${shipById(ace[0]).owner}">${shipById(ace[0]).name}</b> · ${ace[1]} kill${ace[1] > 1 ? 's' : ''}</div></div>` : ''}
+      ${survivors.length ? `<div class="finale-survivors"><span class="hint">Still flying</span>
+        ${survivors.map((s) => `<span class="chip ${s.owner}">${s.name} <i>${s.hull}/${s.maxHull} hull</i></span>`).join('')}</div>` : ''}
+      <div class="finale-buttons"><button class="opt" id="fn-board">View board</button><button class="go" id="fn-again">New battle</button></div>
+    </div>`;
+  finale.hidden = false;
+  void finale.offsetWidth;
+  finale.classList.add('show');
+  finale.querySelector<HTMLButtonElement>('#fn-again')!.onclick = () => newGame();
+  finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
+  finale.querySelector<HTMLButtonElement>('#fn-again')!.focus();
+  if (first) scene.celebrate(result === 'draw' ? null : state.winner);
+}
+
+function hideFinale() {
+  finale.hidden = true;
+  finale.classList.remove('show');
+  scene.stopCelebration();
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,7 +1113,11 @@ function uiInsets() {
 
 function applyCamera(ms = 500) {
   if (!compact || !state || scene.inAttackView) return;
-  if (stage === 'deploy') { viewBtn.hidden = true; scene.frameRect(457, 200, 470, 200, uiInsets(), 0.45, ms); return; }
+  // On an upright phone the board is wider than the screen: zoom in past its sides a little.
+  const zoom = innerHeight > innerWidth ? 1.25 : 1;
+  // The whole board, plus headroom past the far edge for the labels floating over the enemy's ships.
+  const board = (tilt: number) => scene.frameRect(457, 492, 457, 492, uiInsets(), tilt, ms, zoom);
+  if (stage === 'deploy') { viewBtn.hidden = true; board(0.45); return; }
   if (stage !== 'battle') return;
   const d = state.pending;
   // Points of interest for the current decision; null = show the whole table.
@@ -1051,7 +1141,7 @@ function applyCamera(ms = 500) {
   viewBtn.hidden = !pts;
   viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
   if (pts && !userOverview) framePoints(pts, minHalf, ms);
-  else scene.frameRect(457, 457, 465, 465, uiInsets(), 0.2, ms);
+  else board(0.2);
 }
 
 /** Frame a set of board points (with room for bases and labels) in the uncovered screen area. */

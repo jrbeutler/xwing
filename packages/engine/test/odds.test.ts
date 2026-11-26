@@ -61,6 +61,11 @@ const cases: { name: string; a: Partial<ShipState>; d: Partial<ShipState>; t: Ta
   { name: 'Marksman does not apply to ordnance', a: { upgrades: up('marksman', 'concussion-missiles'), lock: baseD.id }, d: {}, t: ordnance('concussion-missiles', 3, 2, true) },
   { name: 'Dorsal Turret (2 dice, no range bonus)', a: { upgrades: [{ id: 'dorsal-turret', charges: 0 }], focus: 1 }, d: { focus: 1 }, t: { ...ordnance('dorsal-turret', 2, 1), arc: 'left' } },
   { name: 'Ion Cannon Turret', a: { upgrades: [{ id: 'ion-turret', charges: 0 }], focus: 1 }, d: {}, t: { ...ordnance('ion-turret', 3, 2), arc: 'rear' } },
+  { name: 'Steady Gunner rerolls on a turret attack', a: { upgrades: [{ id: 'steady-gunner', charges: 0 }, { id: 'dorsal-turret', charges: 0 }], lock: baseD.id }, d: {}, t: { ...ordnance('dorsal-turret', 2, 2), arc: 'left' } },
+  { name: 'Steady Gunner with a turret primary', a: { upgrades: up('steady-gunner'), focus: 1 }, d: { focus: 1 }, t: { ...target(2), turret: true } },
+  { name: 'Steady Gunner does nothing on a front-arc attack', a: { upgrades: up('steady-gunner') }, d: {}, t: target(2, false, true) },
+  { name: 'Ordnance Specialist rerolls with a missile', a: { upgrades: up('ordnance-specialist', 'concussion-missiles'), lock: baseD.id }, d: {}, t: ordnance('concussion-missiles', 3, 2) },
+  { name: 'Ordnance Specialist does nothing on a primary attack', a: { upgrades: up('ordnance-specialist') }, d: {}, t: target(2, false, true) },
   { name: 'everything', a: { focus: 1, lock: baseD.id }, d: { focus: 1, evade: 1 }, t: target(3, true) },
 ];
 
