@@ -1,7 +1,7 @@
 import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
-import { cardDamage, upgradeOf, legalTargets, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import type {
@@ -160,7 +160,7 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
         const r = rangeBetween(sh, t);
-        if (r !== null && r <= 3) opts.push({ type: 'lock', targetId: t.id });
+        if (r !== null && r <= maxRangeBand()) opts.push({ type: 'lock', targetId: t.id });
       }
     }
     if (a.type === 'barrelRoll') {

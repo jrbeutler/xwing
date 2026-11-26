@@ -23,11 +23,24 @@ export const shipType = (s: ShipState) => SHIP_TYPES[s.typeId];
 export const shipSize = (s: ShipState) => BASE_SIZE[shipType(s).size];
 export const shipPolygon = (s: ShipState, pose: Pose = s.pose) => basePolygon(pose, shipSize(s));
 
-/** Range band for a distance in mm: 0 when touching, null beyond range 3. */
+/**
+ * The range rules in one place. `edges` are the far edge of each band in mm (range 1, 2, ...); primaries
+ * reach the last one. `attack` / `defense` are the dice modifiers for a primary-weapon shot at each band
+ * (0 = touching). Mutable so experiments can compare rule sets; the game uses the defaults.
+ */
+export const RANGE_RULES: { edges: number[]; attack: Record<number, number>; defense: Record<number, number> } = {
+  edges: [RANGE_BAND, RANGE_BAND * 2, RANGE_BAND * 3],
+  attack: { [SWEET_SPOT_RANGE]: 1 },
+  defense: { 3: 1 },
+};
+/** Furthest range band (primary weapons, locks). */
+export const maxRangeBand = () => RANGE_RULES.edges.length;
+
+/** Range band for a distance in mm: 0 when touching, null beyond the last band. */
 export function rangeBand(d: number): number | null {
   if (d <= 1e-6) return 0;
-  if (d > RANGE_BAND * 3) return null;
-  return Math.ceil(d / RANGE_BAND);
+  const i = RANGE_RULES.edges.findIndex((e) => d <= e);
+  return i < 0 ? null : i + 1;
 }
 
 /**
@@ -128,13 +141,13 @@ export function rollDefense(state: GameState, n: number): DefenseFace[] {
  */
 /** Attack dice for a shot: weapon value, +1 at range 1 (primary only), minus damage-card penalties. Shared with attackOdds. */
 export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' | 'range' | 'weapon'>) =>
-  Math.max(0, t.attack + (isPrimary(t) && t.range === SWEET_SPOT_RANGE ? 1 : 0) - attackDicePenalty(attacker));
+  Math.max(0, t.attack + (isPrimary(t) ? RANGE_RULES.attack[t.range] ?? 0 : 0) - attackDicePenalty(attacker));
 /**
  * Defense dice: agility, +1 at range 3 (primary only), +1 obstructed, +1 Stealth Coating, -1 for an Outmaneuver attacker,
  * minus damage-card penalties. Shared with attackOdds.
  */
 export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed' | 'weapon'> & { arc?: ArcName; turret?: boolean }, attacker?: ShipState) =>
-  Math.max(0, shipType(defender).agility + (isPrimary(t) && t.range === 3 ? 1 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
+  Math.max(0, shipType(defender).agility + (isPrimary(t) ? RANGE_RULES.defense[t.range] ?? 0 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
     - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc, t.weapon, t.turret) ? 1 : 0));
 
 /** Stealth Coating: an extra defense die while its charge lasts (lost on first damage). */

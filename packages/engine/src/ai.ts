@@ -3,7 +3,7 @@
 // to test rules; later AIs can plug into the same `decide` contract.
 import { Pose, dist, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
-import { attackOdds, clipToArc, legalTargets, measureArc, shipPolygon, shipSize, shipType } from './combat';
+import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
 import { activeShips, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
@@ -16,15 +16,19 @@ import type { ActionChoice, ArcName, Command, DropChoice, GameState, PlayerId, S
  * (the sweet spot, where primaries roll an extra die) and will settle for 3; agile interceptors are happy
  * to dive in to range 1. Range 1 is otherwise a poor place to be: a lost bonus die and a likely bump.
  */
-const PREFERS = {
+const PREFERS3 = {
   standoff: [0, 10, 30, 24],
   interceptor: [0, 22, 30, 14],
 };
 /** How dangerous it is to sit in an enemy's arc at each range (worst at the sweet spot). */
-const THREAT = [0, 20, 30, 15];
+const THREAT3 = [0, 20, 30, 15];
+/** The same for a four-band rule set (range 1 is short and penalised, range 4 gives the defender a die). */
+const PREFERS4 = { standoff: [0, 4, 30, 24, 14], interceptor: [0, 14, 30, 18, 8] };
+const THREAT4 = [0, 12, 30, 18, 10];
+const tables = () => (RANGE_RULES.edges.length >= 4 ? { PREFERS: PREFERS4, THREAT: THREAT4 } : { PREFERS: PREFERS3, THREAT: THREAT3 });
 
-const bandOf = (d: number) => (d <= 100 ? 1 : d <= 200 ? 2 : d <= 300 ? 3 : 0);
-const roleOf = (sh: ShipState): keyof typeof PREFERS => (shipType(sh).agility >= 3 ? 'interceptor' : 'standoff');
+const bandOf = (d: number) => { const b = rangeBand(Math.max(d, 1e-3)); return b ?? 0; };
+const roleOf = (sh: ShipState): keyof typeof PREFERS3 => (shipType(sh).agility >= 3 ? 'interceptor' : 'standoff');
 const hasTurretPrimary = (sh: ShipState) => shipType(sh).primaries.some((w) => w.arc === 'turret');
 
 /**
@@ -60,6 +64,7 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
     const ep = predictEnemy(e);
     const eSize = shipSize(e);
     const ePoly = basePolygon(ep, eSize);
+    const { PREFERS, THREAT } = tables();
     score += arcScore(pose, size, ePoly, PREFERS[role], turret);
     score -= 0.6 * arcScore(ep, eSize, poly, THREAT, hasTurretPrimary(e));
     const gap = polygonDistance(poly, ePoly).d;
@@ -67,8 +72,9 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
     if (gap < 25) score -= 30; // about to collide: a bump costs the action and a stress
   }
   // Keep a distance: range 1 is for interceptors only; beyond range 3, close in.
-  if (nearest < 100) score -= role === 'interceptor' ? 6 : 22;
-  if (nearest > 300 && nearest < Infinity) score -= (nearest - 300) * 0.05;
+  const [r1, ...rest] = RANGE_RULES.edges, reach = rest.length ? rest[rest.length - 1] : r1;
+  if (nearest < r1) score -= role === 'interceptor' ? 6 : 22;
+  if (nearest > reach && nearest < Infinity) score -= (nearest - reach) * 0.05;
   // Don't fly into friends either.
   for (const f of activeShips(s)) {
     if (f.owner !== sh.owner || f.id === sh.id) continue;
@@ -84,7 +90,7 @@ function turretTurn(s: GameState, sh: ShipState, options: ActionChoice[]): Actio
   const rotations = options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc');
   // Reach of the turret: range 3 for a turret primary, else the turret upgrade's.
   const turretPrimary = shipType(sh).primaries.some((w) => w.arc === 'turret');
-  const turret = turretPrimary ? { maxRange: 3 } : sh.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
+  const turret = turretPrimary ? { maxRange: maxRangeBand() } : sh.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
   if (!rotations.length || !turret) return undefined;
   const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
   const reach = (arc: ArcName) => Math.min(...enemies.map((e) => {
