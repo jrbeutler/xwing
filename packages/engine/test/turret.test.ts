@@ -135,6 +135,6 @@ describe('turret primary (Wayfarer, after the HWK-290)', () => {
 
   it('carries missiles, torpedoes and a turret together', async () => {
     const { fitsSlots } = await import('../src/squad');
-    expect(fitsSlots('tessa-varn', ['concussion-missiles', 'proton-torpedoes', 'dorsal-turret', 'proton-bomb', 'shield-booster'])).toBe(true);
+    expect(fitsSlots({ pilotId: 'tessa-varn', upgrades: ['concussion-missiles', 'proton-torpedoes', 'dorsal-turret', 'proton-bomb', 'shield-booster'] })).toBe(true);
   });
 });

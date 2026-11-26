@@ -86,8 +86,8 @@ function startDeployment(setup: BattleSetup) {
     seed,
     players: [{ id: HUMAN, name: 'Coalition', faction: 'coalition' }, { id: AI, name: 'Syndicate', faction: 'syndicate' }],
     squads: {
-      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: near[i] })),
-      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: far[i] })),
+      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: near[i] })),
+      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: far[i] })),
     },
     obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
   });
@@ -383,7 +383,9 @@ async function animate(e: GameEvent) {
       if (e.what === 'recovered') { if (u) u.charges++; await scene.floatText(e.shipId, `${name} READY`, 'talent-float'); }
       if (e.what === 'used') {
         if (d && e.upgrade === 'hotshot') { d.focus++; relabel(e.shipId); }
-        await scene.floatText(e.shipId, e.upgrade === 'hotshot' ? `${name} +FOCUS` : name, 'talent-float');
+        if (d && e.upgrade === 'damage-control') { d.shields++; if (u) u.charges--; relabel(e.shipId); }
+        const extra = e.upgrade === 'hotshot' ? ' +FOCUS' : e.upgrade === 'damage-control' ? ' +SHIELD' : '';
+        await scene.floatText(e.shipId, name + extra, 'talent-float');
       }
       return;
     }
@@ -503,7 +505,8 @@ async function showAttack(e: AttackEvent) {
   const ad = dispShip(a.id);
   // Talents the dice policy used: spend their charges on the board and say so over the ship.
   const TALENT_USED: Record<string, [ShipState | undefined, string, string]> = {
-    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
+    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:ordnance-specialist': [ad, a.id, 'ordnance-specialist'],
+    'attacker:steady-gunner': [ad, a.id, 'steady-gunner'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
   };
   for (const t of e.spent) {
     if (t === 'attacker:focus' && ad) ad.focus--;
@@ -606,7 +609,9 @@ function describe(e: GameEvent): string | null {
     case 'upgrade': {
       const n = UPGRADES[e.upgrade].name;
       if (e.what === 'recovered') return `${nameHtml(e.shipId)}'s ${n} is ready again`;
-      if (e.what === 'used') return e.upgrade === 'hotshot' ? `${nameHtml(e.shipId)}: ${n} (gains focus)` : `${nameHtml(e.shipId)} uses ${n}`;
+      if (e.what === 'used' && e.upgrade === 'hotshot') return `${nameHtml(e.shipId)}: ${n} (gains focus)`;
+      if (e.what === 'used' && e.upgrade === 'damage-control') return `${nameHtml(e.shipId)}: ${n} (recovers 1 shield)`;
+      if (e.what === 'used') return `${nameHtml(e.shipId)} uses ${n}`;
       return `${nameHtml(e.shipId)}'s ${n} is spent`;
     }
     case 'deviceDropped': { const n = UPGRADES[e.device.upgrade].name; return `${nameHtml(e.shipId)} drops ${/^[AEIOU]/.test(n) ? 'an' : 'a'} ${n}`; }

@@ -157,6 +157,19 @@ export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' 
   Math.max(0, shipType(defender).agility + (isPrimary(t) ? RANGE_RULES.defense[t.range] ?? 0 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
     - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc, t.weapon, t.turret) ? 1 : 0));
 
+/**
+ * The talent that lets the attacker reroll 1 attack die on this attack, if any: Marksman (primary, bullseye),
+ * Steady Gunner (through a turret arc), Ordnance Specialist (a missile or torpedo). Used first, before a lock.
+ */
+export function rerollTalent(attacker: ShipState, t: Pick<TargetInfo, 'weapon'> & { bullseye?: boolean; turret?: boolean }): string | undefined {
+  const weapon = weaponOf(t);
+  const turret = !!t.turret || weapon?.arc === 'turret';
+  if (isPrimary(t) && !turret && t.bullseye && upgradeOf(attacker, 'marksman')) return 'marksman';
+  if (turret && upgradeOf(attacker, 'steady-gunner')) return 'steady-gunner';
+  if (!isPrimary(t) && !turret && upgradeOf(attacker, 'ordnance-specialist')) return 'ordnance-specialist';
+  return undefined;
+}
+
 /** Stealth Coating: an extra defense die while its charge lasts (lost on first damage). */
 const stealthActive = (sh: ShipState) => sh.upgrades.some((u) => u.id === 'stealth-coating' && u.charges > 0);
 
@@ -174,7 +187,7 @@ const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = '
 
 /**
  * Resolve one primary attack. Dice modification is automated with a fixed policy that attackOdds mirrors:
- *   attack: Marksman reroll (bullseye) → lock reroll → focus;
+ *   attack: talent reroll (Marksman, Steady Gunner, Ordnance Specialist) → lock reroll → focus;
  *   defense: Elusive reroll → focus → evade token → attacker's Crack Shot (bullseye).
  * A die is rerolled at most once. Blinded Pilot stops all of the attacker's modifications.
  */
@@ -191,9 +204,10 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const rerolled = new Set<number>();
   const reroll = (idx: number[]) => { const rr = rollAttack(state, idx.length); idx.forEach((i, k) => { atk[i] = rr[k]; rerolled.add(i); }); };
   const canFocus = attacker.focus > 0;
-  if (mods && primary && t.bullseye && upgradeOf(attacker, 'marksman')) {
+  const talent = mods ? rerollTalent(attacker, t) : undefined;
+  if (talent) {
     const i = [atk.indexOf('blank'), canFocus ? -1 : atk.indexOf('focus')].find((x) => x >= 0);
-    if (i !== undefined) { reroll([i]); spent.push('attacker:marksman'); }
+    if (i !== undefined) { reroll([i]); spent.push(`attacker:${talent}`); }
   }
   if (mods && attacker.lock === defender.id) {
     const idx = atk.map((f, i) => (!rerolled.has(i) && (f === 'blank' || (!canFocus && f === 'focus')) ? i : -1)).filter((i) => i >= 0);
@@ -328,14 +342,14 @@ export function attackOdds(
   const add = (k: number, p: number) => landed.set(k, (landed.get(k) ?? 0) + p);
   const canFocus = attacker.focus > 0;
   const primary = isPrimary(t), weapon = weaponOf(t);
-  const useMarksman = mods && primary && !!t.bullseye && !!upgradeOf(attacker, 'marksman');
+  const useTalentReroll = mods && !!rerollTalent(attacker, t); // any 1-die reroll talent
   const useLock = mods && attacker.lock === defender.id;
   const useFocus = mods && canFocus;
   const [HIT, CRIT, FOCUS, BLANK] = [0, 1, 2, 3];
   for (const roll of faceCounts(attackDice, aw)) {
     // Dice split into not-yet-rerolled (u) and rerolled (r) counts, by face.
     let states = [{ u: roll.counts, r: [0, 0, 0, 0], p: roll.p }];
-    if (useMarksman) {
+    if (useTalentReroll) {
       const src = roll.counts[BLANK] > 0 ? BLANK : !canFocus && roll.counts[FOCUS] > 0 ? FOCUS : -1;
       if (src >= 0) {
         const u = roll.counts.map((x, i) => (i === src ? x - 1 : x));

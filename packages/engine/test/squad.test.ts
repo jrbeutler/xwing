@@ -4,29 +4,59 @@ import { attackOdds, defenseDiceFor, sufferDamage } from '../src/combat';
 import { createGame } from '../src/game';
 import { BASE_SIZE } from '../src/maneuvers';
 import {
-  autoDeploy, buildAiSquad, canDeployAt, fitsSlots, pilotSlots, squadCost, upgradeCost, upgradeOptions, validateSquad,
+  autoDeploy, buildAiSquad, canDeployAt, effectiveInitiative, fitsSlots, freeSlots, hullOf, shipSlots, signatureTalents, squadCost, upgradeCost, upgradeOptions, validateSquad,
   type Squad,
 } from '../src/squad';
 
-const ship = (pilotId: string, upgrades: string[] = []) => ({ pilotId, upgrades });
+const ship = (pilotId: string, upgrades: string[] = [], shipType?: string) => ({ pilotId, upgrades, shipType });
 
 describe('points and slots', () => {
-  it('costs pilots plus upgrades, with upgrades priced by base size', () => {
-    expect(upgradeCost('shield-booster', 'tobin-reyes')).toBe(5);
-    expect(upgradeCost('shield-booster', 'drav-okono')).toBe(7);
-    expect(squadCost({ ships: [ship('tobin-reyes', ['shield-booster']), ship('drav-okono')] })).toBe(25 + 5 + 34);
+  it('costs hull plus pilot plus upgrades, with upgrades priced by base size', () => {
+    expect(upgradeCost('shield-booster', ship('tobin-reyes'))).toBe(5);
+    expect(upgradeCost('shield-booster', ship('drav-okono'))).toBe(7);
+    expect(upgradeCost('shield-booster', ship('tobin-reyes', [], 'bulwark'))).toBe(7); // the hull sets the size
+    expect(squadCost({ ships: [ship('tobin-reyes', ['shield-booster']), ship('drav-okono')] })).toBe(19 + 9 + 5 + 28 + 10);
+    expect(squadCost({ ships: [ship('tobin-reyes', [], 'wasp')] })).toBe(17 + 9);
   });
 
-  it('opens the talent slot only to initiative 3+', () => {
-    expect(pilotSlots('mara-venn')).toContain('talent');
-    expect(pilotSlots('grunt-seven')).not.toContain('talent');
+  it('gives pilots talent slots by initiative: none below 3, one at 3-4, two at 5+', () => {
+    const talents = (pilotId: string, hull?: string) => shipSlots(ship(pilotId, [], hull)).filter((x) => x === 'talent').length;
+    expect(talents('grunt-seven')).toBe(0);
+    expect(talents('tobin-reyes')).toBe(1);
+    expect(talents('mara-venn')).toBe(2);
+    expect(talents('mara-venn', 'kestrel')).toBe(2); // any fighter hull
+  });
+
+  it('signature talents take a slot', () => {
+    expect(signatureTalents(ship('tobin-reyes'))).toEqual(['marksman']);
+    expect(freeSlots(ship('tobin-reyes'))).not.toContain('talent');
+    expect(freeSlots(ship('mara-venn')).filter((x) => x === 'talent')).toHaveLength(1);
+    expect(fitsSlots(ship('tobin-reyes', ['hotshot']))).toBe(false);
+    expect(fitsSlots(ship('mara-venn', ['hotshot']))).toBe(true);
+    expect(fitsSlots(ship('mara-venn', ['elusive']))).toBe(false); // already has it
+  });
+
+  it('only lets pilots learn talents from their specialty', () => {
+    expect(fitsSlots(ship('tessa-varn', ['steady-gunner']))).toBe(true);
+    expect(fitsSlots(ship('tessa-varn', ['hotshot']))).toBe(false);
+    expect(fitsSlots(ship('mara-venn', ['steady-gunner']))).toBe(false);
+    expect(upgradeOptions(ship('mara-venn')).filter((u) => UPGRADES[u].slot === 'talent').every((u) => UPGRADES[u].classes!.includes('fighter'))).toBe(true);
+  });
+
+  it('flying outside your specialty costs 1 initiative, and can cost a talent slot', () => {
+    expect(hullOf(ship('mara-venn'))).toBe('wasp');
+    expect(effectiveInitiative(ship('mara-venn', [], 'wayfarer'))).toBe(4);
+    expect(effectiveInitiative(ship('mara-venn', [], 'kestrel'))).toBe(5);
+    expect(signatureTalents(ship('mara-venn', [], 'wayfarer'))).toEqual(['elusive']); // 1 slot left, still hers
+    expect(signatureTalents(ship('syl-ketch', [], 'anvil'))).toEqual([]); // initiative 2: no slot for Hotshot
+    expect(effectiveInitiative(ship('grunt-seven', [], 'bulwark'))).toBe(1); // never below 1
   });
 
   it('fits upgrades into matching free slots, no duplicates', () => {
-    expect(fitsSlots('tobin-reyes', ['shield-booster'])).toBe(true);
-    expect(fitsSlots('tobin-reyes', ['shield-booster', 'hull-plating'])).toBe(false); // one modification slot
-    expect(fitsSlots('drav-okono', ['shield-booster', 'hull-plating'])).toBe(true); // two
-    expect(fitsSlots('drav-okono', ['shield-booster', 'shield-booster'])).toBe(false);
+    expect(fitsSlots(ship('tobin-reyes', ['shield-booster']))).toBe(true);
+    expect(fitsSlots(ship('tobin-reyes', ['shield-booster', 'hull-plating']))).toBe(false); // one modification slot
+    expect(fitsSlots(ship('drav-okono', ['shield-booster', 'hull-plating']))).toBe(true); // two
+    expect(fitsSlots(ship('drav-okono', ['shield-booster', 'shield-booster']))).toBe(false);
     expect(upgradeOptions(ship('tobin-reyes', ['shield-booster'])).map((u) => UPGRADES[u].slot)).not.toContain('modification');
     expect(upgradeOptions(ship('grunt-seven', ['shield-booster']))).toEqual([]); // no talent slot below initiative 3
   });
@@ -74,7 +104,7 @@ describe('deployment', () => {
       const poses = autoDeploy(q, side);
       const placed: { pose: typeof poses[0]; size: number }[] = [];
       q.ships.forEach((s, i) => {
-        const size = BASE_SIZE[SHIP_TYPES[PILOTS[s.pilotId].shipType].size];
+        const size = BASE_SIZE[SHIP_TYPES[hullOf(s)].size];
         expect(canDeployAt(poses[i], size, side, placed)).toBe(true);
         placed.push({ pose: poses[i], size });
       });

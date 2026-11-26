@@ -12,6 +12,9 @@ export interface ActionDef { type: ActionType; red?: boolean }
 /** Kinds of upgrade slot a ship can have (power-ups go in matching slots). */
 export type SlotType = 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device';
 
+/** Ship classes. Pilots specialise in one; flying another class costs them initiative. */
+export type ShipClass = 'fighter' | 'bomber' | 'freighter';
+
 export interface UpgradeDef {
   id: string;
   name: string;
@@ -27,6 +30,8 @@ export interface UpgradeDef {
   weapon?: WeaponDef;
   /** Devices (bombs, mines): dropped behind the ship in the System phase, one charge each. */
   device?: DeviceDef;
+  /** Talents only: the pilot specialties that can learn it. */
+  classes?: ShipClass[];
 }
 
 export interface DeviceDef {
@@ -62,23 +67,31 @@ export interface ShipType {
   id: string;
   name: string;
   size: BaseSize;
+  class: ShipClass;
+  /** Squad points for the hull; the pilot's own cost is added on top. */
+  cost: number;
   primaries: PrimaryWeapon[];
   agility: number;
   hull: number;
   shields: number;
   actions: ActionDef[];
   dial: Maneuver[];
-  /** Upgrade slots (the talent slot is only open to pilots of initiative 3+). */
-  slots: SlotType[];
+  /** Upgrade slots. Talent slots are not here: they belong to the pilot. */
+  slots: Exclude<SlotType, 'talent'>[];
 }
 
 export interface PilotDef {
   id: string;
   name: string;
-  shipType: string;
+  /** The class of ship this pilot is trained for. Flying another class: -1 initiative. */
+  specialty: ShipClass;
+  /** The hull this pilot usually flies (the default when none is chosen). */
+  ship: string;
   initiative: number;
-  /** Squad points. */
+  /** Squad points for the pilot, signature talents included; the hull's cost is added on top. */
   cost: number;
+  /** Talents this pilot always has. Each takes one of the pilot's talent slots. */
+  talents?: string[];
   /** Named pilots: at most one per battle. Generic pilots can be fielded several times. */
   unique: boolean;
 }

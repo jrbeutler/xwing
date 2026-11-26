@@ -1,8 +1,9 @@
 // Squad builder: the screen before a battle. Pick a points budget, add pilots, fit power-ups into
 // their slots, and see the AI's squad. Hands the two squads to `onDeploy`; knows nothing about the board.
 import {
-  DEFAULT_BUDGET, PILOTS, SHIP_TYPES, UPGRADES, buildAiSquad, freeSlots, pilotSlots, shipCost, squadCost, upgradeCost,
-  upgradeOptions, validateSquad, type Squad, type SquadShip, type SlotType,
+  DEFAULT_BUDGET, PILOTS, SHIP_TYPES, UPGRADES, buildAiSquad, effectiveInitiative, fitsSlots, freeSlots, hullOf, isOffClass,
+  shipCost, signatureTalents, squadCost, talentSlotCount, upgradeCost, upgradeOptions, validateSquad,
+  type PilotDef, type ShipClass, type Squad, type SquadShip, type SlotType,
 } from '@xw/engine';
 
 import { onModelsReady, shipPreview } from './preview';
@@ -13,6 +14,8 @@ const BUDGETS = [50, 75, 100, 150];
 const SLOT_LABEL: Record<SlotType, string> = {
   talent: 'Talent', modification: 'Modification', missile: 'Missile', torpedo: 'Torpedo', turret: 'Turret', device: 'Bomb',
 };
+const CLASS_LABEL: Record<ShipClass, string> = { fighter: 'Fighter', bomber: 'Bomber', freighter: 'Freighter' };
+const CLASSES: ShipClass[] = ['fighter', 'bomber', 'freighter'];
 /** Slot kinds with power-ups available today; the others are shown as coming soon. */
 const OPEN_SLOTS = new Set(Object.values(UPGRADES).map((u) => u.slot));
 
@@ -23,17 +26,43 @@ const load = <T>(key: string, fallback: T): T => {
 };
 const store = (key: string, v: unknown) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* storage unavailable */ } };
 
-/** Drop anything a saved squad refers to that no longer exists (pilots or upgrades renamed/removed). */
+/**
+ * Drop anything a saved squad refers to that no longer exists (pilots, hulls or upgrades renamed/removed),
+ * and upgrades that no longer fit (e.g. a talent that is now the pilot's signature). Old saves have no hull:
+ * the pilot's usual one is used.
+ */
 const clean = (q: Squad): Squad => ({
-  ships: (q?.ships ?? []).filter((s) => PILOTS[s.pilotId]).map((s) => ({ pilotId: s.pilotId, upgrades: s.upgrades.filter((u) => UPGRADES[u]) })),
+  ships: (q?.ships ?? []).filter((s) => PILOTS[s.pilotId]).map((s) => {
+    const ship: SquadShip = { pilotId: s.pilotId, shipType: SHIP_TYPES[s.shipType ?? ''] ? s.shipType : PILOTS[s.pilotId].ship, upgrades: [] };
+    return { ...ship, upgrades: keepFitting(ship, (s.upgrades ?? []).filter((u) => UPGRADES[u])) };
+  }),
 });
+
+/** The upgrades from `wanted` that still fit, in order (after a hull change, or from an old save). */
+function keepFitting(s: SquadShip, wanted: string[]): string[] {
+  const kept: string[] = [];
+  for (const u of wanted) if (fitsSlots({ ...s, upgrades: [...kept, u] })) kept.push(u);
+  return kept;
+}
+
+/** Initiative badge: the pilot's own, or struck through and lowered when flying outside their class. */
+const initBadge = (s: SquadShip) => {
+  const p = PILOTS[s.pilotId], eff = effectiveInitiative(s);
+  return eff === p.initiative ? `<span class="init">${eff}</span>`
+    : `<span class="init off" title="Flying outside their specialty: -1 initiative"><s>${p.initiative}</s> ${eff}</span>`;
+};
+const talentSummary = (p: PilotDef) => {
+  const n = talentSlotCount(p.initiative);
+  const sig = (p.talents ?? []).map((t) => UPGRADES[t].name).join(', ');
+  return [sig, n ? `${n} talent slot${n > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+};
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const uniquesIn = (q: Squad) => new Set(q.ships.map((s) => s.pilotId).filter((p) => PILOTS[p].unique));
 
 /** Hull/shields after stat upgrades, for the ship cards. */
 function statLine(s: SquadShip) {
-  const p = PILOTS[s.pilotId], t = SHIP_TYPES[p.shipType];
+  const t = SHIP_TYPES[hullOf(s)];
   const plus = (k: 'hull' | 'shields') => s.upgrades.reduce((a, u) => a + (UPGRADES[u].stats?.[k] ?? 0), 0);
   const atk = t.primaries.map((w) => `${w.attack}${w.arc === 'rear' ? ' rear' : ''}`).join(' + ');
   return `atk ${atk} · agi ${t.agility} · hull ${t.hull + plus('hull')} · shields ${t.shields + plus('shields')}`;
@@ -116,55 +145,79 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     if (!ship || !slot) return;
     const pv = shipPreview();
     slot.appendChild(pv.canvas);
-    pv.show(PILOTS[ship.pilotId].shipType, selected!.side === 'ai' ? 'red' : 'blue');
+    pv.show(hullOf(ship), selected!.side === 'ai' ? 'red' : 'blue');
     pv.start();
   };
 
+  /** Hull choice: the pilot's specialty first, then other classes (flown at -1 initiative). */
+  const hullPicker = (s: SquadShip, i: number) => {
+    const p = PILOTS[s.pilotId];
+    const opt = (id: string) => `<option value="${id}" ${id === hullOf(s) ? 'selected' : ''}>${esc(SHIP_TYPES[id].name)} (${SHIP_TYPES[id].cost})</option>`;
+    const hulls = Object.values(SHIP_TYPES);
+    const own = hulls.filter((t) => t.class === p.specialty).map((t) => opt(t.id)).join('');
+    const other = hulls.filter((t) => t.class !== p.specialty).map((t) => opt(t.id)).join('');
+    return `<select class="hull-pick" data-hull="${i}" aria-label="Ship for ${esc(p.name)}">
+      <optgroup label="${CLASS_LABEL[p.specialty]} (specialty)">${own}</optgroup>
+      <optgroup label="Other classes: -1 initiative">${other}</optgroup></select>`;
+  };
+
   const shipCard = (s: SquadShip, i: number, room: number) => {
-    const p = PILOTS[s.pilotId], t = SHIP_TYPES[p.shipType];
+    const p = PILOTS[s.pilotId];
+    const sig = signatureTalents(s).map((u) => `<span class="slot full sig" title="Signature talent: comes with ${esc(p.name)}. ${esc(UPGRADES[u].text)}">
+        <i>Talent</i> ${esc(UPGRADES[u].name)} <em>★</em></span>`);
+    const lost = (p.talents ?? []).filter((u) => !signatureTalents(s).includes(u))
+      .map((u) => `<span class="slot soon" title="No talent slot for it at this initiative"><i>Talent</i> <s>${esc(UPGRADES[u].name)}</s></span>`);
     const filled = s.upgrades.map((u, ui) => `<span class="slot full" title="${esc(UPGRADES[u].text)}">
-        <i>${SLOT_LABEL[UPGRADES[u].slot]}</i> ${esc(UPGRADES[u].name)} <em>${upgradeCost(u, s.pilotId)}</em>
+        <i>${SLOT_LABEL[UPGRADES[u].slot]}</i> ${esc(UPGRADES[u].name)} <em>${upgradeCost(u, s)}</em>
         <button data-unfit="${i}:${ui}" aria-label="Remove ${esc(UPGRADES[u].name)}">✕</button></span>`);
     const opts = upgradeOptions(s);
     const empty = freeSlots(s).map((slot) => {
       if (!OPEN_SLOTS.has(slot)) return `<span class="slot soon" title="Power-ups for this slot are coming in a later update"><i>${SLOT_LABEL[slot]}</i> soon</span>`;
       const fit = opts.filter((u) => UPGRADES[u].slot === slot);
       return `<select class="slot pick" data-fit="${i}" aria-label="Add a ${SLOT_LABEL[slot]}">
-          <option value="">+ ${SLOT_LABEL[slot]}</option>
-          ${fit.map((u) => `<option value="${u}" ${upgradeCost(u, s.pilotId) > room ? 'class="dear"' : ''}>${esc(UPGRADES[u].name)} (${upgradeCost(u, s.pilotId)}) — ${esc(UPGRADES[u].text)}</option>`).join('')}
+          <option value="">+ ${slot === 'talent' ? `${CLASS_LABEL[p.specialty]} talent` : SLOT_LABEL[slot]}</option>
+          ${fit.map((u) => `<option value="${u}" ${upgradeCost(u, s) > room ? 'class="dear"' : ''}>${esc(UPGRADES[u].name)} (${upgradeCost(u, s)}) — ${esc(UPGRADES[u].text)}</option>`).join('')}
         </select>`;
     });
     return `<div class="sq-ship ${isSel('you', i) ? 'selected' : ''}" data-sel="you:${i}">
         ${isSel('you', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}
-        <div class="sq-top"><span class="who"><b>${esc(p.name)}</b> <span class="init">${p.initiative}</span>
-          <span class="hint">${esc(t.name)}${p.unique ? '' : ' · generic'}</span></span>
+        <div class="sq-top"><span class="who"><b>${esc(p.name)}</b> ${initBadge(s)}
+          <span class="hint">${CLASS_LABEL[p.specialty]} pilot${p.unique ? '' : ' · generic'}</span></span>
           <span class="cost">${shipCost(s)}</span><button class="rm" data-rm="${i}" aria-label="Remove ${esc(p.name)}">✕</button></div>
+        <div class="hull-row">${hullPicker(s, i)}${isOffClass(s) ? '<span class="hint off-class">outside specialty: -1 initiative</span>' : ''}</div>
         <div class="stats">${statLine(s)}</div>
-        <div class="slots">${[...filled, ...empty].join('')}</div>
+        <div class="slots">${[...sig, ...lost, ...filled, ...empty].join('')}</div>
       </div>`;
   };
 
   const aiCard = (s: SquadShip, i: number) => {
     const p = PILOTS[s.pilotId];
+    const ups = [...signatureTalents(s).map((u) => `${esc(UPGRADES[u].name)} ★`), ...s.upgrades.map((u) => esc(UPGRADES[u].name))];
     return `<div class="sq-ship compact ${isSel('ai', i) ? 'selected' : ''}" data-sel="ai:${i}">
-      ${isSel('ai', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}<div class="sq-top"><span class="who"><b>${esc(p.name)}</b> <span class="init">${p.initiative}</span>
-      <span class="hint">${esc(SHIP_TYPES[p.shipType].name)}</span></span><span class="cost">${shipCost(s)}</span></div>
-      ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => esc(UPGRADES[u].name)).join(' · ')}</div>` : ''}</div>`;
+      ${isSel('ai', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}<div class="sq-top"><span class="who"><b>${esc(p.name)}</b> ${initBadge(s)}
+      <span class="hint">${esc(SHIP_TYPES[hullOf(s)].name)}</span></span><span class="cost">${shipCost(s)}</span></div>
+      ${ups.length ? `<div class="hint">${ups.join(' · ')}</div>` : ''}</div>`;
   };
 
+  /** Pilots by specialty. Each joins in their usual hull; the hull can be changed on the ship card. */
   const pilotPicker = (room: number) => {
     const taken = uniquesIn(player);
-    const groups = Object.values(SHIP_TYPES).map((t) => {
-      const pilots = Object.values(PILOTS).filter((p) => p.shipType === t.id).sort((a, b) => b.initiative - a.initiative);
-      return `<div class="pick-group"><img class="thumb" alt="" src="${shipPreview().thumbnail(t.id)}"><h3>${esc(t.name)} <span class="hint">${t.size} · atk ${t.primaries.map((w) => w.attack).join('+')} · agi ${t.agility} · hull ${t.hull} · shields ${t.shields} · slots: ${pilotSlots(pilots[0].id).filter((x) => x !== 'talent').map((x) => SLOT_LABEL[x]).join(', ')}</span></h3>
+    const groups = CLASSES.map((c) => {
+      const hulls = Object.values(SHIP_TYPES).filter((t) => t.class === c);
+      const pilots = Object.values(PILOTS).filter((p) => p.specialty === c).sort((a, b) => b.initiative - a.initiative || a.name.localeCompare(b.name));
+      if (!pilots.length) return '';
+      return `<div class="pick-group"><div class="thumbs">${hulls.map((t) => `<img class="thumb" alt="" title="${esc(t.name)}" src="${shipPreview().thumbnail(t.id)}">`).join('')}</div>
+        <h3>${CLASS_LABEL[c]} pilots <span class="hint">fly ${hulls.map((t) => `${esc(t.name)} (${t.cost})`).join(', ')}</span></h3>
         ${pilots.map((p) => {
           const off = p.unique && taken.has(p.id);
-          return `<button class="opt pick-pilot ${p.cost > room ? 'dear' : ''}" data-add="${p.id}" ${off ? 'disabled' : ''}>
-            <b>${esc(p.name)}</b> <span class="init">${p.initiative}</span> <span class="hint">${p.unique ? 'named' : 'generic'}${pilotSlots(p.id).includes('talent') ? ' · talent slot' : ''}</span>
-            <span class="cost">${p.cost}</span></button>`;
+          const cost = shipCost({ pilotId: p.id, upgrades: [] });
+          const extra = talentSummary(p);
+          return `<button class="opt pick-pilot ${cost > room ? 'dear' : ''}" data-add="${p.id}" ${off ? 'disabled' : ''}>
+            <b>${esc(p.name)}</b> <span class="init">${p.initiative}</span> <span class="hint">${p.unique ? 'named' : 'generic'} · ${esc(SHIP_TYPES[p.ship].name)}${extra ? ` · ${esc(extra)}` : ''}</span>
+            <span class="cost">${cost}</span></button>`;
         }).join('')}</div>`;
     });
-    return `<div class="picker">${groups.join('')}</div>`;
+    return `<div class="picker"><p class="hint">Pilots fly any ship of their class; another class costs them 1 initiative (and maybe a talent slot). Talents belong to the pilot: 1 slot at initiative 3-4, 2 at 5+. ★ marks a signature talent, which comes with the pilot and fills a slot.</p>${groups.join('')}</div>`;
   };
 
   const wire = () => {
@@ -208,7 +261,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
       render();
     }; });
     root.querySelectorAll<HTMLButtonElement>('[data-add]').forEach((b) => { b.onclick = () => {
-      player.ships.push({ pilotId: b.dataset.add!, upgrades: [] });
+      player.ships.push({ pilotId: b.dataset.add!, shipType: PILOTS[b.dataset.add!].ship, upgrades: [] });
       selected = { side: 'you', i: player.ships.length - 1 };
       picking = false;
       refreshAi();
@@ -223,6 +276,12 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     root.querySelectorAll<HTMLButtonElement>('[data-unfit]').forEach((b) => { b.onclick = () => {
       const [i, ui] = b.dataset.unfit!.split(':').map(Number);
       player.ships[i].upgrades.splice(ui, 1);
+      render();
+    }; });
+    root.querySelectorAll<HTMLSelectElement>('[data-hull]').forEach((sel) => { sel.onchange = () => {
+      const s = player.ships[Number(sel.dataset.hull)];
+      s.shipType = sel.value;
+      s.upgrades = keepFitting({ ...s, upgrades: [] }, s.upgrades); // a smaller hull drops what no longer fits
       render();
     }; });
     root.querySelectorAll<HTMLSelectElement>('[data-fit]').forEach((sel) => { sel.onchange = () => {

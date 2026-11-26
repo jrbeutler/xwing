@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defenseDiceFor, inFiringArc } from '../src/combat';
-import { apply, createGame } from '../src/game';
+import { apply, createGame, jamTargets } from '../src/game';
 import { SHIP_TYPES } from '../src/content';
 import type { GameState, ShipState, TargetInfo } from '../src/types';
 
@@ -61,8 +61,59 @@ describe('red-maneuver talents', () => {
 
   it('Elusive recovers its spent charge after a red maneuver', () => {
     const g0 = duel({ pose: { x: 300, y: 300, h: Math.PI / 2 }, upgrades: ['elusive'] }, far);
-    g0.ships[0].upgrades[0].charges = 0;
+    g0.ships[0].upgrades.at(-1)!.charges = 0;
     const g = round(g0, kturn);
+    expect(g.ships[0].upgrades.at(-1)!.charges).toBe(1);
+  });
+});
+
+describe('pilot talents and classes', () => {
+  const players = [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }] as [any, any];
+  const two = (a: { pilotId: string; shipType?: string; upgrades?: string[] }, b = { pilotId: 'grunt-seven' }) =>
+    createGame({ seed: 4, players, squads: { a: [{ ...a, pose: { x: 300, y: 300, h: 0 } }], b: [{ ...b, pose: { x: 600, y: 600, h: Math.PI } }] } });
+
+  it('signature talents come with the pilot, ahead of bought upgrades', () => {
+    expect(two({ pilotId: 'tobin-reyes', upgrades: ['shield-booster'] }).ships[0].upgrades.map((u) => u.id)).toEqual(['marksman', 'shield-booster']);
+  });
+
+  it('a pilot can fly any hull; outside their class they lose 1 initiative', () => {
+    const own = two({ pilotId: 'mara-venn', shipType: 'javelin' }).ships[0];
+    expect([own.typeId, own.initiative]).toEqual(['javelin', 5]);
+    const off = two({ pilotId: 'syl-ketch', shipType: 'wayfarer' }).ships[0];
+    expect([off.typeId, off.initiative, off.upgrades.length]).toEqual(['wayfarer', 2, 0]); // Hotshot lost with the slot
+  });
+
+  it('Payload Expert adds a charge to each device', () => {
+    const g = two({ pilotId: 'bram-holloway', upgrades: ['proton-bomb', 'proximity-mine'] });
+    expect(g.ships[0].upgrades.map((u) => u.charges)).toEqual([0, 3, 3]);
+    expect(two({ pilotId: 'rook-twelve', upgrades: ['proton-bomb'] }).ships[0].upgrades[0].charges).toBe(2);
+  });
+
+  it('Damage Control recovers 1 shield once, in the End phase', () => {
+    const g0 = two({ pilotId: 'drav-okono' });
+    g0.ships[0].shields = 1;
+    let g = round(g0, SHIP_TYPES.bulwark.dial.findIndex((m) => m.bearing === 'straight'));
+    expect(g.ships[0].shields).toBe(2);
+    expect(g.log).toContainEqual(expect.objectContaining({ type: 'upgrade', upgrade: 'damage-control', what: 'used' }));
+    g.ships[0].shields = 1;
+    g = round(g, SHIP_TYPES.bulwark.dial.findIndex((m) => m.bearing === 'straight'));
+    expect(g.ships[0].shields).toBe(1); // spent
+  });
+
+  it('Damage Control waits until shields are down', () => {
+    const g = round(two({ pilotId: 'drav-okono' }), SHIP_TYPES.bulwark.dial.findIndex((m) => m.bearing === 'straight'));
     expect(g.ships[0].upgrades[0].charges).toBe(1);
+  });
+
+  it('Signal Jammer lets the Jam action reach range 3', () => {
+    const at = (pilotId: string) => {
+      const g = createGame({ seed: 5, players, squads: {
+        a: [{ pilotId, pose: { x: 450, y: 450, h: 0 } }],
+        b: [{ pilotId: 'syl-ketch', pose: { x: 710, y: 450, h: Math.PI } }], // range 3 ahead
+      } });
+      return jamTargets(g, g.ships[0]).length;
+    };
+    expect(at('scout-two')).toBe(0);
+    expect(at('tessa-varn')).toBe(1);
   });
 });
