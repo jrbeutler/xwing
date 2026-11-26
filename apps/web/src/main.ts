@@ -1032,7 +1032,11 @@ function uiInsets() {
 
 function applyCamera(ms = 500) {
   if (!compact || !state || scene.inAttackView) return;
-  if (stage === 'deploy') { viewBtn.hidden = true; scene.frameRect(457, 200, 470, 200, uiInsets(), 0.45, ms); return; }
+  // On an upright phone the board is wider than the screen: zoom in past its sides a little.
+  const zoom = innerHeight > innerWidth ? 1.25 : 1;
+  // The whole board, plus headroom past the far edge for the labels floating over the enemy's ships.
+  const board = (tilt: number) => scene.frameRect(457, 492, 457, 492, uiInsets(), tilt, ms, zoom);
+  if (stage === 'deploy') { viewBtn.hidden = true; board(0.45); return; }
   if (stage !== 'battle') return;
   const d = state.pending;
   // Points of interest for the current decision; null = show the whole table.
@@ -1056,7 +1060,7 @@ function applyCamera(ms = 500) {
   viewBtn.hidden = !pts;
   viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
   if (pts && !userOverview) framePoints(pts, minHalf, ms);
-  else scene.frameRect(457, 457, 465, 465, uiInsets(), 0.2, ms);
+  else board(0.2);
 }
 
 /** Frame a set of board points (with room for bases and labels) in the uncovered screen area. */

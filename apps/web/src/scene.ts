@@ -850,25 +850,46 @@ export class BattleScene {
     this.flyTo(new THREE.Vector3(0, 0, 60), new THREE.Vector3(0, 1080, 640), ms);
   }
 
+  private fitCam = new THREE.PerspectiveCamera();
+
   /**
    * Frame a rectangle of the board (centre cx, cy; half sizes hw, hh in mm) inside the part of
    * the screen not covered by UI (insets in CSS px). `tilt` is the camera's angle from vertical.
+   * The fit is measured on screen (perspective makes the near edge wider than the far one), then
+   * the rectangle is centred in the uncovered area. `zoom` > 1 lets it be that much wider than the
+   * uncovered area (spilling past the sides, e.g. a wide board on an upright phone), never taller.
    */
   frameRect(cx: number, cy: number, hw: number, hh: number,
-    insets: { top: number; right: number; bottom: number; left: number }, tilt = 0.3, ms = 500) {
+    insets: { top: number; right: number; bottom: number; left: number }, tilt = 0.3, ms = 500, zoom = 1) {
     const w = this.host.clientWidth, h = this.host.clientHeight;
     const availW = Math.max(120, w - insets.left - insets.right);
     const availH = Math.max(120, h - insets.top - insets.bottom);
+    const midX = insets.left + availW / 2, midY = insets.top + availH / 2;
     const tv = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
-    const th = tv * (w / h);
-    const d = 1.08 * Math.max(hw / (th * (availW / w)), (hh * Math.cos(tilt)) / (tv * (availH / h)));
-    const mmPerPx = (2 * d * tv) / h;
+    const cam = this.fitCam;
+    cam.fov = this.camera.fov; cam.aspect = w / h; cam.near = this.camera.near; cam.far = this.camera.far;
+    cam.updateProjectionMatrix();
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toV3(cx + sx * hw, cy + sy * hh, 0));
     const target = toV3(cx, cy, 0);
-    // Shift the look-at point so the framed area sits in the middle of the uncovered region.
-    target.x += ((insets.right - insets.left) / 2) * mmPerPx;
-    target.z += (((insets.bottom - insets.top) / 2) * mmPerPx) / Math.cos(tilt);
-    const pos = target.clone().add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
-    this.flyTo(target, pos, ms);
+    let d = Math.max(hw / (tv * (w / h) * (availW / w)), hh / (tv * (availH / h)));
+    const place = () => {
+      cam.position.copy(target).add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
+      cam.lookAt(target);
+      cam.updateMatrixWorld();
+    };
+    // A few rounds of: measure where the corners land, rescale to fit, recentre.
+    for (let i = 0; i < 6; i++) {
+      place();
+      const px = corners.map((c) => { const v = c.clone().project(cam); return { x: ((v.x + 1) / 2) * w, y: ((1 - v.y) / 2) * h }; });
+      const x0 = Math.min(...px.map((p) => p.x)), x1 = Math.max(...px.map((p) => p.x));
+      const y0 = Math.min(...px.map((p) => p.y)), y1 = Math.max(...px.map((p) => p.y));
+      d *= Math.max((x1 - x0) / (availW * zoom), (y1 - y0) / availH) * 1.04;
+      const mmPerPx = (2 * d * tv) / h;
+      target.x -= (midX - (x0 + x1) / 2) * mmPerPx;
+      target.z -= ((midY - (y0 + y1) / 2) * mmPerPx) / Math.cos(tilt);
+    }
+    place();
+    this.flyTo(target, cam.position.clone(), ms);
   }
 
   /** Screen direction (degrees clockwise from screen-up) of the board heading `h` seen from point (x, y). */
