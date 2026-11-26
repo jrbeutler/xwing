@@ -5,7 +5,7 @@ import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { actionOptions, activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
@@ -131,9 +131,14 @@ const bestShot = (s: GameState, a: ShipState) =>
  * defense: weight of damage prevented against damage dealt. reload: value of a recovered ordnance or bomb
  * charge (paid for by not attacking this round). stress: cost of the stress a red linked action brings.
  * abilityToken: rough value of a token an ability gives after an action (e.g. calculate after a Jam).
- * Mutable for experiments.
+ * The rest weigh barrel rolls and boosts (see repositionValue). Mutable for experiments.
  */
-export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5, abilityToken: 0.4 };
+export const TOKEN_WEIGHTS = {
+  lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5, abilityToken: 0.4,
+  // Barrel roll and boost: weight of shots at / threats from enemies that have not moved yet this round, and
+  // the costs of a mine on the way, each mm closer than 80 mm to the board edge, and ending boxed in.
+  unmoved: 0.5, mine: 1.5, edge: 0.01, boxedIn: 0.6,
+};
 
 /** What the ship's own triggered effects (pilot abilities, talents) add to performing `action`: tokens they give. */
 export function actionBonus(sh: ShipState, action: ActionChoice['type']): number {
@@ -143,7 +148,8 @@ export function actionBonus(sh: ShipState, action: ActionChoice['type']): number
 }
 
 /**
- * Focus, Evade, Calculate, Reinforce, a Lock or a Reload, chosen by what each is worth, measured with the exact odds:
+ * Focus, Evade, Calculate, Reinforce, a Lock, a Reload, a Barrel Roll or a Boost, chosen by what each is worth,
+ * measured with the exact odds (repositions: see repositionValue):
  *   attack: how much better this round's best shot gets (a lock can also make ordnance legal);
  *   defense: how much less damage the enemies that can still shoot this ship expect to deal
  *     (each enemy counted once, split across the targets it has);
@@ -160,18 +166,11 @@ export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[], 
 export function tokenChoice(s: GameState, sh: ShipState, options: ActionChoice[]): { o: ActionChoice; v: number } | undefined {
   const kinds = ['focus', 'evade', 'lock', 'calculate', 'reinforce', 'reload'];
   const tokens = options.filter((o) => kinds.includes(o.type));
-  if (!tokens.length) return undefined;
+  const moves = AI_OPTIONS.reposition ? options.filter((o): o is Reposition => o.type === 'barrelRoll' || o.type === 'boost') : [];
+  if (!tokens.length && !moves.length) return undefined;
   const ship = (id: string) => s.ships.find((x) => x.id === id)!;
   const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
-  const waiting = s.phase === 'engagement' ? new Set(s.queue.slice(s.queueIndex + 1)) : null;
-  // Enemies that can still shoot this ship, with their best shot at it and how many targets they have.
-  const threats = enemies.filter((e) => !waiting || waiting.has(e.id)).flatMap((e) => {
-    const ts = legalTargets(s, e);
-    const atMe = ts.filter((t) => t.targetId === sh.id);
-    return atMe.length ? [{ e, atMe, share: 1 / new Set(ts.map((t) => t.targetId)).size }] : [];
-  });
-  const incoming = (me: ShipState) => threats.reduce((a, { e, atMe, share }) =>
-    a + share * Math.max(...atMe.map((t) => attackOdds(e, me, t, s).expected)), 0);
+  const incoming = threatsTo(s, sh);
   // What a lock on `id` adds to a shot at that enemy now, or a base value if it is not a target yet.
   const lockGain = (id: string) => {
     const shots = legalTargets(s, { ...sh, lock: id }).filter((t) => t.targetId === id);
@@ -195,7 +194,76 @@ export function tokenChoice(s: GameState, sh: ShipState, options: ActionChoice[]
     if (o.type === 'reload') v += TOKEN_WEIGHTS.reload;
     return v + actionBonus(sh, o.type);
   };
-  return tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
+  return [
+    ...tokens.map((o) => ({ o, v: value(o) })),
+    ...moves.map((o) => ({ o: o as ActionChoice, v: repositionValue(s, sh, o) })),
+  ].sort((a, b) => b.v - a.v)[0];
+}
+
+type Reposition = Extract<ActionChoice, { type: 'barrelRoll' | 'boost' }>;
+
+/** Switches for experiments: `reposition` lets the AI barrel roll and boost. */
+export const AI_OPTIONS = { reposition: true };
+
+/**
+ * Expected damage `me` takes this round from the enemies that can still shoot it in `st` (each enemy split
+ * across the targets it has). `unmoved`: weight for enemies that have not moved yet this round, whose
+ * positions are not final (1 counts them fully, as token choice always has).
+ */
+function threatsTo(st: GameState, sh: ShipState, unmoved = 1) {
+  const waiting = st.phase === 'engagement' ? new Set(st.queue.slice(st.queueIndex + 1)) : null;
+  const moved = movedThisRound(st);
+  const threats = activeShips(st).filter((e) => e.owner !== sh.owner && (!waiting || waiting.has(e.id))).flatMap((e) => {
+    const ts = legalTargets(st, e);
+    const atMe = ts.filter((t) => t.targetId === sh.id);
+    const weight = moved.has(e.id) ? 1 : unmoved;
+    return atMe.length && weight ? [{ e, atMe, share: weight / new Set(ts.map((t) => t.targetId)).size }] : [];
+  });
+  return (me: ShipState) => threats.reduce((a, { e, atMe, share }) => a + share * Math.max(...atMe.map((t) => attackOdds(e, me, t, st).expected)), 0);
+}
+
+/** Ships whose position is final for this round: all of them outside Activation, else those that have moved. */
+function movedThisRound(st: GameState): Set<string> {
+  if (st.phase !== 'activation') return new Set(st.ships.map((x) => x.id));
+  return new Set(st.queue.slice(0, st.queueIndex));
+}
+
+/** The best shot `a` has in `st`, shots at enemies that have not moved yet weighted by `unmoved`. */
+const bestShotWeighted = (st: GameState, a: ShipState, unmoved: number) => {
+  const moved = movedThisRound(st);
+  return Math.max(0, ...legalTargets(st, a).map((t) => {
+    const d = st.ships.find((x) => x.id === t.targetId)!;
+    return shotWorth(st, a, d, t) * (moved.has(d.id) ? 1 : unmoved);
+  }));
+};
+
+/**
+ * What a barrel roll or boost is worth, in the same units as a token: the better shot it gives this round
+ * and the damage it avoids (enemies that have not moved yet counted at TOKEN_WEIGHTS.unmoved), plus the
+ * linked action it allows, minus stress (red), a mine on the way, hugging the board edge, or ending where
+ * every gentle move next round hits an obstacle.
+ */
+function repositionValue(s: GameState, sh: ShipState, o: Reposition): number {
+  const W = TOKEN_WEIGHTS;
+  const me: ShipState = { ...sh, pose: o.to };
+  const moved: GameState = { ...s, ships: s.ships.map((x) => (x.id === sh.id ? me : x)) };
+  let v = bestShotWeighted(moved, me, W.unmoved) - bestShotWeighted(s, sh, W.unmoved)
+    + W.defense * (threatsTo(s, sh, W.unmoved)(sh) - threatsTo(moved, me, W.unmoved)(me));
+  const def = shipType(sh).actions.find((a) => a.type === o.type);
+  if (def?.red) v -= W.stress;
+  // The linked action it opens (e.g. a red Evade after a roll), valued from the new position.
+  if (def?.linked) {
+    const follow = actionOptions(moved, me).filter((x) => x.type === def.linked!.type);
+    const best = follow.length ? tokenChoice(moved, me, follow) : undefined;
+    if (best) v += Math.max(0, best.v - (def.linked.red ? W.stress : 0));
+  }
+  const size = shipSize(sh);
+  const path = [sh.pose, o.to].map((p) => basePolygon(p, size));
+  if (s.devices.some((d) => d.kind === 'mine' && path.some((b) => polygonsOverlap(b, devicePolygon(d))))) v -= W.mine;
+  const edge = Math.min(o.to.x, o.to.y, BOARD_SIZE - o.to.x, BOARD_SIZE - o.to.y);
+  if (edge < 80) v -= (80 - edge) * W.edge;
+  if (s.obstacles.length && ESCAPES.every((next) => obstacleCost(s, o.to, size, next) > 0)) v -= W.boxedIn;
+  return v + actionBonus(sh, o.type);
 }
 
 /**
