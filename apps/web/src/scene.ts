@@ -964,6 +964,93 @@ export class BattleScene {
     });
   }
 
+  // ---------------- end of battle ----------------
+  private celebration = 0;
+
+  /**
+   * The winner's moment: their surviving ships barrel-roll one after another, and fireworks in their
+   * colour (with gold and white) go off over the board until stopCelebration(). `owner` null: a draw,
+   * which gets no fireworks. Runs at normal speed whatever the animation speed, and calmly under
+   * reduced motion (a few slow bursts, no rolls).
+   */
+  celebrate(owner: string | null) {
+    const id = ++this.celebration;
+    if (!owner) return;
+    const color = COLORS[owner] ?? 0xffffff;
+    const winners = [...this.ships.values()].filter((v) => v.owner === owner);
+    if (!this.reducedMotion) {
+      winners.forEach((v, i) => setTimeout(() => { if (id === this.celebration) void this.victoryRoll(v); }, 500 + i * 380));
+    }
+    let n = 0;
+    const next = () => {
+      if (id !== this.celebration) return;
+      const opening = n < 8; // a quick volley first, then a steady show
+      this.firework([color, 0xffd166, 0xffffff][n % 3 === 2 ? 1 : n % 5 === 4 ? 2 : 0]);
+      n++;
+      const gap = this.reducedMotion ? 1800 : opening ? 260 + Math.random() * 200 : 700 + Math.random() * 600;
+      setTimeout(next, gap);
+    };
+    setTimeout(next, 250);
+  }
+
+  stopCelebration() { this.celebration++; }
+
+  /** Rise, barrel roll with the engines lit, settle back. */
+  private async victoryRoll(v: ShipView) {
+    const y0 = v.model.position.y;
+    const thrust = v.thrust;
+    await this.tween(1300 * this.speed, (t) => {
+      const lift = Math.sin(t * Math.PI);
+      v.model.position.y = y0 + lift * 22;
+      v.model.rotation.x = Math.PI * 2 * (t < 0.15 ? 0 : t > 0.85 ? 1 : (1 - Math.cos(((t - 0.15) / 0.7) * Math.PI)) / 2);
+      v.thrust = thrust + lift * 2;
+    });
+    v.model.position.y = y0;
+    v.model.rotation.x = 0;
+    v.thrust = thrust;
+  }
+
+  /** One firework over a random spot of the board: a bright flash and a drooping, fading shell of sparks. */
+  private async firework(color: number) {
+    const at = new THREE.Vector3((Math.random() - 0.5) * BOARD_SIZE * 0.7, 120 + Math.random() * 120, (Math.random() - 0.5) * BOARD_SIZE * 0.7);
+    // Two single-colour layers: the main shell, and a few white sparkles.
+    const layers = [this.shell(at, hot(color, 4), 140, 230, 40), this.shell(at, hot(0xffffff, 3.5), 30, 200, 30)];
+    const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(color, 4), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+    flash.position.copy(at);
+    this.scene.add(flash);
+    this.flash(at, color, 6000, 700);
+    await this.tween(1800 * this.speed, (t) => {
+      const fade = t < 0.55 ? 1 : ((1 - t) / 0.45) * (0.75 + 0.25 * Math.sin(t * 90)); // twinkle out
+      layers.forEach((l) => l.update(t, fade));
+      flash.scale.setScalar(160 * (1 + t * 2));
+      flash.material.opacity = Math.max(0, 1 - t * 4);
+    });
+    layers.forEach((l) => l.dispose());
+    this.scene.remove(flash);
+    flash.material.dispose();
+  }
+
+  /** Sparks bursting from `at` that slow, droop under gravity and fade (update(t, opacity) per frame). */
+  private shell(at: THREE.Vector3, color: THREE.Color, count: number, speed: number, size: number) {
+    const pos = new Float32Array(count * 3);
+    const vel = Array.from({ length: count }, () => new THREE.Vector3().randomDirection().multiplyScalar(speed * (0.85 + Math.random() * 0.3)));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color, size, map: glowTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    this.scene.add(pts);
+    return {
+      update: (t: number, opacity: number) => {
+        const k = 1 - Math.pow(1 - t, 3), fall = 90 * t * t;
+        vel.forEach((v, i) => pos.set([at.x + v.x * k, at.y + v.y * k - fall, at.z + v.z * k], i * 3));
+        geo.attributes.position.needsUpdate = true;
+        mat.opacity = opacity;
+      },
+      dispose: () => { this.scene.remove(pts); geo.dispose(); mat.dispose(); },
+    };
+  }
+
   /** A pause that respects speed and skipping. */
   wait(ms: number): Promise<void> { return this.tween(ms, () => {}); }
 

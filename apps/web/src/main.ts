@@ -66,6 +66,7 @@ const nameHtml = (id: string) => { const s = shipById(id); return `<span class="
 
 /** Open the squad builder (keeping the last opponent when coming back from deployment). */
 function newGame(keep?: BattleSetup) {
+  hideFinale();
   stage = 'setup';
   mode = null;
   scene.setDeployZone(null);
@@ -673,9 +674,13 @@ function renderDecision() {
     const won = state.winner === HUMAN;
     const title = state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat';
     detail.innerHTML = `<h2>${title}</h2>
-      <p class="hint">Battle ended in round ${state.round}.</p><button class="go" id="again">New battle</button>`;
+      <p class="hint">Battle ended in round ${state.round}.</p>
+      <div class="row"><button class="go" id="again">New battle</button><button class="opt mini" id="results">Results</button></div>`;
     document.getElementById('again')!.onclick = () => newGame();
-    setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [{ label: 'New battle', cls: 'primary', onClick: newGame }] });
+    document.getElementById('results')!.onclick = () => showFinale();
+    setBar({ status: `<b>${title}</b> <span class="hint">· round ${state.round}</span>`, buttons: [
+      { label: 'Results', onClick: () => showFinale() }, { label: 'New battle', cls: 'primary', onClick: () => newGame() }] });
+    if (finaleFor !== state) { finaleFor = state; showFinale(true); }
     return;
   }
   if (d.kind === 'planning') {
@@ -692,6 +697,82 @@ function renderDecision() {
   if (d.kind === 'action') return renderAction(d.shipId, d.options);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
+}
+
+// ---------------------------------------------------------------------------
+// End of battle: a full-screen result with the battle's numbers, and the winner's
+// fireworks over the board. "View board" tucks it away; Results brings it back.
+// ---------------------------------------------------------------------------
+let finaleFor: GameState | null = null;
+const finale = document.createElement('div');
+finale.id = 'finale';
+finale.hidden = true;
+document.body.appendChild(finale);
+
+/** Kills per ship: the last ship to hit a ship (shot or bomb) gets the credit when it is destroyed. */
+function killsBy(): Map<string, number> {
+  const lastHit = new Map<string, string>(), dropper = new Map<string, string>(), kills = new Map<string, number>();
+  for (const e of state.log) {
+    if (e.type === 'attack' && e.hullDamage + e.shieldDamage + (e.ion ?? 0) > 0) lastHit.set(e.defenderId, e.attackerId);
+    if (e.type === 'deviceDropped') dropper.set(e.device.id, e.shipId);
+    if (e.type === 'deviceDetonated') {
+      const by = dropper.get(e.device.id);
+      if (by) for (const h of e.ships) if (h.shipId !== by && h.hullDamage + h.shieldDamage > 0) lastHit.set(h.shipId, by);
+    }
+    if (e.type === 'destroyed') {
+      const by = lastHit.get(e.shipId);
+      if (by && shipById(by).owner !== shipById(e.shipId).owner) kills.set(by, (kills.get(by) ?? 0) + 1);
+    }
+  }
+  return kills;
+}
+
+function showFinale(first = false) {
+  const result = state.winner === 'draw' ? 'draw' : state.winner === HUMAN ? 'victory' : 'defeat';
+  const title = { victory: 'Victory', defeat: 'Defeat', draw: 'Draw' }[result];
+  const mine = state.ships.filter((s) => s.owner === HUMAN), theirs = state.ships.filter((s) => s.owner === AI);
+  const down = (xs: ShipState[]) => xs.filter((s) => s.destroyed).length;
+  const wiped = (xs: ShipState[]) => down(xs) === xs.length;
+  const why = result === 'draw' ? (wiped(mine) && wiped(theirs) ? 'Both squadrons were wiped out.' : 'Time ran out with the squadrons dead even.')
+    : result === 'victory' ? (wiped(theirs) ? 'The Syndicate squadron has been wiped out.' : `Time ran out after round ${state.round}, with your squadron ahead on hull and shields.`)
+    : (wiped(mine) ? 'Your squadron has been wiped out.' : `Time ran out after round ${state.round}, with the Syndicate ahead on hull and shields.`);
+  const kills = killsBy();
+  // The top ace: the winner's (or anyone's, in a draw) ship with the most kills.
+  const aces = [...kills].filter(([id]) => result === 'draw' || shipById(id).owner === state.winner).sort((a, b) => b[1] - a[1]);
+  const ace = aces[0];
+  const survivors = state.ships.filter((s) => !s.destroyed && (result === 'draw' || s.owner === state.winner));
+  const letters = [...title.toUpperCase()].map((c, i) => `<span style="--i:${i}">${c}</span>`).join('');
+  finale.className = result;
+  finale.innerHTML = `
+    <div class="finale-rays" aria-hidden="true"></div>
+    <div class="finale-card" role="dialog" aria-modal="true" aria-labelledby="finale-title">
+      <div class="finale-kicker">Battle over · round ${state.round}</div>
+      <h1 id="finale-title" aria-label="${title}">${letters}</h1>
+      <p class="finale-why">${why}</p>
+      <div class="finale-stats">
+        <div><b>${down(theirs)}<i>/${theirs.length}</i></b><span>enemy ships destroyed</span></div>
+        <div><b>${down(mine)}<i>/${mine.length}</i></b><span>of your ships lost</span></div>
+        <div><b>${state.round}</b><span>rounds</span></div>
+      </div>
+      ${ace ? `<div class="finale-ace"><span class="medal" aria-hidden="true">★</span><div><span class="hint">Top ace</span><br>
+        <b class="${shipById(ace[0]).owner}">${shipById(ace[0]).name}</b> · ${ace[1]} kill${ace[1] > 1 ? 's' : ''}</div></div>` : ''}
+      ${survivors.length ? `<div class="finale-survivors"><span class="hint">Still flying</span>
+        ${survivors.map((s) => `<span class="chip ${s.owner}">${s.name} <i>${s.hull}/${s.maxHull} hull</i></span>`).join('')}</div>` : ''}
+      <div class="finale-buttons"><button class="opt" id="fn-board">View board</button><button class="go" id="fn-again">New battle</button></div>
+    </div>`;
+  finale.hidden = false;
+  void finale.offsetWidth;
+  finale.classList.add('show');
+  finale.querySelector<HTMLButtonElement>('#fn-again')!.onclick = () => newGame();
+  finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
+  finale.querySelector<HTMLButtonElement>('#fn-again')!.focus();
+  if (first) scene.celebrate(result === 'draw' ? null : state.winner);
+}
+
+function hideFinale() {
+  finale.hidden = true;
+  finale.classList.remove('show');
+  scene.stopCelebration();
 }
 
 // ---------------------------------------------------------------------------
