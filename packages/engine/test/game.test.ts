@@ -43,8 +43,8 @@ describe('arcs and range', () => {
     expect(measureArc(g, b, a, 'front')).toBeNull();
     expect(legalTargets(g, b)).toHaveLength(0);
   });
-  it('out of range beyond 300mm', () => {
-    const g = duel({ x: 100, y: 400, h: 0 }, { x: 450, y: 400, h: 0 });
+  it('out of range beyond 36 cm (the far edge of range 4)', () => {
+    const g = duel({ x: 100, y: 400, h: 0 }, { x: 520, y: 400, h: 0 });
     expect(legalTargets(g, g.ships[0])).toHaveLength(0);
   });
 });
@@ -60,7 +60,7 @@ describe('attacks', () => {
     };
     const x = run(), y = run();
     expect(x).toEqual(y);
-    expect(x.r.attackRoll).toHaveLength(4); // 3 + range-1 bonus
+    expect(x.r.attackRoll).toHaveLength(2); // range 1: attack 3, minus 1 for being too close
     if (x.r.hits + x.r.crits > 0) expect(x.b.shields).toBeLessThan(2);
   });
 });
@@ -102,5 +102,38 @@ describe('full game loop', () => {
     const g = quickSkirmish(5);
     expect(() => apply(g, { type: 'attack', playerId: 'p1', targetId: null })).toThrow();
     expect(() => apply(g, { type: 'setDials', playerId: 'p1', dials: {} })).toThrow();
+  });
+});
+
+describe('house rules that keep fights at a distance', () => {
+  it('four range bands: -1 attack die at range 0-1, +1 at range 2, nothing at 3, +1 defense die at 4', async () => {
+    const { attackDiceFor, defenseDiceFor, rangeBand, SWEET_SPOT_RANGE } = await import('../src/combat');
+    const g = duel({ x: 100, y: 400, h: 0 }, { x: 160, y: 400, h: Math.PI });
+    const t = (range: number) => ({ targetId: 'b-0', arc: 'front' as const, attack: 3, range, obstructed: false, bullseye: false });
+    expect(SWEET_SPOT_RANGE).toBe(2);
+    expect([0, 1, 2, 3, 4].map((r) => attackDiceFor(g.ships[0], t(r)))).toEqual([2, 2, 4, 3, 3]);
+    const base = defenseDiceFor(g.ships[1], t(3));
+    expect(defenseDiceFor(g.ships[1], t(4))).toBe(base + 1);
+    expect([0, 30, 60, 61, 160, 161, 260, 261, 360, 361].map(rangeBand)).toEqual([0, 1, 1, 2, 2, 3, 3, 4, 4, null]);
+  });
+
+  it('a maneuver that ends in a bump costs 1 stress', async () => {
+    const { SHIP_TYPES } = await import('../src/content');
+    const { BUMP_STRESS } = await import('../src/game');
+    const dial = SHIP_TYPES.kestrel.dial;
+    const s1 = dial.findIndex((m) => m.bearing === 'straight' && m.speed === 1);
+    const s2 = dial.findIndex((m) => m.bearing === 'straight' && m.speed === 2);
+    // Ilse (init 2) flies 1 straight toward Tobin first; Tobin (init 4) then flies 2 straight into her.
+    let g = duel({ x: 400, y: 400, h: 0 }, { x: 600, y: 400, h: Math.PI });
+    g = apply(g, { type: 'setDials', playerId: 'a', dials: { 'a-0': s2 } });
+    g = apply(g, { type: 'setDials', playerId: 'b', dials: { 'b-0': s1 } });
+    // Skip any action steps until Tobin has flown.
+    while (!g.log.some((e) => e.type === 'moved' && e.shipId === 'a-0') && g.pending?.kind === 'action') {
+      g = apply(g, { type: 'action', playerId: g.pending.playerId, choice: { type: 'none' } });
+    }
+    const moved = g.log.find((e) => e.type === 'moved' && e.shipId === 'a-0');
+    expect(moved).toMatchObject({ partial: true, bumped: ['b-0'] });
+    expect(g.ships[0].stress).toBe(BUMP_STRESS); // a blue 2-straight, so the stress comes from the bump
+    expect(g.log.some((e) => e.type === 'stress' && e.shipId === 'a-0' && e.delta === 1)).toBe(true);
   });
 });

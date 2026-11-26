@@ -36,12 +36,13 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     slots: ['talent', 'turret', 'torpedo', 'missile', 'device', 'device', 'modification'],
   },
   // Light freighter. Stats and dial follow the X-Wing 2nd edition HWK-290, but on a medium base like the
-  // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), and it carries
-  // missiles, torpedoes, a turret and devices. Jam and the linked focus/lock→rotate actions are left out.
+  // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), it can Jam an
+  // enemy at range 1-2 in that arc, and it carries missiles, torpedoes, a turret and devices. The linked
+  // focus/lock→rotate actions are left out.
   wayfarer: {
     id: 'wayfarer', name: 'Wayfarer Light Freighter', size: 'medium',
     primaries: [{ arc: 'turret', attack: 2 }], agility: 2, hull: 3, shields: 2,
-    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'boost', red: true }],
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'jam' }, { type: 'boost', red: true }],
     dial: parseDial('0X:r 1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:b 3BR:w 3TR:r 4S:w'),
     slots: ['talent', 'missile', 'torpedo', 'turret', 'device', 'device', 'modification', 'modification'],
   },
@@ -134,11 +135,11 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   // Devices: dropped behind the ship in the System phase (one charge each). Bombs hit everything nearby.
   'proton-bomb': {
     id: 'proton-bomb', name: 'Proton Bomb', slot: 'device', cost: 5, charges: 2, device: { kind: 'bomb', effect: 'proton' },
-    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship at range 0-1 (yours too) takes 1 crit.',
+    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship within 10 cm (yours too) takes 1 crit.',
   },
   'ion-bomb': {
     id: 'ion-bomb', name: 'Ion Bomb', slot: 'device', cost: 4, charges: 2, device: { kind: 'bomb', effect: 'ion' },
-    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship at range 0-1 (yours too) gains 3 ion tokens.',
+    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship within 10 cm (yours too) gains 3 ion tokens.',
   },
   'proximity-mine': {
     id: 'proximity-mine', name: 'Proximity Mine', slot: 'device', cost: 6, charges: 2, device: { kind: 'mine', effect: 'proximity' },

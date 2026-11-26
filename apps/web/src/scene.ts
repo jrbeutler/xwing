@@ -10,7 +10,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
 import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
-import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState } from '@xw/engine';
+import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState, RANGE_RULES } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
 const FLY_HEIGHT = 18;
@@ -24,6 +24,9 @@ const findGun = (model: THREE.Object3D) => {
 /** Turret facing → rotation about the ship's up axis (left is +90°: three's -z is the board's +y). */
 const TURRET_ANGLE: Record<string, number> = { front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 };
 export const COLORS: Record<string, number> = { p1: 0x57c7ff, p2: 0xff9f43 };
+/** Ship models are drawn this much bigger than their bases (true to scale would be 1). Big enough to read,
+ *  small enough that ships at range 1 don't visually run into each other. */
+export const MODEL_SCALE = 1.3;
 const skinOf = (owner: string): 'blue' | 'red' => (owner === 'p1' ? 'blue' : 'red');
 
 /** Board (x, y) in mm → three.js world. */
@@ -59,6 +62,8 @@ export interface RadialItem {
 
 /** `reach` is the ship's horizontal radius (base corner or model tip) and `top` its highest point, both local. */
 export interface ShipView {
+  /** Last measured label size (px), for decluttering. */
+  labelSize?: { w: number; h: number };
   root: THREE.Group; model: THREE.Group; label: CSS2DObject; ring: THREE.Mesh; reach: number; top: number;
   /** Idle-animated inner group, engine glow sprites, and current thrust (1 idle, higher while flying). */
   body: THREE.Group; engines: THREE.Sprite[]; thrust: number; phase: number; typeId: string; owner: string;
@@ -262,13 +267,9 @@ export class BattleScene {
     const color = COLORS[s.owner] ?? 0xffffff;
     const root = new THREE.Group();
     root.add(buildBase(size, color, t.primaries.map((p) => p.arc)));
-    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.4, FLY_HEIGHT, 8),
-      new THREE.MeshStandardMaterial({ color: 0x5a6b85, metalness: 0.2, roughness: 0.1, transparent: true, opacity: 0.55 }));
-    stand.position.y = FLY_HEIGHT / 2;
-    root.add(stand);
     const { model, body, engines } = buildShip(s.typeId, color, skinOf(s.owner));
     model.position.y = FLY_HEIGHT + 4;
-    model.scale.setScalar(1.7); // models are enlarged for readability; bases stay true to scale
+    model.scale.setScalar(MODEL_SCALE); // models are enlarged for readability; bases stay true to scale
     root.add(model);
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(size * 0.78, size * 0.86, 40),
@@ -294,7 +295,10 @@ export class BattleScene {
     const turretPrimary = t.primaries.some((p) => p.arc === 'turret');
     if (turretPrimary || s.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret')) {
       const holder = new THREE.Group();
-      const fan = buildArcs(size, ['front'], TURRET_COLOR, turretPrimary ? 300 : 200); // a turret primary reaches range 3
+      // A turret primary reaches as far as any primary; a turret upgrade to the edge of its own last band.
+      const turretWeapon = s.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
+      const reach = RANGE_RULES.edges[(turretPrimary ? RANGE_RULES.edges.length : turretWeapon?.maxRange ?? 2) - 1];
+      const fan = buildArcs(size, ['front'], TURRET_COLOR, reach);
       fan.visible = false;
       holder.add(fan, buildTurretPointer(size));
       holder.rotation.y = TURRET_ANGLE[s.turretArc];
@@ -345,10 +349,44 @@ export class BattleScene {
       v.root.updateMatrixWorld();
       v.label.position.copy(v.root.worldToLocal(p));
     }
+    this.declutterLabels();
+  }
+
+  private labelFrame = 0;
+  /**
+   * Keep ship labels from stacking on top of each other when ships are close: working up from the
+   * bottom of the screen, a label that would overlap one already placed moves up a step at a time
+   * (by changing its anchor, so it still points at its ship). Sizes are re-measured every few frames.
+   */
+  private declutterLabels() {
+    const w = this.host.clientWidth, h = this.host.clientHeight;
+    const measure = this.labelFrame++ % 15 === 0;
+    const items: { v: ShipView; x: number; y: number; lw: number; lh: number }[] = [];
+    const p = new THREE.Vector3();
+    for (const v of this.ships.values()) {
+      if (!v.label.visible) continue;
+      if (measure || !v.labelSize) v.labelSize = { w: v.label.element.offsetWidth, h: v.label.element.offsetHeight };
+      v.label.getWorldPosition(p).project(this.camera);
+      if (p.z > 1) continue; // behind the camera
+      items.push({ v, x: ((p.x + 1) / 2) * w, y: ((1 - p.y) / 2) * h, lw: v.labelSize.w, lh: v.labelSize.h });
+    }
+    items.sort((a, b) => b.y - a.y); // lowest on screen first: it keeps its place
+    const placed: { l: number; r: number; t: number; b: number }[] = [];
+    for (const it of items) {
+      let k = 0, box = { l: 0, r: 0, t: 0, b: 0 };
+      for (; k < 4; k++) {
+        const bottom = it.y - k * (it.lh + 3);
+        box = { l: it.x - it.lw / 2, r: it.x + it.lw / 2, t: bottom - it.lh, b: bottom };
+        if (!placed.some((q) => box.l < q.r && box.r > q.l && box.t < q.b && box.b > q.t)) break;
+      }
+      placed.push(box);
+      // center.y = 1 anchors the bottom edge at the ship; each step lifts the label by its height plus a gap.
+      it.v.label.center.y = 1 + (it.lh ? (k * (it.lh + 3)) / it.lh : 0);
+    }
   }
 
   updateLabel(v: ShipView, s: ShipState) {
-    const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : ''].join('');
+    const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : '', s.jam ? '<span class="jm" title="Jammed">⌁</span>' : ''].join('');
     v.label.element.querySelector('.info')!.innerHTML =
       `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +

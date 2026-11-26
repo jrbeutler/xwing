@@ -27,6 +27,8 @@ ticker.id = 'ticker';
 ticker.setAttribute('aria-label', 'Show battle log');
 document.body.appendChild(ticker);
 ticker.onclick = () => logEl.classList.toggle('open');
+// On phones the log is a sheet over the board: a tap on it (not a scroll) puts it away.
+logEl.addEventListener('click', () => { if (compact) logEl.classList.remove('open'); });
 const viewBtn = document.createElement('button');
 viewBtn.id = 'viewbtn';
 viewBtn.setAttribute('aria-label', 'Toggle overview');
@@ -186,7 +188,13 @@ async function send(cmd: Command) {
   scene.clearGhost();
   scene.clearOverlay();
   scene.setMarkers([]);
-  state = apply(state, cmd);
+  try {
+    state = apply(state, cmd);
+  } catch (err) {
+    console.error('Command refused', cmd, err);
+    render(); // put the controls back so the player can choose again
+    return;
+  }
   await pump();
 }
 
@@ -197,7 +205,16 @@ async function pump() {
   applyCamera();
   try {
     for (;;) {
-      await present();
+      try {
+        await present();
+      } catch (err) {
+        // Never let a presentation glitch freeze the game: jump the board to the real state and carry on.
+        console.error('Animation error; skipping to the current state', err);
+        shown = state.log.length;
+        scene.skipping = false;
+        scene.syncShips(state.ships);
+        disp = structuredClone(state.ships);
+      }
       const d = state.pending;
       if (!d) break;
       const aiTurn = d.kind === 'planning' ? d.waitingOn.includes(AI) : d.playerId === AI;
@@ -257,7 +274,7 @@ async function animate(e: GameEvent) {
   switch (e.type) {
     case 'phase':
       phaseEl.textContent = e.phase;
-      if (e.phase === 'end') for (const d of disp) { d.focus = 0; d.evade = 0; relabel(d.id); }
+      if (e.phase === 'end') for (const d of disp) { d.focus = 0; d.evade = 0; d.jam = 0; relabel(d.id); }
       return;
     case 'roundStart':
       roundEl.textContent = `Round ${e.round}`;
@@ -302,6 +319,27 @@ async function animate(e: GameEvent) {
     case 'attack':
       await showAttack(e);
       return;
+    case 'jam': {
+      const from = dispShip(e.shipId)?.pose ?? shipById(e.shipId).pose, to = dispShip(e.targetId)?.pose ?? shipById(e.targetId).pose;
+      scene.showLine(from, to, ACTION_COLOR.jam, `${shipById(e.shipId).name} jams ${shipById(e.targetId).name}`);
+      const t = dispShip(e.targetId);
+      if (t) {
+        if (e.effect === 'focus') t.focus = Math.max(0, t.focus - 1);
+        else if (e.effect === 'evade') t.evade = Math.max(0, t.evade - 1);
+        else if (e.effect === 'lock') t.lock = null;
+        else t.jam = 1;
+        relabel(e.targetId);
+      }
+      await scene.floatText(e.targetId, e.effect === 'jammed' ? 'JAMMED' : `JAMMED −${e.effect.toUpperCase()}`, 'jam-float');
+      scene.clearOverlay();
+      return;
+    }
+    case 'jamSpent': {
+      const d = dispShip(e.shipId);
+      if (d) { d[e.lost] = Math.max(0, d[e.lost] - 1); d.jam = 0; relabel(e.shipId); }
+      await scene.floatText(e.shipId, `JAMMED: NO ${e.lost.toUpperCase()}`, 'jam-float');
+      return;
+    }
     case 'obstacleHit': {
       const hit = e.result === 'hit' || e.result === 'crit';
       const d = dispShip(e.shipId);
@@ -531,7 +569,10 @@ function showRecap(round: number, lines: string[]) {
     lines.map((l) => `<div>${l}</div>`).join('');
   recap.querySelector('.recap-close')!.addEventListener('click', hideRecap);
   recap.hidden = false;
+  clearTimeout(recapTimer);
+  recapTimer = window.setTimeout(hideRecap, 9000);
 }
+let recapTimer = 0;
 function hideRecap() { recap.hidden = true; }
 
 function describe(e: GameEvent): string | null {
@@ -543,7 +584,7 @@ function describe(e: GameEvent): string | null {
       if (e.partial) return `${nameHtml(e.shipId)} bumped ${e.bumped.map(nameHtml).join(', ')}`;
       return null;
     case 'stress': return e.delta > 0 ? `${nameHtml(e.shipId)} gains stress` : `${nameHtml(e.shipId)} clears stress`;
-    case 'action': return e.action.type === 'none' ? null : `${nameHtml(e.shipId)} performs ${actionText(e.action)}`;
+    case 'action': return e.action.type === 'none' || e.action.type === 'jam' ? null : `${nameHtml(e.shipId)} performs ${actionText(e.action)}`;
     case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
     case 'attack': {
       const o = attackOutcome(e);
@@ -574,6 +615,13 @@ function describe(e: GameEvent): string | null {
       if (!e.ships.length) return `${name} detonates: nobody in range`;
       return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (rolled ${h.roll.join(', ')})` : ''}`).join('; ');
     }
+    case 'jam': {
+      const what = { focus: 'its Focus', evade: 'its Evade', lock: 'its lock', jammed: '' }[e.effect];
+      return e.effect === 'jammed'
+        ? `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>jammed</b> (its next Focus or Evade is lost)`
+        : `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>loses ${what}</b>`;
+    }
+    case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost === 'focus' ? 'Focus' : 'Evade'} is lost`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -591,6 +639,7 @@ function actionText(a: ActionChoice): string {
     case 'boost': return `Boost ${a.bearing === 'straight' ? 'straight' : a.bearing === 'bankLeft' ? 'left' : 'right'}`;
     case 'repair': return `Repair ${DAMAGE_CARDS[a.card].title}`;
     case 'rotateArc': return `Rotate turret to face ${a.to}`;
+    case 'jam': return `Jam ${shipById(a.targetId).name}`;
   }
 }
 
@@ -859,7 +908,13 @@ const touches = new Set<number>();
 let multi = false; // a two-finger camera gesture is in progress
 canvas.addEventListener('pointerdown', (e) => {
   if (busy) scene.skipping = true; // tap the board to skip the current animation
+  // A primary pointer means no other finger is down: forget any lift we may have missed,
+  // so a lost pointerup can never leave every later touch treated as a two-finger gesture.
+  if (e.isPrimary) { touches.clear(); multi = false; }
   touches.add(e.pointerId);
+  // Touching the board puts away the round recap and the log sheet.
+  if (!recap.hidden) hideRecap();
+  if (compact) logEl.classList.remove('open');
   lastPointer = e.pointerType;
   updateControls();
   if (touches.size > 1) { multi = true; if (pointerDown) pointerDown.moved = true; return; }
@@ -1156,7 +1211,8 @@ function dialFallback(s: ShipState): HTMLElement {
 // ---------------------------------------------------------------------------
 type Spot = Extract<ActionChoice, { type: 'barrelRoll' | 'boost' }>;
 type LockChoice = Extract<ActionChoice, { type: 'lock' }>;
-const ACTION_COLOR = { barrelRoll: 0x7cf0c5, boost: 0x9be37c, lock: 0xffd166 } as const;
+type JamChoice = Extract<ActionChoice, { type: 'jam' }>;
+const ACTION_COLOR = { barrelRoll: 0x7cf0c5, boost: 0x9be37c, lock: 0xffd166, jam: 0xc58bff } as const;
 const GREEN = 0x7cf0c5, RED = 0xff5a5a;
 /** How far (mm) the pointer may be from a barrel roll / boost spot and still snap. */
 const ACTION_SNAP = 45;
@@ -1165,16 +1221,18 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   const s = shipById(shipId);
   const spots = options.filter((o): o is Spot => o.type === 'barrelRoll' || o.type === 'boost');
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
+  const jams = options.filter((o): o is JamChoice => o.type === 'jam');
   const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'repair'), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
   /**
    * The targeted action picked from the ring (lock / barrel roll / boost), or null while the ring is
    * showing. Picking one hides the ring and shows only its targets; Esc or Back brings the ring back.
    */
-  let only: 'lock' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
+  let only: 'lock' | 'jam' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
   const back = () => { only = null; cand = null; show(); };
-  const shownLocks = () => (only === 'lock' ? locks : []);
+  /** Enemies the picked targeted action (Lock or Jam) can reach: ringed on the board. */
+  const shownLocks = (): (LockChoice | JamChoice)[] => (only === 'lock' ? locks : only === 'jam' ? jams : []);
   const shownSpots = () => spots.filter((o) => only === o.type);
 
   /** The ring: instant actions do it now; Lock / Barrel roll / Boost narrow the board to their targets. */
@@ -1202,17 +1260,18 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     }
     if (only) {
       // Targeting: the ring makes way for the targets; a lone Back button returns to it.
-      const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
+      const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'jam' ? 'Click a ringed enemy to jam it' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
       scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: back }],
         { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
       return;
     }
-    const narrow = (t: 'lock' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
+    const narrow = (t: 'lock' | 'jam' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
       ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
     const items: RadialItem[] = [];
     if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: 'Focus: turn focus results into hits or evades', onClick: () => choose({ type: 'focus' }) });
     if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: 'Evade: add an evade result when defending', onClick: () => choose({ type: 'evade' }) });
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
+    if (jams.length) items.push(narrow('jam', ICONS.jam, 'Jam', 'Jam: strip an enemy\'s Focus, Evade or lock (range 1-2 in your arc); then click a ringed enemy'));
     if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
     if (spots.some((o) => o.type === 'boost')) items.push(narrow('boost', ICONS.boost, 'Boost', 'Boost: then click a green dot'));
     if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, onClick: () => { only = 'rotateArc'; cand = null; show(); } });
@@ -1226,7 +1285,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   };
 
   const show = () => {
-    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(shownLocks().map((l) => [l.targetId, ACTION_COLOR.lock])) });
+    scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(shownLocks().map((l) => [l.targetId, ACTION_COLOR[l.type]])) });
     scene.setMarkers(shownSpots().map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
     radial();
     const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
@@ -1235,11 +1294,12 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     if (cand && (cand.type === 'barrelRoll' || cand.type === 'boost')) {
       scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand), s.id);
     } else scene.clearGhost();
-    if (cand?.type === 'lock') {
-      scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR.lock, `Lock ${shipById(cand.targetId).name}`);
+    if (cand?.type === 'lock' || cand?.type === 'jam') {
+      scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR[cand.type], actionText(cand));
     } else scene.clearOverlay();
     const who = `<b>${s.name.split(' ')[0]}</b>`;
-    const boardHint = only === 'barrelRoll' ? 'tap a teal dot to roll' : only === 'boost' ? 'tap a green dot to boost' : 'pick from the ring around your ship';
+    const boardHint = only === 'barrelRoll' ? 'tap a teal dot to roll' : only === 'boost' ? 'tap a green dot to boost'
+      : only === 'lock' ? 'tap a ringed enemy to lock it' : only === 'jam' ? 'tap a ringed enemy to jam it' : 'pick from the ring around your ship';
     const btns: BarButton[] = only ? [{ label: 'Back', onClick: back }]
       : simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
     if (cand && cand.type !== 'none' && cand.type !== 'focus' && cand.type !== 'evade') {
@@ -1276,6 +1336,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   const ring = [
     'Pick from the ring around your ship: Focus and Evade act at once',
     locks.length ? '<b style="color:#ffd166">Lock</b> then click a ringed enemy' : '',
+    jams.length ? '<b style="color:#c58bff">Jam</b> then click a ringed enemy to strip its Focus, Evade or lock' : '',
     spots.some((o) => o.type === 'barrelRoll') ? '<b style="color:#7cf0c5">Roll</b> shows the barrel-roll spots' : '',
     spots.some((o) => o.type === 'boost') ? '<b style="color:#9be37c">Boost</b> shows the boost spots' : '',
   ].filter(Boolean);
@@ -1581,7 +1642,7 @@ function renderAttack(shipId: string, targets: Target[]) {
 
   detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
     The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
-    the odds, then Fire (Enter). Esc goes back to the table. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
+    the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) loses an attack die, range 2 is the sweet spot (an extra attack die), range 3 is plain, and range 4 gives the defender an extra die;
     obstruction adds a defense die. Tokens are spent automatically. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
@@ -1611,6 +1672,8 @@ newGame();
 (window as unknown as { __xw: unknown }).__xw = {
   scene,
   get state() { return state; },
+  /** Input state, for diagnosing taps that do nothing. */
+  get input() { return { busy, stage, mode: !!mode, multi, touches: [...touches], pointerDown, selected, compact }; },
   finalPose: (shipId: string, dialIndex: number) => {
     const s = shipById(shipId);
     return maneuverFinalPose(s.pose, sizeOf(s), SHIP_TYPES[s.typeId].dial[dialIndex]);

@@ -59,14 +59,14 @@ Keep these rules so this stays cheap:
 | Initiative ties | ✅ | First player resolves first |
 | Maneuvers | ✅ | Straight, bank, turn, K-turn, segnor-style loop ("sloop"), tallon-style roll ("troll"), stop, reverse straight/bank |
 | Difficulty and stress | ✅ | Red adds stress, blue removes one. Stressed ships cannot pick red maneuvers or perform actions |
-| Bumping | ✅ | Ship backs along its path until clear. Partial maneuver skips the action and loses the final rotation |
+| Bumping | ✅ | Ship backs along its path until clear. Partial maneuver skips the action and loses the final rotation. **House rule:** a bump also costs 1 stress |
 | Fly-over | ✅ | Ships may pass over others; only the final position matters |
 | Fleeing | ✅ | Base partly off the board, so the ship is destroyed |
 | Asteroids | ✅ | Moving through or landing on one: roll 1 attack die (hit/crit = damage), skip action |
-| Actions | ✅ | Focus, Evade, Lock (range 0–3, one lock at a time), Barrel Roll, Boost, red actions |
+| Actions | ✅ | Focus, Evade, Lock (any range band, 0–4, one lock at a time), Barrel Roll, Boost, red actions |
 | Arcs | ✅ | 90° front/rear wedges through the base corners; bullseye strip detected |
-| Range | ✅ | Closest base-to-base distance *within the arc*; bands of 100 mm; range 0 allowed |
-| Attack | ✅ | Range 0–1: +1 attack die. Range 3: +1 defense die. Obstructed: +1 defense die |
+| Range | ✅ | Closest base-to-base distance *within the arc*; four bands with edges at 60/160/260/360 mm (house rule; the board game uses three 100 mm bands); range 0 allowed |
+| Attack | ✅ | **House rule, four bands** (`RANGE_RULES` in `combat.ts`): range 1 (0–6 cm) −1 attack die, range 2 (6–16 cm) +1 attack die, range 3 (16–26 cm) none, range 4 (26–36 cm) +1 defense die; primary weapons only. The board game has three 10 cm bands with +1 attack die at range 0–1 and +1 defense die at range 3. Obstructed: +1 defense die |
 | Dice | ✅ | Attack 3 hit / 1 crit / 2 focus / 2 blank. Defense 3 evade / 2 focus / 3 blank |
 | Damage | ✅ (simplified) | Shields absorb first. **Crits are 1 damage; no damage deck yet** |
 | Simultaneous fire | ✅ | Ships destroyed during an initiative step still attack in that step |
@@ -75,7 +75,7 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (lock reroll → focus → defender focus → evade). Next: interactive modify steps for humans.
-- No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, jam, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
+- No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.
@@ -84,7 +84,7 @@ Keep these rules so this stays cheap:
 
 All live in `packages/engine/src/maneuvers.ts`:
 - `BANK_RADIUS` (80/130/180 mm centre-line) and `TURN_RADIUS` (35/62.5/90 mm).
-- Template width (20 mm), bullseye width, range band (100 mm), base sizes (40/60/80 mm).
+- Template width (20 mm), bullseye width, range band edges (`RANGE_RULES.edges`; devices and the setup area still use 100 mm), base sizes (40/60/80 mm).
 
 **Rules verification:** the rules here are written from general knowledge of the
 2.0/2.5 core rules. Before relying on them for balance, check each table row against

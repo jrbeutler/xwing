@@ -23,6 +23,8 @@ export const ICONS = {
   bomb: svg('<circle cx="11" cy="14" r="6.5"/><path d="M15 9.5 18 6.5"/><path d="M18 3v2M21 6.5h-2M20.5 4l-1.4 1.4"/>'),
   /** Mine: a spiked disc. */
   mine: svg('<circle cx="12" cy="12" r="5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l2.8 2.8M16.2 16.2 19 19M19 5l-2.8 2.8M7.8 16.2 5 19"/>'),
+  /** Jam: signal waves cut by a slash. */
+  jam: svg('<path d="M5 17a9 9 0 0 1 0-10M8 14.5a5 5 0 0 1 0-5M19 7a9 9 0 0 1 0 10M16 9.5a5 5 0 0 1 0 5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><path d="M4 21 20 3"/>'),
   /** Back to the menu. */
   back: svg('<path d="M10 6 4 12l6 6"/><path d="M4 12h11a5 5 0 0 1 0 10h-2"/>'),
 } as const;

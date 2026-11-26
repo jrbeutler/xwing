@@ -278,3 +278,12 @@ option.dear { color: #ff9a9a; }
 #gunsight .gs-fire { flex: 1; background: var(--red); color: #1a0505; }
 #gunsight kbd { font: 10px system-ui, sans-serif; opacity: .65; margin-left: 4px; }
 html.compact #gunsight kbd { display: none; }
+
+/* The round recap never blocks the board: taps go through it (only Close is tappable). */
+#recap { pointer-events: none; }
+#recap .recap-close { pointer-events: auto; }
+html.compact #log.open { cursor: pointer; }
+
+/* Jam: purple, like its ring */
+.jam-float { color: #c58bff; }
+.label .jm { color: #c58bff; }
