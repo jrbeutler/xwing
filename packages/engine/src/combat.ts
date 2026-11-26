@@ -9,6 +9,13 @@ import {
 import { SHIP_TYPES, UPGRADES } from './content';
 import type { ArcName, AttackFace, DefenseFace, GameState, Obstacle, ShipState, TargetInfo } from './types';
 
+/**
+ * House rule: primary weapons roll one extra attack die at this range (the board game gives it at range 0-1).
+ * Rewarding range 2 instead keeps fights from collapsing into knife-fights. Range 3 still gives the
+ * defender an extra die.
+ */
+export const SWEET_SPOT_RANGE = 2;
+
 export const ATTACK_DIE: AttackFace[] = ['hit', 'hit', 'hit', 'crit', 'focus', 'focus', 'blank', 'blank'];
 export const DEFENSE_DIE: DefenseFace[] = ['evade', 'evade', 'evade', 'focus', 'focus', 'blank', 'blank', 'blank'];
 
@@ -121,7 +128,7 @@ export function rollDefense(state: GameState, n: number): DefenseFace[] {
  */
 /** Attack dice for a shot: weapon value, +1 at range 1 (primary only), minus damage-card penalties. Shared with attackOdds. */
 export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' | 'range' | 'weapon'>) =>
-  Math.max(0, t.attack + (isPrimary(t) && t.range <= 1 ? 1 : 0) - attackDicePenalty(attacker));
+  Math.max(0, t.attack + (isPrimary(t) && t.range === SWEET_SPOT_RANGE ? 1 : 0) - attackDicePenalty(attacker));
 /**
  * Defense dice: agility, +1 at range 3 (primary only), +1 obstructed, +1 Stealth Coating, -1 for an Outmaneuver attacker,
  * minus damage-card penalties. Shared with attackOdds.

@@ -59,14 +59,14 @@ Keep these rules so this stays cheap:
 | Initiative ties | ✅ | First player resolves first |
 | Maneuvers | ✅ | Straight, bank, turn, K-turn, segnor-style loop ("sloop"), tallon-style roll ("troll"), stop, reverse straight/bank |
 | Difficulty and stress | ✅ | Red adds stress, blue removes one. Stressed ships cannot pick red maneuvers or perform actions |
-| Bumping | ✅ | Ship backs along its path until clear. Partial maneuver skips the action and loses the final rotation |
+| Bumping | ✅ | Ship backs along its path until clear. Partial maneuver skips the action and loses the final rotation. **House rule:** a bump also costs 1 stress |
 | Fly-over | ✅ | Ships may pass over others; only the final position matters |
 | Fleeing | ✅ | Base partly off the board, so the ship is destroyed |
 | Asteroids | ✅ | Moving through or landing on one: roll 1 attack die (hit/crit = damage), skip action |
 | Actions | ✅ | Focus, Evade, Lock (range 0–3, one lock at a time), Barrel Roll, Boost, red actions |
 | Arcs | ✅ | 90° front/rear wedges through the base corners; bullseye strip detected |
 | Range | ✅ | Closest base-to-base distance *within the arc*; bands of 100 mm; range 0 allowed |
-| Attack | ✅ | Range 0–1: +1 attack die. Range 3: +1 defense die. Obstructed: +1 defense die |
+| Attack | ✅ | **House rule:** range 2 is the sweet spot, +1 attack die (the board game gives it at range 0–1). Range 3: +1 defense die. Obstructed: +1 defense die |
 | Dice | ✅ | Attack 3 hit / 1 crit / 2 focus / 2 blank. Defense 3 evade / 2 focus / 3 blank |
 | Damage | ✅ (simplified) | Shields absorb first. **Crits are 1 damage; no damage deck yet** |
 | Simultaneous fire | ✅ | Ships destroyed during an initiative step still attack in that step |

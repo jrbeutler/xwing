@@ -26,7 +26,7 @@ import bomberUrl from './assets/bomber/bomber.bin?url'; // packed by scripts/pac
 const bomberMaps = import.meta.glob('./assets/bomber/*.jpg', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
 import freighterUrl from './assets/freighter/freighter.bin?url'; // packed by scripts/pack-models.mjs
 
-/** Freighter display length (procedural-model units; ships are drawn at 1.7×, so 78 ≈ 133 mm). */
+/** Freighter display length (procedural-model units; ships are drawn at MODEL_SCALE = 1.3×, so 78 ≈ 101 mm). */
 const FREIGHTER_LENGTH = 78;
 
 export type Skin = 'blue' | 'red';

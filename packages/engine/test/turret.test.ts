@@ -111,11 +111,11 @@ describe('turret primary (Wayfarer, after the HWK-290)', () => {
   });
 
   it('keeps primary range bonuses but is not a front-arc attack', () => {
-    const g = ways(60, 0); // dead ahead at range 1
+    const g = ways(190, 0); // dead ahead at range 2
     const [t] = primary(g);
-    expect(t).toMatchObject({ arc: 'front', turret: true, bullseye: false, range: 1 });
+    expect(t).toMatchObject({ arc: 'front', turret: true, bullseye: false, range: 2 });
     const r = resolveAttack(g, g.ships[0], { ...g.ships[1], shields: 99, hull: 99 }, t);
-    expect(r.attackRoll).toHaveLength(3); // attack 2 + range-1 bonus
+    expect(r.attackRoll).toHaveLength(3); // attack 2 + range-2 sweet spot
     const out = createGame({
       seed: 1,
       players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],

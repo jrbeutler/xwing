@@ -1642,7 +1642,7 @@ function renderAttack(shipId: string, targets: Target[]) {
 
   detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
     The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
-    the odds, then Fire (Enter). Esc goes back to the table. Range 1 adds an attack die and range 3 a defense die (primary weapons only);
+    the odds, then Fire (Enter). Esc goes back to the table. Range 2 is the sweet spot: an extra attack die. Range 3 adds a defense die (primary weapons only);
     obstruction adds a defense die. Tokens are spent automatically. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);

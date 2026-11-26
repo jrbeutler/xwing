@@ -147,10 +147,10 @@ describe('cards that change dice', () => {
   const t: TargetInfo = { targetId: d.id, arc: 'front', attack: 3, range: 2, obstructed: false, bullseye: false };
 
   it('Weapons Failure removes an attack die', () => {
-    expect(attackDiceFor(a, t)).toBe(3);
-    expect(attackDiceFor({ ...a, crits: ['weaponsFailure'] }, t)).toBe(2);
+    expect(attackDiceFor(a, t)).toBe(4); // attack 3 + range-2 sweet spot
+    expect(attackDiceFor({ ...a, crits: ['weaponsFailure'] }, t)).toBe(3);
     const r = resolveAttack({ ...g }, { ...a, crits: ['weaponsFailure'] }, { ...d, shields: 99, hull: 99 }, t);
-    expect(r.attackRoll).toHaveLength(2);
+    expect(r.attackRoll).toHaveLength(3);
   });
 
   it('Structural Damage removes a defense die', () => {

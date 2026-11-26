@@ -205,6 +205,15 @@ export function buildBase(size: number, color: number, arcs: string[]): THREE.Gr
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: hot(color, 1.6) })));
+  // A solid frame in the team colour around the base, so ownership reads at a glance even in a crowd.
+  const frame = new THREE.Shape([new THREE.Vector2(-s, -s), new THREE.Vector2(s, -s), new THREE.Vector2(s, s), new THREE.Vector2(-s, s)]);
+  const t = 2.6;
+  frame.holes.push(new THREE.Path([new THREE.Vector2(-s + t, -s + t), new THREE.Vector2(-s + t, s - t), new THREE.Vector2(s - t, s - t), new THREE.Vector2(s - t, -s + t)]));
+  const border = new THREE.Mesh(new THREE.ShapeGeometry(frame), new THREE.MeshBasicMaterial({ color: hot(color, 1.25) }));
+  border.rotation.x = -Math.PI / 2;
+  border.position.y = 2.15;
+  border.raycast = () => {};
+  g.add(border);
   // soft coloured light pool on the table under the ship
   const pool = new THREE.Mesh(new THREE.PlaneGeometry(size * 2.2, size * 2.2), new THREE.MeshBasicMaterial({
     map: glowTexture(), color: new THREE.Color(color).multiplyScalar(0.35), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,

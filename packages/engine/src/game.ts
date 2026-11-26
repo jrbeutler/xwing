@@ -417,6 +417,8 @@ function continueActivation(s: GameState) {
     if (m.difficulty === 'red') { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
     if (m.difficulty === 'red' && !mv.partial) afterRedManeuver(s, sh);
     if (m.difficulty === 'blue' && sh.stress > 0) { sh.stress--; s.log.push({ type: 'stress', shipId: sh.id, delta: -1 }); }
+    // House rule: colliding with a ship costs stress on top of the lost action, so pilots keep their distance.
+    if (mv.partial && mv.bumped.length) { sh.stress += BUMP_STRESS; s.log.push({ type: 'stress', shipId: sh.id, delta: BUMP_STRESS }); }
 
     if (mv.fled) {
       s.log.push({ type: 'info', text: `${sh.name} fled the battlefield.` });
@@ -481,6 +483,9 @@ function afterManeuver(s: GameState, sh: ShipState, m: Maneuver, touchedObstacle
     s.log.push({ type: 'damageCard', shipId: sh.id, card: 'disabledPowerRegulator', what: 'discarded' });
   }
 }
+
+/** House rule: stress a ship gains when its maneuver ends in a bump. */
+export const BUMP_STRESS = 1;
 
 /** Range limit of the Jam action (inside one of the jammer's firing arcs). */
 export const JAM_RANGE = 2;

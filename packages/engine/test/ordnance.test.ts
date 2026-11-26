@@ -35,7 +35,7 @@ describe('which weapons can fire', () => {
   it('secondary weapons get no range bonuses', () => {
     const g = lineUp(250, []);
     const [a, d] = g.ships;
-    const t = (weapon?: string, range = 1): TargetInfo => ({ targetId: d.id, arc: 'front', attack: 3, range, obstructed: false, bullseye: false, weapon });
+    const t = (weapon?: string, range = 2): TargetInfo => ({ targetId: d.id, arc: 'front', attack: 3, range, obstructed: false, bullseye: false, weapon });
     expect(attackDiceFor(a, t())).toBe(4);
     expect(attackDiceFor(a, t('rocket-pods'))).toBe(3);
     expect(defenseDiceFor(d, t(undefined, 3))).toBe(4);
