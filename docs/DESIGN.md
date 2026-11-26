@@ -172,6 +172,11 @@ guess lands a median 38 mm from where the enemy actually ends (within 50 mm 66% 
 read. Over 300 mirrored games it beat the straight-ahead AI 173–120 (7 draws). A planning decision takes about
 12 ms (6 ms before).
 
+The same planning gives players a learning aid (`suggestManeuvers`): for each of a player's ships, the
+maneuver the AI would fly (without its random jitter) plus what it expects there: enemies likely in arc
+(chance and range) and enemies likely to have the ship in an arc. The client calls it with
+`viewFor(state, player)`, so it only uses what that player can see; it is a per-player option at setup.
+
 Next steps:
 - Two-ply search over activation order.
 - Personalities (aggressive, cautious, flanker).

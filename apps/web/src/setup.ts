@@ -10,7 +10,11 @@ import { onModelsReady, shipPreview } from './preview';
 
 /** Who flies the second squad: the AI, or a second person on the same device (pass and play). */
 export type Versus = 'ai' | 'human';
-export interface BattleSetup { budget: number; versus: Versus; player: Squad; opponent: Squad }
+/**
+ * `hints`: whether each human player sees the AI's suggested maneuver while planning (a learning aid). `you`
+ * is player 1; `them` is player 2 in a two-player game (ignored against the AI).
+ */
+export interface BattleSetup { budget: number; versus: Versus; player: Squad; opponent: Squad; hints: Record<Side, boolean> }
 
 const BUDGETS = [50, 75, 100, 150];
 const SLOT_LABEL: Record<SlotType, string> = {
@@ -22,7 +26,7 @@ const CLASSES: ShipClass[] = ['fighter', 'bomber', 'freighter'];
 const OPEN_SLOTS = new Set(Object.values(UPGRADES).map((u) => u.slot));
 
 interface Saved { name: string; budget: number; squad: Squad }
-const LAST_KEY = 'xw-squad-last', LAST2_KEY = 'xw-squad-last-2', SAVED_KEY = 'xw-squads', VERSUS_KEY = 'xw-versus';
+const LAST_KEY = 'xw-squad-last', LAST2_KEY = 'xw-squad-last-2', SAVED_KEY = 'xw-squads', VERSUS_KEY = 'xw-versus', HINTS_KEY = 'xw-hints';
 const load = <T>(key: string, fallback: T): T => {
   try { const v = localStorage.getItem(key); return v ? (JSON.parse(v) as T) : fallback; } catch { return fallback; }
 };
@@ -87,6 +91,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
   const last = load<{ budget?: number; squad?: Squad }>(LAST_KEY, {});
   let budget = keep?.budget ?? (BUDGETS.includes(last.budget ?? 0) ? last.budget! : DEFAULT_BUDGET);
   let versus: Versus = keep?.versus ?? (load<string>(VERSUS_KEY, 'ai') === 'human' ? 'human' : 'ai');
+  const hints: Record<Side, boolean> = keep?.hints ? { ...keep.hints } : { you: false, them: false, ...load<Partial<Record<Side, boolean>>>(HINTS_KEY, {}) };
   let player: Squad = keep ? structuredClone(keep.player) : clean(last.squad ?? { ships: [] });
   let aiSeed = (Math.random() * 1e9) | 0;
   /** Player 2's own squad, kept apart from the AI's so switching modes loses neither. */
@@ -120,6 +125,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     const k = side;
     return `<section class="setup-col ${side} edit">
         <div class="col-head"><h2>${title}</h2>
+          <label class="hint-toggle" title="While planning, highlight the maneuver the AI would fly for each of your ships, and say why"><input type="checkbox" data-hints="${side}" ${hints[side] ? 'checked' : ''}> 💡 Suggest moves</label>
           <div class="points ${cost > budget ? 'over' : ''}"><b>${cost}</b> / ${budget}<span class="meter"><i style="width:${Math.min(100, (cost / budget) * 100)}%"></i></span></div>
         </div>
         <div class="ships">${q.ships.map((s, i) => shipCard(side, s, i, room)).join('') || '<p class="hint">No ships yet. Add one below, or let the game pick a random squad.</p>'}</div>
@@ -142,6 +148,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     store(LAST_KEY, { budget, squad: player });
     store(LAST2_KEY, { squad: second });
     store(VERSUS_KEY, versus);
+    store(HINTS_KEY, hints);
     const problems = [
       ...validateSquad(player, budget).map((p) => (two() ? `Player 1: ${p}` : p)),
       ...(two() ? validateSquad(second, budget).map((p) => `Player 2: ${p}`) : []),
@@ -295,12 +302,13 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
       refreshAi();
       render();
     }; });
+    each<HTMLInputElement>('[data-hints]', (box) => { box.onchange = () => { hints[box.dataset.hints as Side] = box.checked; render(); }; });
     each<HTMLButtonElement>('[data-clear]', (b) => { b.onclick = () => { setSquad(b.dataset.clear as Side, { ships: [] }); render(); }; });
     const reroll = $('su-reroll');
     if (reroll) reroll.onclick = () => { aiSeed = (Math.random() * 1e9) | 0; refreshAi(true); render(); };
     $('su-deploy')!.onclick = () => {
       root.remove();
-      onDeploy({ budget, versus, player: structuredClone(player), opponent: structuredClone(two() ? second : ai) });
+      onDeploy({ budget, versus, player: structuredClone(player), opponent: structuredClone(two() ? second : ai), hints: { you: hints.you, them: two() && hints.them } });
     };
     each<HTMLInputElement>('[data-name]', (input) => { input.oninput = () => { saveName[input.dataset.name as Side] = input.value; }; });
     const reopenSaved = (side: Side) => { const d = root.querySelector<HTMLDetailsElement>(`[data-saved="${side}"]`); if (d) d.open = true; };

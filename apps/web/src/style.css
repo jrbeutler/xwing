@@ -177,6 +177,8 @@ html.compact .chips.special-row { display: flex; }
 .setup-col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .col-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .col-head h2 { margin: 0; }
+.hint-toggle { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; margin-left: auto; cursor: pointer; white-space: nowrap; }
+.hint-toggle input { margin: 0; }
 .points { display: flex; align-items: center; gap: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .points b { color: var(--text); font-size: 16px; }
 .points .meter { width: 90px; height: 6px; border-radius: 3px; background: #1a2540; overflow: hidden; }
@@ -379,3 +381,9 @@ html.compact #log.open { cursor: pointer; }
 #handoff.p1 .handoff-card { border-color: var(--p1); } #handoff.p2 .handoff-card { border-color: var(--p2); }
 #handoff p { margin: 0; color: var(--muted); line-height: 1.45; }
 @media (max-width: 760px) { .setup-cols.two { grid-template-columns: 1fr; } }
+
+/* Learning aid: the AI's suggested maneuver on a planning card. */
+.card .suggest { margin: 6px 0; padding: 6px 8px; border: 1px solid rgba(255, 209, 102, 0.45); border-radius: 8px; background: rgba(255, 209, 102, 0.07); }
+.card .suggest > span { color: #ffd166; }
+.card .suggest button { float: right; margin-top: -2px; }
+.card .suggest .hint { margin-top: 2px; }

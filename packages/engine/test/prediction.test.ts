@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { PREDICTION, predictEnemies } from '../src/ai';
+import { PREDICTION, predictEnemies, suggestManeuvers } from '../src/ai';
 import { shipPolygon } from '../src/combat';
 import { SHIP_TYPES } from '../src/content';
-import { createGame, inBounds, ION_MANEUVER } from '../src/game';
+import { createGame, inBounds, ION_MANEUVER, legalDial, viewFor } from '../src/game';
 import { maneuverFinalPose } from '../src/maneuvers';
 import type { ShipState } from '../src/types';
 
@@ -53,5 +53,39 @@ describe('enemy maneuver prediction', () => {
     const top = predictEnemies(g, 'a').get('b-0')![0].pose;
     const straight = { x: 300, y: 400 };
     expect(Math.hypot(top.x - 560, top.y - 420)).toBeLessThan(Math.hypot(straight.x - 560, straight.y - 420));
+  });
+});
+
+describe('move suggestions', () => {
+  it('suggests a legal maneuver for each of the player\'s ships, and none for the enemy', () => {
+    const g = setup({ x: 450, y: 750, h: -Math.PI / 2 });
+    const sug = suggestManeuvers(viewFor(g, 'a'), 'a');
+    expect(Object.keys(sug)).toEqual(['a-0']);
+    expect(legalDial(g, g.ships[0])).toContain(sug['a-0'].dial);
+  });
+
+  it('is the same from the player\'s redacted view as from the full state (it never reads hidden dials)', () => {
+    const g = setup({ x: 450, y: 750, h: -Math.PI / 2 });
+    g.ships[1].dial = 3; // the opponent has set a dial
+    expect(suggestManeuvers(viewFor(g, 'a'), 'a')).toEqual(suggestManeuvers(g, 'a'));
+  });
+
+  it('explains the expected shot: an ionized enemy drifting into the arc is a sure target', () => {
+    // The enemy is ionized (we know it drifts 1 straight) and sits ahead of us, facing away.
+    const g = setup({ x: 450, y: 520, h: Math.PI / 2 });
+    g.ships[1].ion = 1;
+    const sug = suggestManeuvers(g, 'a')['a-0'];
+    expect(sug.shots[0]).toMatchObject({ shipId: 'b-0', chance: 1 });
+    expect(sug.shots[0].range).toBeGreaterThanOrEqual(1);
+    expect(sug.threats).toEqual([]); // it faces away
+    expect(sug.obstacles).toEqual([]);
+  });
+
+  it('flags threats: an ionized enemy drifting toward us has us in its arc', () => {
+    const g = setup({ x: 450, y: 560, h: -Math.PI / 2 });
+    g.ships[1].ion = 1;
+    const sug = suggestManeuvers(g, 'a')['a-0'];
+    for (const t of sug.threats) expect(t.chance).toBeGreaterThanOrEqual(0.3);
+    expect(sug.shots.length + sug.threats.length).toBeGreaterThan(0);
   });
 });

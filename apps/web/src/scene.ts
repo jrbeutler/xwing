@@ -749,7 +749,8 @@ export class BattleScene {
 
   /** Small dots on the table showing every spot the selected ship can reach. */
   /** `ring` circles a dot that hides more maneuvers (e.g. a K-turn behind a straight), in that colour. */
-  setMarkers(points: { x: number; y: number; color: number; active?: boolean; ring?: number }[]) {
+  /** Maneuver dots. `ring`: a special maneuver hides here (its colour). `suggested`: the hint's pick (gold halo). */
+  setMarkers(points: { x: number; y: number; color: number; active?: boolean; ring?: number; suggested?: boolean }[]) {
     this.markers.clear();
     for (const p of points) {
       const m = new THREE.Mesh(
@@ -764,6 +765,12 @@ export class BattleScene {
         r.rotation.x = -Math.PI / 2;
         r.position.copy(toV3(p.x, p.y, 0.7));
         this.markers.add(r);
+      }
+      if (p.suggested) {
+        const halo = new THREE.Mesh(new THREE.RingGeometry(10, 12.5, 32), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.95 }));
+        halo.rotation.x = -Math.PI / 2;
+        halo.position.copy(toV3(p.x, p.y, 0.8));
+        this.markers.add(halo);
       }
     }
   }

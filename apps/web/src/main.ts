@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
@@ -969,15 +969,16 @@ function pickManeuver(s: ShipState, i: number) {
 function specialChips(s: ShipState) {
   const specials = legalDial(state, s).filter((i) => isSpecial(s, i));
   const cur = candidate ? candidate.group[candidate.flip] : -1;
+  const hint = suggestions()?.[s.id]?.dial;
   const chips = specials.map((i) => {
     const m = maneuverOf(s, i);
     return {
-      label: `<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}${i === cur ? ' <b>· set</b>' : ''}`,
+      label: `${i === hint ? '💡 ' : ''}<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}${i === cur ? ' <b>· set</b>' : ''}`,
       cls: `special${i === cur ? ' on' : ''}`,
       onClick: () => pickManeuver(s, i),
     };
   });
-  scene.showChips(s.pose, chips, { key: `${s.id}|${specials.join(',')}|${cur}`, cls: 'special-row' });
+  scene.showChips(s.pose, chips, { key: `${s.id}|${specials.join(',')}|${cur}|${hint}`, cls: 'special-row' });
 }
 
 /** Legal maneuvers grouped by end position (e.g. 4 straight and 4 K-turn end in the same spot). */
@@ -1048,6 +1049,7 @@ function refreshBoard() {
     active: candidate?.group[0] === g.idx[0],
     // ring the dots that hide a special maneuver, in its colour
     ring: g.idx.filter((i) => isSpecial(s, i)).map((i) => DIFF_COLOR[maneuverOf(s, i).difficulty])[0],
+    suggested: suggestions()?.[s.id] !== undefined && g.idx.includes(suggestions()![s.id].dial),
   })));
   specialChips(s);
   // Firing arcs: from where the ship will end up once a move is picked, else from where it is now.
@@ -1095,6 +1097,47 @@ function flip() {
   if (!candidate || candidate.group.length < 2) return;
   candidate.flip = (candidate.flip + 1) % candidate.group.length;
   refreshBoard();
+}
+
+// ---------------------------------------------------------------------------
+// Learning aid: the AI's suggested maneuver for each ship, for players who turned hints on at setup.
+// ---------------------------------------------------------------------------
+let hintCache: { key: string; sug: Record<string, Suggestion> } | null = null;
+
+/** The suggestions for the player planning now (computed once per round from their own view), or null if they are off. */
+function suggestions(): Record<string, Suggestion> | null {
+  if (!lastSetup || state.phase !== 'planning' || !(me === P1 ? lastSetup.hints.you : lastSetup.hints.them)) return null;
+  const key = `${state.round}:${me}`;
+  if (hintCache?.key !== key) hintCache = { key, sug: suggestManeuvers(viewFor(state, me), me) };
+  return hintCache.sug;
+}
+
+/** The suggestion for a ship as a line on its planning card: the move, why, and a button to use it. */
+function hintLine(s: ShipState): string {
+  const sug = suggestions()?.[s.id];
+  if (!sug) return '';
+  const odds = (c: number) => (c >= 0.8 ? 'a sure' : c >= 0.5 ? 'a likely' : 'a possible');
+  const why = [
+    ...(sug.shots.length ? sug.shots.slice(0, 2).map((t) => `${odds(t.chance)} shot at ${shipById(t.shipId).name} (range ${t.range})`) : ['no shot expected yet']),
+    sug.threats.length ? `${sug.threats.map((t) => shipById(t.shipId).name).join(' and ')} may have you in ${sug.threats.length > 1 ? 'their arcs' : 'its arc'}`
+      : 'out of the enemies\' likely arcs',
+    ...sug.obstacles.map((id) => `flies into ${state.obstacles.find((o) => o.id === id) ? OBSTACLE_RULES[state.obstacles.find((o) => o.id === id)!.kind].name.toLowerCase() : 'an obstacle'}`),
+  ];
+  const following = plan[s.id] === sug.dial;
+  return `<div class="suggest"><span>💡 Suggested: <b>${maneuverName(s, sug.dial)}</b>${following ? ' ✓' : ''}</span>
+    ${following ? '' : `<button class="opt mini" data-use-hint="${s.id}">Use</button>`}
+    <div class="hint">${why.join('; ')}.</div></div>`;
+}
+
+/** Set a ship's maneuver to the suggestion (undoable like any other pick) and move on to the next ship. */
+function useSuggestion(shipId: string) {
+  const sug = suggestions()?.[shipId];
+  if (!sug) return;
+  lastCommit = { shipId, prev: plan[shipId] };
+  plan[shipId] = sug.dial;
+  candidate = null;
+  const next = myShips().find((x) => plan[x.id] === undefined);
+  selectShip(next ? next.id : null);
 }
 
 function commit() {
@@ -1371,6 +1414,9 @@ function planningBar() {
     } else {
       status = `<b>${s.name.split(' ')[0]}</b>: drag on the board to steer`;
     }
+    // Learning aid on phones: the suggestion as a one-tap button (the gold-ringed dot shows where it goes).
+    const sug = suggestions()?.[s.id];
+    if (sug && plan[s.id] !== sug.dial && !isIonized(s)) buttons.push({ label: `💡 ${shortMove(s, sug.dial)}`, onClick: () => useSuggestion(s.id) });
   }
   if (lastCommit) buttons.unshift({ label: 'Undo', onClick: undoCommit });
   buttons.push({ label: 'Execute', cls: 'go-btn', disabled: mine.some((s) => plan[s.id] === undefined), onClick: executePlan });
@@ -1393,9 +1439,11 @@ function renderPlanning() {
       ${abilityLine(s)}
       ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
+      ${isIonized(s) ? '' : hintLine(s)}
       <div class="planned">${isIonized(s) ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
         : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
+    card.querySelector<HTMLButtonElement>('[data-use-hint]')?.addEventListener('click', () => useSuggestion(s.id));
     if (s.id === selected) {
       const cand = document.createElement('div');
       cand.id = 'cand';

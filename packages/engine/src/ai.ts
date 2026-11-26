@@ -368,6 +368,82 @@ function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoic
   return best.sc > 0 ? best.o : none;
 }
 
+/** The best-scoring legal maneuver for each of `playerId`'s ships against the predicted enemy positions. */
+function planDials(s: GameState, playerId: PlayerId, jitter: () => number, predictions: Map<string, Prediction[]>): Record<string, number> {
+  const dials: Record<string, number> = {};
+  for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
+    let best = -Infinity, bestIdx = legalDial(s, sh)[0];
+    for (const i of legalDial(s, sh)) {
+      const sc = scoreManeuver(s, sh, i, jitter, predictions);
+      if (sc > best) { best = sc; bestIdx = i; }
+    }
+    dials[sh.id] = bestIdx;
+  }
+  return dials;
+}
+
+/** The AI's recommended maneuver for one ship, and what it expects from it (for players learning the game). */
+export interface Suggestion {
+  /** Index into the ship's dial. */
+  dial: number;
+  /** Enemies likely in this ship's arc after the move: chance (0-1) and the range band at their most likely position. */
+  shots: { shipId: string; chance: number; range: number }[];
+  /** Enemies likely to have this ship in one of their arcs after the move, and how likely. */
+  threats: { shipId: string; chance: number }[];
+  /** Obstacles the move flies through or onto (normally none: the AI avoids them). */
+  obstacles: string[];
+}
+
+/**
+ * What the AI would fly for each of `playerId`'s ships (its planning without the random jitter), with the
+ * shots and threats it expects there. Call it with `viewFor(state, playerId)` so hidden dials stay hidden.
+ */
+export function suggestManeuvers(s: GameState, playerId: PlayerId): Record<string, Suggestion> {
+  const predictions = predictEnemies(s, playerId);
+  const dials = planDials(s, playerId, () => 0, predictions);
+  const out: Record<string, Suggestion> = {};
+  for (const [id, dial] of Object.entries(dials)) {
+    const sh = s.ships.find((x) => x.id === id)!;
+    const m = maneuverFor(sh, dial);
+    const size = shipSize(sh);
+    const me: ShipState = { ...sh, pose: maneuverFinalPose(sh.pose, size, m) };
+    const shots: Suggestion['shots'] = [], threats: Suggestion['threats'] = [];
+    for (const [eid, ps] of predictions) {
+      const e = s.ships.find((x) => x.id === eid)!;
+      let hit = 0, threat = 0, range = 0, bestW = -1;
+      for (const p of ps) {
+        const there: ShipState = { ...e, pose: p.pose };
+        const r = bestRange(me, there);
+        if (r !== null) { hit += p.w; if (p.w > bestW) { bestW = p.w; range = r; } }
+        if (bestRange(there, me) !== null) threat += p.w;
+      }
+      if (hit >= 0.3) shots.push({ shipId: eid, chance: hit, range });
+      if (threat >= 0.3) threats.push({ shipId: eid, chance: threat });
+    }
+    shots.sort((a, b) => b.chance - a.chance);
+    threats.sort((a, b) => b.chance - a.chance);
+    const path = [...maneuverPath(sh.pose, size, m, PATH_STEP).path, me.pose].map((p) => basePolygon(p, size));
+    const obstacles = s.obstacles.filter((o) => path.some((b) => polygonsOverlap(b, o.polygon))).map((o) => o.id);
+    out[id] = { dial, shots, threats, obstacles };
+  }
+  return out;
+}
+
+/** The closest range band at which `from` could fire a primary weapon at `to` (turret arcs can be rotated), or null. */
+function bestRange(from: ShipState, to: ShipState): number | null {
+  let best: number | null = null;
+  for (const w of shipType(from).primaries) {
+    const arcs: ArcName[] = w.arc === 'turret' ? ['front', 'left', 'right', 'rear'] : [w.arc];
+    for (const arc of arcs) {
+      const clipped = clipToArc(from.pose, arc, shipPolygon(to));
+      if (clipped.length < 3) continue;
+      const r = rangeBand(polygonDistance(shipPolygon(from), clipped).d);
+      if (r !== null && r <= maxRangeBand() && (best === null || r < best)) best = r;
+    }
+  }
+  return best;
+}
+
 export function decide(s: GameState, playerId: PlayerId): Command | null {
   const d = pendingFor(s, playerId);
   if (!d) return null;
@@ -376,17 +452,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
   const jitter = () => nextFloat(local);
 
   if (d.kind === 'planning') {
-    const dials: Record<string, number> = {};
-    const predictions = predictEnemies(s, playerId);
-    for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
-      let best = -Infinity, bestIdx = legalDial(s, sh)[0];
-      for (const i of legalDial(s, sh)) {
-        const sc = scoreManeuver(s, sh, i, jitter, predictions);
-        if (sc > best) { best = sc; bestIdx = i; }
-      }
-      dials[sh.id] = bestIdx;
-    }
-    return { type: 'setDials', playerId, dials };
+    return { type: 'setDials', playerId, dials: planDials(s, playerId, jitter, predictEnemies(s, playerId)) };
   }
 
   if (d.kind === 'action' && d.linked) {
