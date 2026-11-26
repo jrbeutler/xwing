@@ -113,6 +113,8 @@ Next steps:
 - Personalities (aggressive, cautious, flanker).
 - Self-play for balance.
 
+Actions: repairs and jams come first; otherwise Focus, Evade or a Lock (on each enemy) is chosen by value with the exact odds (`bestToken` in `ai.ts`): how much it improves this round's best shot (a lock can make ordnance legal), how much damage it prevents from enemies that can still shoot, and, for a lock, part of its value next round (`TOKEN_WEIGHTS`). Against the old fixed order (focus first) it took 1,500 locks instead of none and fired ordnance 2.4× as often, with no change in win rate (145–147, 8 draws, over 300 mirrored games): positioning decides games far more than token choice.
+
 The AI already decides from `viewFor` (the redacted view), the same view a network client gets.
 
 ## Roadmap

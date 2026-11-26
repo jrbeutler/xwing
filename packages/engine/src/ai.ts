@@ -85,6 +85,64 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   return score + jitter() * 6;
 }
 
+/** How good a shot is (as the attack decision weighs it): expected damage, plus kills and ion tokens. */
+const shotWorth = (s: GameState, a: ShipState, d: ShipState, t: TargetInfo) => {
+  const o = attackOdds(a, d, t, s);
+  return o.expected + o.kill * 3 + o.ion * 0.6;
+};
+/** The best shot `a` has right now (0 if none), weapons that need a lock included. */
+const bestShot = (s: GameState, a: ShipState) =>
+  Math.max(0, ...legalTargets(s, a).map((t) => shotWorth(s, a, s.ships.find((x) => x.id === t.targetId)!, t)));
+
+/**
+ * Token weights. lockCarry: share of a lock's value counted for later rounds (it lasts until spent).
+ * lockBase: rough value of a lock reroll on a typical shot, for an enemy the ship cannot shoot yet.
+ * defense: weight of damage prevented against damage dealt. Mutable for experiments.
+ */
+export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1 };
+
+/**
+ * Focus, Evade or a Lock, chosen by what each token is worth, measured with the exact odds:
+ *   attack: how much better this round's best shot gets (a lock can also make ordnance legal);
+ *   defense: how much less damage the enemies that can still shoot this ship expect to deal
+ *     (each enemy counted once, split across the targets it has);
+ *   later: a lock outlasts the round (lockCarry of its value on that enemy), and replacing a lock
+ *     gives up the old one.
+ */
+export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[]): ActionChoice | undefined {
+  const tokens = options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'lock');
+  if (!tokens.length) return undefined;
+  const ship = (id: string) => s.ships.find((x) => x.id === id)!;
+  const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
+  const waiting = s.phase === 'engagement' ? new Set(s.queue.slice(s.queueIndex + 1)) : null;
+  // Enemies that can still shoot this ship, with their best shot at it and how many targets they have.
+  const threats = enemies.filter((e) => !waiting || waiting.has(e.id)).flatMap((e) => {
+    const ts = legalTargets(s, e);
+    const atMe = ts.filter((t) => t.targetId === sh.id);
+    return atMe.length ? [{ e, atMe, share: 1 / new Set(ts.map((t) => t.targetId)).size }] : [];
+  });
+  const incoming = (me: ShipState) => threats.reduce((a, { e, atMe, share }) =>
+    a + share * Math.max(...atMe.map((t) => attackOdds(e, me, t, s).expected)), 0);
+  // What a lock on `id` adds to a shot at that enemy now, or a base value if it is not a target yet.
+  const lockGain = (id: string) => {
+    const shots = legalTargets(s, { ...sh, lock: id }).filter((t) => t.targetId === id);
+    if (!shots.length) return TOKEN_WEIGHTS.lockBase;
+    const e = ship(id);
+    const now = Math.max(0, ...legalTargets(s, sh).filter((t) => t.targetId === id).map((t) => shotWorth(s, sh, e, t)));
+    return Math.max(TOKEN_WEIGHTS.lockBase, Math.max(...shots.map((t) => shotWorth(s, { ...sh, lock: id }, e, t))) - now);
+  };
+  const oldLock = sh.lock && enemies.some((e) => e.id === sh.lock) ? sh.lock : null;
+  const shotNow = bestShot(s, sh), hitNow = incoming(sh);
+  const value = (o: ActionChoice) => {
+    const me: ShipState = o.type === 'focus' ? { ...sh, focus: sh.focus + 1 } : o.type === 'evade' ? { ...sh, evade: sh.evade + 1 } : { ...sh, lock: (o as { targetId: string }).targetId };
+    let v = bestShot(s, me) - shotNow + TOKEN_WEIGHTS.defense * (hitNow - incoming(me));
+    if (o.type === 'lock') v += TOKEN_WEIGHTS.lockCarry * (lockGain(o.targetId) - (oldLock ? lockGain(oldLock) : 0));
+    return v;
+  };
+  const best = tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
+  return best.v > 0 ? best.o : undefined;
+}
+
 /** Rotate the turret toward the closest enemy it could then shoot, if the current arc has none. */
 function turretTurn(s: GameState, sh: ShipState, options: ActionChoice[]): ActionChoice | undefined {
   const rotations = options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc');
@@ -165,8 +223,8 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     };
     const jam = [...d.options].sort((a, b) => jamWorth(b) - jamWorth(a)).find((o) => jamWorth(o) > 0);
     const choice = urgent ?? blunted ?? jam
-      ?? (hasShot ? pick('focus') ?? pick('lock') : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot'])
-        ?? turretTurn(s, sh, d.options) ?? pick('evade') ?? pick('focus') ?? pick('lock'));
+      ?? (hasShot ? undefined : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot']) ?? turretTurn(s, sh, d.options))
+      ?? bestToken(s, sh, d.options) ?? pick('focus');
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
   }
 
