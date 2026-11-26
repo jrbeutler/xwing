@@ -1,11 +1,11 @@
-// Baseline AI: one-ply lookahead. Scores each candidate maneuver by the position it
-// produces against a naive prediction of enemy movement. Fast, beatable, good enough
-// to test rules; later AIs can plug into the same `decide` contract.
+// Baseline AI: one-ply lookahead. Scores each candidate maneuver by the position it produces against
+// where the enemies will likely be (it predicts each enemy's maneuver by scoring it from that enemy's seat).
+// Fast, beatable, good enough to test rules; later AIs can plug into the same `decide` contract.
 import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { actionOptions, activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, isIonized, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
@@ -42,12 +42,46 @@ function arcScore(fromPose: Pose, fromSize: number, toPoly: ReturnType<typeof sh
   return table[bandOf(polygonDistance(basePolygon(fromPose, fromSize), clipped).d)];
 }
 
-function predictEnemy(e: ShipState): Pose {
+/** A likely end position for an enemy this round, with its probability. */
+export interface Prediction { pose: Pose; w: number }
+
+/** The naive guess: 100 mm straight ahead. Also what a modelled enemy assumes about our ships. */
+const straightAhead = (e: ShipState): Prediction[] => {
   const f = fwd(e.pose.h);
-  return { x: e.pose.x + f.x * 100, y: e.pose.y + f.y * 100, h: e.pose.h };
+  return [{ pose: { x: e.pose.x + f.x * 100, y: e.pose.y + f.y * 100, h: e.pose.h }, w: 1 }];
+};
+
+/**
+ * How the AI predicts enemy maneuvers. 'modeled': it puts itself in each enemy's seat, scores that enemy's
+ * legal maneuvers with scoreManeuver (assuming our ships fly straight ahead), and keeps the `top` best,
+ * weighted by exp((score - best) / temperature). 'straight': everyone flies 100 mm straight ahead.
+ * Ionized enemies are known to drift 1 straight; stressed ones cannot pick red maneuvers. Mutable for experiments.
+ */
+export const PREDICTION = { mode: 'modeled' as 'modeled' | 'straight', top: 3, temperature: 8 };
+
+/** Likely end positions of every enemy of `playerId`, computed once per decision. */
+export function predictEnemies(s: GameState, playerId: PlayerId): Map<string, Prediction[]> {
+  return new Map(activeShips(s).filter((e) => e.owner !== playerId).map((e) => [e.id, predictShip(s, e)]));
 }
 
-export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number): number {
+function predictShip(s: GameState, e: ShipState): Prediction[] {
+  if (PREDICTION.mode === 'straight') return straightAhead(e);
+  const size = shipSize(e);
+  if (isIonized(e)) return [{ pose: maneuverFinalPose(e.pose, size, ION_MANEUVER), w: 1 }];
+  const naive = new Map(activeShips(s).filter((x) => x.owner !== e.owner).map((x) => [x.id, straightAhead(x)]));
+  const scored = legalDial(s, e).map((i) => ({ i, sc: scoreManeuver(s, e, i, () => 0, naive) }))
+    .filter((x) => x.sc > -1000).sort((a, b) => b.sc - a.sc).slice(0, PREDICTION.top);
+  if (!scored.length) return straightAhead(e);
+  const raw = scored.map((x) => Math.exp((x.sc - scored[0].sc) / PREDICTION.temperature));
+  const total = raw.reduce((a, b) => a + b, 0);
+  return scored.map((x, k) => ({ pose: maneuverFinalPose(e.pose, size, maneuverFor(e, x.i)), w: raw[k] / total }));
+}
+
+/**
+ * How good a maneuver's end position looks. `predictions`: where the enemies will likely be (predictEnemies);
+ * without it every enemy is assumed to fly straight ahead.
+ */
+export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number, predictions?: Map<string, Prediction[]>): number {
   const m = maneuverFor(sh, dialIndex); // as damage cards make it fly
   const size = shipSize(sh);
   const pose = maneuverFinalPose(sh.pose, size, m);
@@ -67,16 +101,20 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   const role = roleOf(sh);
   const turret = hasTurretPrimary(sh);
   let nearest = Infinity;
+  const { PREFERS, THREAT } = tables();
   for (const e of activeShips(s).filter((x) => x.owner !== sh.owner)) {
-    const ep = predictEnemy(e);
     const eSize = shipSize(e);
-    const ePoly = basePolygon(ep, eSize);
-    const { PREFERS, THREAT } = tables();
-    score += arcScore(pose, size, ePoly, PREFERS[role], turret);
-    score -= 0.6 * arcScore(ep, eSize, poly, THREAT, hasTurretPrimary(e));
-    const gap = polygonDistance(poly, ePoly).d;
-    nearest = Math.min(nearest, gap);
-    if (gap < 25) score -= 30; // about to collide: a bump costs the action and a stress
+    let gapE = 0;
+    // Each likely enemy end position counts by its probability.
+    for (const { pose: ep, w } of predictions?.get(e.id) ?? straightAhead(e)) {
+      const ePoly = basePolygon(ep, eSize);
+      score += w * arcScore(pose, size, ePoly, PREFERS[role], turret);
+      score -= w * 0.6 * arcScore(ep, eSize, poly, THREAT, hasTurretPrimary(e));
+      const gap = polygonDistance(poly, ePoly).d;
+      gapE += w * gap;
+      if (gap < 25) score -= w * 30; // about to collide: a bump costs the action and a stress
+    }
+    nearest = Math.min(nearest, gapE);
   }
   // Keep a distance: range 1 is for interceptors only; beyond range 3, close in.
   const [r1, ...rest] = RANGE_RULES.edges, reach = rest.length ? rest[rest.length - 1] : r1;
@@ -314,7 +352,10 @@ function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoic
   const near = (pose: Pose, size: number, reach: number) => polygonDistance(token, basePolygon(pose, size)).d <= reach;
   const friendsEnd = activeShips(s).filter((x) => x.owner === sh.owner)
     .map((x) => ({ pose: x.dial === null ? x.pose : maneuverFinalPose(x.pose, shipSize(x), maneuverFor(x, x.dial)), size: shipSize(x) }));
-  const enemies = activeShips(s).filter((x) => x.owner !== sh.owner).map((e) => ({ pose: predictEnemy(e), size: shipSize(e) }));
+  // Each enemy's most likely end position.
+  const enemies = [...predictEnemies(s, sh.owner)].map(([id, ps]) => ({
+    pose: ps.reduce((a, b) => (b.w > a.w ? b : a)).pose, size: shipSize(s.ships.find((x) => x.id === id)!),
+  }));
   const score = (o: Extract<DropChoice, { type: 'drop' }>) => {
     const dev = UPGRADES[o.upgrade].device!;
     const reach = dev.kind === 'bomb' ? 100 : 60;
@@ -336,10 +377,11 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
 
   if (d.kind === 'planning') {
     const dials: Record<string, number> = {};
+    const predictions = predictEnemies(s, playerId);
     for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
       let best = -Infinity, bestIdx = legalDial(s, sh)[0];
       for (const i of legalDial(s, sh)) {
-        const sc = scoreManeuver(s, sh, i, jitter);
+        const sc = scoreManeuver(s, sh, i, jitter, predictions);
         if (sc > best) { best = sc; bestIdx = i; }
       }
       dials[sh.id] = bestIdx;
