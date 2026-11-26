@@ -36,6 +36,8 @@ node apps/web/scripts/bake-obj.mjs path/to/Intergalactic_Spaceship.obj apps/web/
 
 **Firing arcs:** the translucent fan in front of a ship (and behind the Bulwark) is where it can shoot, out to range 4 (36 cm), with faint lines at the edges of ranges 1, 2 and 3. While planning it follows the ghost, so you can see where you'll be able to shoot from after the move; it also shows for the ship taking an action, choosing a target, or firing.
 
+**Spending tokens:** dice tokens are spent for you, and only when they help. A ship keeps its **focus for defense** when an enemy that hasn't fired yet this round can still shoot it, unless the focus would change 2 or more dice or could finish off the target; while it holds focus, a lock reroll also rerolls focus results. A ship carrying a loaded torpedo or missile that needs a lock keeps that lock rather than spend it rerolling a single die with its lasers. Nothing is spent once the hits already guarantee a kill. The log says when a ship "holds focus" or "keeps lock".
+
 **Hit odds:** enemies inside the arc show your exact chance to land at least one damage, the expected damage, and the chance to destroy them. These come from the dice, range bonuses, obstruction and both ships' tokens. While picking a target the numbers are exact. While planning or previewing a boost/roll they're marked *if here*: computed from where your ghost ends up, against enemies where they stand now (they'll move too).
 
 Drag to orbit the camera; scroll to zoom.

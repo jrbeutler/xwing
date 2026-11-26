@@ -74,7 +74,7 @@ Keep these rules so this stays cheap:
 
 ### Simplifications and to-do (rules)
 
-- Dice modification is **automatic** (lock reroll → focus → defender focus → evade). Next: interactive modify steps for humans.
+- Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
 - No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attackOdds, resolveAttack } from '../src/combat';
+import { attackOdds, resolveAttack, stillThreatened } from '../src/combat';
 import { createGame } from '../src/game';
 import type { GameState, ShipState, TargetInfo } from '../src/types';
 
@@ -88,5 +88,69 @@ describe('attackOdds matches resolveAttack', () => {
     const d = { ...baseD, shields: 0, hull: 1, focus: 0, evade: 0 } as ShipState;
     const o = attackOdds({ ...baseA, focus: 0, lock: null } as ShipState, d, target(2));
     expect(o.kill).toBeCloseTo(o.hit, 12);
+  });
+});
+
+/**
+ * The smarter spending policy (SpendPlan): rolls real attacks against defenders with their real health,
+ * in a game where the defender can still shoot back, and checks attackOdds against them (damage capped
+ * at the defender's health, since that is all a real attack can deal).
+ */
+describe('token spending policy', () => {
+  const run = (state: GameState, a: ShipState, d: ShipState, t: TargetInfo, n: number) => {
+    const s = { ...structuredClone(state), rng: 4242, log: [], damageDeck: [], damageDiscard: [] } as GameState;
+    const counts: number[] = [];
+    const kept: Record<string, number> = {};
+    for (let i = 0; i < n; i++) {
+      const r = resolveAttack(s, structuredClone(a), structuredClone(d), t);
+      const k = r.shieldDamage + r.hullDamage;
+      counts[k] = (counts[k] ?? 0) + 1;
+      for (const x of r.kept ?? []) kept[x] = (kept[x] ?? 0) + 1;
+    }
+    return { dist: counts.map((c) => (c ?? 0) / n), kept };
+  };
+  const mk = (a: Partial<ShipState>, d: Partial<ShipState>) => [
+    { ...baseA, focus: 0, lock: null, crits: [], upgrades: [], ...a } as ShipState,
+    { ...baseD, focus: 0, evade: 0, crits: [], upgrades: [], ...d } as ShipState,
+  ];
+  const quiet = { ...game, phase: 'engagement', queue: [baseD.id, baseA.id], queueIndex: 1 } as GameState; // the defender already fired
+
+  it('knows who can still shoot', () => {
+    expect(stillThreatened(game, baseA)).toBe(true); // the defender faces the attacker
+    expect(stillThreatened({ ...game, phase: 'engagement', queue: [baseA.id, baseD.id], queueIndex: 0 } as GameState, baseA)).toBe(true);
+    expect(stillThreatened(quiet, baseA)).toBe(false);
+  });
+
+  const cases: { name: string; state: GameState; a: Partial<ShipState>; d: Partial<ShipState>; t: TargetInfo; keeps?: string; neverKeepsFocus?: boolean }[] = [
+    { name: 'holds focus for defense when threatened', state: game, a: { focus: 1 }, d: { shields: 9, hull: 9 }, t: target(3), keeps: 'attacker:focus' },
+    { name: 'lock rerolls focus results while focus is held', state: game, a: { focus: 1, lock: baseD.id }, d: { shields: 9, hull: 9 }, t: target(2), keeps: 'attacker:focus' },
+    { name: 'spends focus when it makes the shot lethal', state: game, a: { focus: 1 }, d: { shields: 0, hull: 2 }, t: target(2) },
+    { name: 'spends focus freely once nobody can shoot back', state: quiet, a: { focus: 1 }, d: { shields: 9, hull: 9 }, t: target(3), neverKeepsFocus: true },
+    { name: 'saves the lock for loaded torpedoes', state: quiet, a: { lock: baseD.id, upgrades: [{ id: 'proton-torpedoes', charges: 2 }] }, d: { shields: 9, hull: 9 }, t: target(3), keeps: 'attacker:lock' },
+    { name: 'no tokens spent on a guaranteed kill', state: quiet, a: { focus: 1, lock: baseD.id }, d: { typeId: 'bulwark', shields: 0, hull: 1 }, t: target(2), keeps: 'attacker:lock' },
+  ];
+  for (const c of cases) {
+    it(c.name, () => {
+      const [a, d] = mk(c.a, c.d);
+      const health = d.shields + d.hull;
+      const odds = attackOdds(a, d, c.t, c.state);
+      const capped: number[] = [];
+      odds.dist.forEach((p, k) => { capped[Math.min(k, health)] = (capped[Math.min(k, health)] ?? 0) + p; });
+      const sim = run(c.state, a, d, c.t, 40000);
+      for (let k = 0; k <= health; k++) expect(Math.abs((sim.dist[k] ?? 0) - (capped[k] ?? 0))).toBeLessThan(0.012);
+      if (c.keeps) expect(sim.kept[c.keeps] ?? 0).toBeGreaterThan(0);
+      if (c.neverKeepsFocus) expect(sim.kept['attacker:focus'] ?? 0).toBe(0);
+    });
+  }
+
+  it('holding focus keeps the token for defense', () => {
+    const [a, d] = mk({ focus: 1 }, { shields: 9, hull: 9 });
+    const s = { ...structuredClone(game), damageDeck: [] } as GameState;
+    for (let i = 0; i < 200; i++) {
+      const me = structuredClone(a);
+      const r = resolveAttack({ ...s, rng: i }, me, structuredClone(d), target(3));
+      expect(me.focus).toBe(r.spent.includes('attacker:focus') ? 0 : 1);
+      if (r.attackRoll.filter((f) => f === 'focus').length === 1) expect(r.kept).toContain('attacker:focus');
+    }
   });
 });

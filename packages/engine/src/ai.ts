@@ -179,7 +179,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
   const me = s.ships.find((x) => x.id === d.shipId)!;
   const worth = (t: TargetInfo) => {
     const e = s.ships.find((x) => x.id === t.targetId)!;
-    const o = attackOdds(me, e, t);
+    const o = attackOdds(me, e, t, s);
     return o.expected + o.kill * 3 + o.ion * 0.6 - (e.hull + e.shields) * 0.05;
   };
   const best = [...d.targets].sort((a, b) => worth(b) - worth(a))[0];

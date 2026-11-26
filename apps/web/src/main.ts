@@ -676,7 +676,9 @@ function describe(e: GameEvent): string | null {
     case 'attack': {
       const o = attackOutcome(e);
       const talents = e.spent.map((t) => t.split(':')[1]).filter((t) => UPGRADES[t]).map((t) => UPGRADES[t].name);
-      return `${nameHtml(e.attackerId)} fires ${e.weapon ? `${UPGRADES[e.weapon].name} ` : ''}at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}): ` +
+      // Tokens the dice policy kept on purpose: focus held for defense, a lock saved for later.
+      const kept = (e.kept ?? []).map((t) => (t === 'attacker:focus' ? 'holds focus' : 'keeps lock'));
+      return `${nameHtml(e.attackerId)} fires ${e.weapon ? `${UPGRADES[e.weapon].name} ` : ''}at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}${kept.length ? `; ${kept.join(', ')}` : ''}): ` +
         `<b>${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? `${o.word.toLowerCase()}, ${o.detail}` : o.word.toLowerCase()}</b>`;
     }
     case 'damageCard': {
@@ -1556,7 +1558,7 @@ function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
 
 /** How good a shot is, for picking a default weapon: expected damage, plus ions and kills. */
 const shotValue = (attacker: ShipState, t: Target) => {
-  const o = attackOdds(attacker, shipById(t.targetId), t);
+  const o = attackOdds(attacker, shipById(t.targetId), t, state);
   return o.expected + o.ion * 0.6 + o.kill * 3;
 };
 /** The best weapon per enemy from a list of target entries. */
@@ -1571,7 +1573,7 @@ function bestPerTarget(attacker: ShipState, ts: Target[]): Map<string, Target> {
 
 /** "62% hit · 1.4 dmg · 18% kill" for one attack, from the engine's exact odds. */
 function oddsHtml(attacker: ShipState, t: Target): string {
-  const o = attackOdds(attacker, shipById(t.targetId), t);
+  const o = attackOdds(attacker, shipById(t.targetId), t, state);
   const pct = (p: number) => `${Math.round(p * 100)}%`;
   const cls = o.hit >= 0.66 ? 'hi' : o.hit >= 0.4 ? 'mid' : 'lo';
   return `${isPrimary(t) ? '' : `<span class="wpn">${weaponName(t)}</span> `}<span class="${cls}"><b>${pct(o.hit)}</b> hit</span> · ${o.expected.toFixed(1)} dmg` +
@@ -1725,7 +1727,7 @@ function renderAttack(shipId: string, targets: Target[]) {
   /** The gunsight readout for the enemy in the crosshairs. */
   const sight = (c: Target) => {
     const e = shipById(c.targetId);
-    const o = attackOdds(s, e, c);
+    const o = attackOdds(s, e, c, state);
     const pct = (p: number) => `${Math.round(p * 100)}%`;
     const cls = o.hit >= 0.66 ? 'hi' : o.hit >= 0.4 ? 'mid' : 'lo';
     const list = ordered();
@@ -1736,7 +1738,7 @@ function renderAttack(shipId: string, targets: Target[]) {
     const alts = targets.filter((t) => t.targetId === c.targetId && (t.weapon ?? 'primary') !== weapon);
     const altHtml = alts.map((t) => {
       const w = t.weapon ?? 'primary';
-      return `<button class="gs-alt" data-act="w:${w}">${weaponShort(w)} <b>${pct(attackOdds(s, e, t).hit)}</b></button>`;
+      return `<button class="gs-alt" data-act="w:${w}">${weaponShort(w)} <b>${pct(attackOdds(s, e, t, state).hit)}</b></button>`;
     }).join('');
     const nav = (d: string, label: string, sym: string) =>
       `<button class="gs-nav" data-act="${d}" aria-label="${label}"${n < 2 ? ' disabled' : ''}>${sym}</button>`;
@@ -1827,7 +1829,7 @@ function renderAttack(shipId: string, targets: Target[]) {
   detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
     The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
     the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) loses an attack die, range 2 is the sweet spot (an extra attack die), range 3 is plain, and range 4 gives the defender an extra die;
-    obstruction adds a defense die. Tokens are spent automatically. Or pick a line below.</p>`;
+    obstruction adds a defense die. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
     const charges = s.upgrades.find((u) => u.id === t.weapon)?.charges;

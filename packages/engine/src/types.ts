@@ -180,6 +180,8 @@ export type GameEvent =
       type: 'attack'; attackerId: string; defenderId: string; arc: ArcName; range: number; obstructed: boolean;
       attackRoll: AttackFace[]; attackFinal: AttackFace[]; defenseRoll: DefenseFace[]; defenseFinal: DefenseFace[];
       spent: string[]; hits: number; crits: number; shieldDamage: number; hullDamage: number;
+      /** Tokens the dice policy chose to keep although they could have changed a die ('attacker:focus' | 'attacker:lock'). */
+      kept?: string[];
       /** Secondary weapon used (absent for the primary) and ion tokens it gave. */
       weapon?: string; ion?: number;
     }

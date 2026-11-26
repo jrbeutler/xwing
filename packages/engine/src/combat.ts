@@ -186,13 +186,54 @@ const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = '
   arc === 'front' && !turret && !(weapon && UPGRADES[weapon]?.weapon?.arc === 'turret') && !!upgradeOf(attacker, 'outmaneuver') && !inFiringArc(defender, attacker);
 
 /**
- * Resolve one primary attack. Dice modification is automated with a fixed policy that attackOdds mirrors:
- *   attack: talent reroll (Marksman, Steady Gunner, Ordnance Specialist) → lock reroll → focus;
+ * Whether `ship` can still be shot this round: an enemy that has not fired yet in this Engagement phase
+ * (or any enemy, outside it) has it in a primary arc and in range. Measured against `ship` as passed, so
+ * a planning ghost works too.
+ */
+export function stillThreatened(state: GameState, ship: ShipState): boolean {
+  if (!state.ships || state.phase === 'over' || state.phase === 'end') return false;
+  const waiting = state.phase === 'engagement' ? new Set(state.queue.slice(state.queueIndex + 1)) : null;
+  return state.ships.some((e) => e.owner !== ship.owner && !e.removed && e.id !== ship.id && (!waiting || waiting.has(e.id)) &&
+    shipType(e).primaries.some((w) => measureArc(state, e, ship, w.arc === 'turret' ? e.turretArc : w.arc as ArcName) !== null));
+}
+
+/**
+ * How the automatic dice policy treats the attacker's tokens on one attack, worked out before the roll.
+ *   holdFocus: an enemy can still shoot the attacker this round and it has defense dice, so focus is kept
+ *     for defense unless it turns 2+ dice or could make the shot lethal (and lock/talent rerolls take focus
+ *     results too, as if there were no focus token).
+ *   saveLock: a primary attack by a ship with lock-only ordnance still loaded keeps the lock (for next
+ *     round's torpedo) unless the reroll covers 2+ dice.
+ *   health / defenseDice: no token is spent once hits + crits reach health + defenseDice, the most the
+ *     defender could cancel and still die (not for ion weapons, whose extra hits become ion tokens).
+ */
+export interface SpendPlan { holdFocus: boolean; saveLock: boolean; health: number; defenseDice: number; capped: boolean }
+export function spendPlan(state: GameState | undefined, attacker: ShipState, defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'weapon' | 'arc' | 'turret'>>): SpendPlan {
+  const primary = isPrimary(t);
+  return {
+    holdFocus: attacker.focus > 0 && shipType(attacker).agility - defenseDicePenalty(attacker) > 0 && !!state && stillThreatened(state, attacker),
+    saveLock: primary && attacker.upgrades.some((u) => UPGRADES[u.id].weapon?.requires === 'lock' && hasAmmo(u)),
+    health: defender.shields + defender.hull,
+    defenseDice: defenseDiceFor(defender, t, attacker),
+    capped: weaponOf(t)?.effect !== 'ion',
+  };
+}
+/** Hits + crits already enough that no token can add anything. */
+const enough = (p: SpendPlan, total: number) => p.capped && total >= p.health + p.defenseDice;
+/** Focus results when focus is being held: spend it anyway if it turns 2+ dice or could finish the defender. */
+const spendHeldFocus = (p: SpendPlan, total: number, focus: number) => focus >= 2 || total + focus >= p.health;
+
+/**
+ * Resolve one primary attack. Dice modification is automated with a policy that attackOdds mirrors:
+ *   attack: talent reroll (Marksman, Steady Gunner, Ordnance Specialist) → lock reroll → focus, each skipped
+ *     when it cannot help (see SpendPlan: overkill, holding focus for defense, saving a lock for ordnance);
  *   defense: Elusive reroll → focus → evade token → attacker's Crack Shot (bullseye).
  * A die is rerolled at most once. Blinded Pilot stops all of the attacker's modifications.
+ * `kept` lists tokens the policy chose not to spend although they could have changed a die.
  */
 export function resolveAttack(state: GameState, attacker: ShipState, defender: ShipState, t: TargetInfo) {
-  const spent: string[] = [];
+  const spent: string[] = [], kept: string[] = [];
+  const plan = spendPlan(state, attacker, defender, t);
   const attackDice = attackDiceFor(attacker, t);
   const defenseDice = defenseDiceFor(defender, t, attacker);
   const mods = canModifyAttack(attacker);
@@ -204,23 +245,31 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const rerolled = new Set<number>();
   const reroll = (idx: number[]) => { const rr = rollAttack(state, idx.length); idx.forEach((i, k) => { atk[i] = rr[k]; rerolled.add(i); }); };
   const canFocus = attacker.focus > 0;
+  // Focus results are worth rerolling when there is no focus token, or it is being held for defense.
+  const focusRerollable = !canFocus || plan.holdFocus;
+  const landed = () => atk.filter((f) => f === 'hit' || f === 'crit').length;
   const talent = mods ? rerollTalent(attacker, t) : undefined;
-  if (talent) {
-    const i = [atk.indexOf('blank'), canFocus ? -1 : atk.indexOf('focus')].find((x) => x >= 0);
+  if (talent && !enough(plan, landed())) {
+    const i = [atk.indexOf('blank'), focusRerollable ? atk.indexOf('focus') : -1].find((x) => x >= 0);
     if (i !== undefined) { reroll([i]); spent.push(`attacker:${talent}`); }
   }
   if (mods && attacker.lock === defender.id) {
-    const idx = atk.map((f, i) => (!rerolled.has(i) && (f === 'blank' || (!canFocus && f === 'focus')) ? i : -1)).filter((i) => i >= 0);
-    if (idx.length) {
+    const idx = atk.map((f, i) => (!rerolled.has(i) && (f === 'blank' || (focusRerollable && f === 'focus')) ? i : -1)).filter((i) => i >= 0);
+    if (idx.length && (enough(plan, landed()) || (plan.saveLock && idx.length <= 1))) kept.push('attacker:lock');
+    else if (idx.length) {
       reroll(idx);
       attacker.lock = null;
       spent.push('attacker:lock');
     }
   }
-  if (mods && canFocus && atk.includes('focus')) {
-    atk.forEach((f, i) => { if (f === 'focus') atk[i] = 'hit'; });
-    attacker.focus--;
-    spent.push('attacker:focus');
+  const focusDice = atk.filter((f) => f === 'focus').length;
+  if (mods && canFocus && focusDice) {
+    if (enough(plan, landed()) || (plan.holdFocus && !spendHeldFocus(plan, landed(), focusDice))) kept.push('attacker:focus');
+    else {
+      atk.forEach((f, i) => { if (f === 'focus') atk[i] = 'hit'; });
+      attacker.focus--;
+      spent.push('attacker:focus');
+    }
   }
   if (weapon?.effect === 'proton') { const i = atk.indexOf('hit'); if (i >= 0) atk[i] = 'crit'; }
   const hits = atk.filter((f) => f === 'hit').length;
@@ -272,7 +321,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
     dmg = sufferDamage(state, defender, finalHits, finalCrits);
   }
   return {
-    attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, hits: finalHits, crits: finalCrits, ...dmg,
+    attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, ...(kept.length ? { kept } : {}), hits: finalHits, crits: finalCrits, ...dmg,
     ...(primary ? {} : { weapon: t.weapon, ion }),
   };
 }
@@ -321,13 +370,15 @@ const ATK_FACES: AttackFace[] = ['hit', 'crit', 'focus', 'blank'];
 const DEF_FACES: DefenseFace[] = ['evade', 'focus', 'blank'];
 
 /**
- * Exact odds for `resolveAttack(attacker, defender, t)` given both ships' current tokens and upgrades.
+ * Exact odds for `resolveAttack(state, attacker, defender, t)` given both ships' current tokens and upgrades.
  * Mirrors its automated policy step by step; keep the two in sync (the test suite checks them against
  * each other by simulation).
  */
 export function attackOdds(
   attacker: ShipState, defender: ShipState,
-  t: Pick<TargetInfo, 'attack' | 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'bullseye' | 'arc' | 'weapon'>>,
+  t: Pick<TargetInfo, 'attack' | 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'bullseye' | 'arc' | 'weapon' | 'turret'>>,
+  /** The game, so the odds know whether focus will be held for defense (pass it whenever you have it). */
+  state?: GameState,
 ): AttackOdds {
   // Note: dice odds only. Damage-card cascades (Direct Hit!, Fuel Leak...) are not included in `dist`.
   const attackDice = attackDiceFor(attacker, t);
@@ -342,6 +393,8 @@ export function attackOdds(
   const add = (k: number, p: number) => landed.set(k, (landed.get(k) ?? 0) + p);
   const canFocus = attacker.focus > 0;
   const primary = isPrimary(t), weapon = weaponOf(t);
+  const plan = spendPlan(state, attacker, defender, t);
+  const focusRerollable = !canFocus || plan.holdFocus;
   const useTalentReroll = mods && !!rerollTalent(attacker, t); // any 1-die reroll talent
   const useLock = mods && attacker.lock === defender.id;
   const useFocus = mods && canFocus;
@@ -349,19 +402,22 @@ export function attackOdds(
   for (const roll of faceCounts(attackDice, aw)) {
     // Dice split into not-yet-rerolled (u) and rerolled (r) counts, by face.
     let states = [{ u: roll.counts, r: [0, 0, 0, 0], p: roll.p }];
-    if (useTalentReroll) {
-      const src = roll.counts[BLANK] > 0 ? BLANK : !canFocus && roll.counts[FOCUS] > 0 ? FOCUS : -1;
+    if (useTalentReroll && !enough(plan, roll.counts[HIT] + roll.counts[CRIT])) {
+      const src = roll.counts[BLANK] > 0 ? BLANK : focusRerollable && roll.counts[FOCUS] > 0 ? FOCUS : -1;
       if (src >= 0) {
         const u = roll.counts.map((x, i) => (i === src ? x - 1 : x));
         states = reroll(1, aw).map((o) => ({ u, r: o.counts, p: roll.p * o.p }));
       }
     }
     for (const st of states) {
-      const n = useLock ? st.u[BLANK] + (canFocus ? 0 : st.u[FOCUS]) : 0;
-      const kept = n ? st.u.map((x, i) => (i === BLANK || (!canFocus && i === FOCUS) ? 0 : x)) : st.u;
+      let n = useLock ? st.u[BLANK] + (focusRerollable ? st.u[FOCUS] : 0) : 0;
+      if (enough(plan, st.u[HIT] + st.u[CRIT] + st.r[HIT] + st.r[CRIT]) || (plan.saveLock && n <= 1)) n = 0;
+      const kept = n ? st.u.map((x, i) => (i === BLANK || (focusRerollable && i === FOCUS) ? 0 : x)) : st.u;
       for (const o of reroll(n, aw)) {
         const f = plus(plus(kept, st.r), o.counts);
-        add(f[HIT] + f[CRIT] + (useFocus ? f[FOCUS] : 0), st.p * o.p);
+        const total = f[HIT] + f[CRIT], fd = f[FOCUS];
+        const spendFocus = useFocus && fd > 0 && !enough(plan, total) && (!plan.holdFocus || spendHeldFocus(plan, total, fd));
+        add(total + (spendFocus ? fd : 0), st.p * o.p);
       }
     }
   }
