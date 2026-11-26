@@ -101,6 +101,7 @@ export function rangeBetween(a: ShipState, b: ShipState): number | null {
 
 export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[] {
   const out: TargetInfo[] = [];
+  if (attacker.disarmed) return out; // reloaded this round
   for (const t of state.ships) {
     if (t.owner === attacker.owner || t.destroyed) continue;
     let best: TargetInfo | null = null;
@@ -175,6 +176,23 @@ export const defenseDiceFor = (defender: ShipState, t: ShotInfo, attacker?: Ship
   Math.max(0, shipType(defender).agility + (isPrimary(t) ? RANGE_RULES.defense[t.range] ?? 0 : 0) + (t.obstructed ? 1 : 0)
     + diceDelta('defense', attackFacts(t, defender, attacker), attacker, defender) - defenseDicePenalty(defender));
 
+/**
+ * Whether the defender's reinforce token covers this attacker: some of the attacker's base lies in the
+ * defender's full front (or rear) arc, the half of the table in front of (or behind) its centre line.
+ */
+export function reinforceCovers(defender: ShipState, attacker?: ShipState): boolean {
+  if (!defender.reinforce || !attacker) return false;
+  const dir = fwd(defender.pose.h + (defender.reinforce === 'rear' ? Math.PI : 0));
+  return clipHalfPlane(shipPolygon(attacker), vec(defender.pose.x, defender.pose.y), dir).length >= 3;
+}
+
+/**
+ * Calculate on attack or defense changes one focus result. It is used instead of the focus token when one
+ * result is all there is (or all that is needed), keeping the focus token, and alone when focus is not spent.
+ */
+const useCalculate = (focusResults: number, needOne: boolean, focusWouldBeSpent: boolean) =>
+  focusResults > 0 && (focusResults === 1 || needOne || !focusWouldBeSpent);
+
 /** Attack dice to reroll for the attacker's reroll effects (e.g. Marksman), before any lock. */
 const rerollCount = (fx: { effect: { dice: number } }[]) => fx.reduce((a, x) => a + x.effect.dice, 0);
 
@@ -194,7 +212,7 @@ export const inFiringArc = (from: ShipState, target: ShipState) =>
 export function stillThreatened(state: GameState, ship: ShipState): boolean {
   if (!state.ships || state.phase === 'over' || state.phase === 'end') return false;
   const waiting = state.phase === 'engagement' ? new Set(state.queue.slice(state.queueIndex + 1)) : null;
-  return state.ships.some((e) => e.owner !== ship.owner && !e.removed && e.id !== ship.id && (!waiting || waiting.has(e.id)) &&
+  return state.ships.some((e) => e.owner !== ship.owner && !e.removed && !e.disarmed && e.id !== ship.id && (!waiting || waiting.has(e.id)) &&
     shipType(e).primaries.some((w) => measureArc(state, e, ship, w.arc === 'turret' ? e.turretArc : w.arc as ArcName) !== null));
 }
 
@@ -228,7 +246,9 @@ const spendHeldFocus = (p: SpendPlan, total: number, focus: number) => focus >= 
  * Resolve one primary attack. Dice modification is automated with a policy that attackOdds mirrors:
  *   attack: reroll effects (Marksman, Steady Gunner, Ordnance Specialist) → lock reroll → focus, each skipped
  *     when it cannot help (see SpendPlan: overkill, holding focus for defense, saving a lock for ordnance);
- *   defense: reroll effects (Elusive) → focus → evade token → the attacker's cancel-evade effects (Crack Shot).
+ *   attack: Calculate changes 1 focus result instead of spending focus when that is enough (see useCalculate);
+ *   defense: reroll effects (Elusive) → calculate or focus → evade token → the attacker's cancel-evade effects (Crack Shot);
+ *   then a reinforce token covering the attacker cancels 1 of 2+ uncancelled results.
  * A die is rerolled at most once. Blinded Pilot stops all of the attacker's modifications.
  * `kept` lists tokens the policy chose not to spend although they could have changed a die.
  */
@@ -272,7 +292,12 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
     }
   }
   const focusDice = atk.filter((f) => f === 'focus').length;
-  if (mods && canFocus && focusDice) {
+  const wantFocus = mods && canFocus && focusDice > 0 && !enough(plan, landed()) && (!plan.holdFocus || spendHeldFocus(plan, landed(), focusDice));
+  if (mods && attacker.calculate > 0 && !enough(plan, landed()) && useCalculate(focusDice, false, wantFocus)) {
+    atk[atk.indexOf('focus')] = 'hit';
+    attacker.calculate--;
+    spent.push('attacker:calculate');
+  } else if (mods && canFocus && focusDice) {
     if (enough(plan, landed()) || (plan.holdFocus && !spendHeldFocus(plan, landed(), focusDice))) kept.push('attacker:focus');
     else {
       atk.forEach((f, i) => { if (f === 'focus') atk[i] = 'hit'; });
@@ -299,10 +324,17 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
       for (const fx of defRerollFx) { payFor(fx); spent.push(`defender:${fx.source.id}`); }
     }
   }
-  if (defender.focus > 0 && evades() < hits + crits && def.includes('focus')) {
-    def.forEach((f, i) => { if (f === 'focus') def[i] = 'evade'; });
-    defender.focus--;
-    spent.push('defender:focus');
+  const defFocus = def.filter((f) => f === 'focus').length;
+  if (evades() < hits + crits && defFocus > 0) {
+    if (defender.calculate > 0 && useCalculate(defFocus, hits + crits - evades() === 1, defender.focus > 0)) {
+      def[def.indexOf('focus')] = 'evade';
+      defender.calculate--;
+      spent.push('defender:calculate');
+    } else if (defender.focus > 0) {
+      def.forEach((f, i) => { if (f === 'focus') def[i] = 'evade'; });
+      defender.focus--;
+      spent.push('defender:focus');
+    }
   }
   if (defender.evade > 0 && evades() < hits + crits) {
     const i = def.findIndex((f) => f !== 'evade');
@@ -321,9 +353,12 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   }
 
   let e = evades();
-  const finalHits = Math.max(0, hits - e);
+  let finalHits = Math.max(0, hits - e);
   e = Math.max(0, e - hits);
-  const finalCrits = Math.max(0, crits - e);
+  let finalCrits = Math.max(0, crits - e);
+  // Reinforce: against an attacker in the covered half, 2+ uncancelled results lose one (a hit first).
+  const reinforced = finalHits + finalCrits >= 2 && reinforceCovers(defender, attacker);
+  if (reinforced) { if (finalHits > 0) finalHits--; else finalCrits--; }
   let ion = 0, dmg;
   if (weapon?.effect === 'ion' && finalHits + finalCrits > 0) {
     // Ion: one hit's worth of damage; everything else that got through becomes ion tokens.
@@ -334,7 +369,8 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
     dmg = sufferDamage(state, defender, finalHits, finalCrits);
   }
   return {
-    attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, ...(kept.length ? { kept } : {}), hits: finalHits, crits: finalCrits, ...dmg,
+    attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, ...(kept.length ? { kept } : {}), ...(reinforced ? { reinforced } : {}),
+    hits: finalHits, crits: finalCrits, ...dmg,
     ...(primary ? {} : { weapon: t.weapon, ion }),
   };
 }
@@ -412,6 +448,7 @@ export function attackOdds(
   const talentRerolls = mods ? rerollCount(attackEffects(attacker, 'rerollAttack', facts)) : 0;
   const useLock = mods && attacker.lock === defender.id;
   const useFocus = mods && canFocus;
+  const useCalc = mods && attacker.calculate > 0;
   const [HIT, CRIT, FOCUS, BLANK] = [0, 1, 2, 3];
   for (const roll of faceCounts(attackDice, aw)) {
     // Dice split into not-yet-rerolled (u) and rerolled (r) counts, by face.
@@ -432,7 +469,8 @@ export function attackOdds(
         const f = plus(plus(kept, st.r), o.counts);
         const total = f[HIT] + f[CRIT], fd = f[FOCUS];
         const spendFocus = useFocus && fd > 0 && !enough(plan, total) && (!plan.holdFocus || spendHeldFocus(plan, total, fd));
-        add(total + (spendFocus ? fd : 0), st.p * o.p);
+        const calc = useCalc && !enough(plan, total) && useCalculate(fd, false, spendFocus);
+        add(total + (calc ? 1 : spendFocus ? fd : 0), st.p * o.p);
       }
     }
   }
@@ -441,6 +479,7 @@ export function attackOdds(
   const [EVADE, DFOCUS, DBLANK] = [0, 1, 2];
   const defRerolls = rerollCount(attackEffects(defender, 'rerollDefense', facts));
   const cancels = mods ? attackEffects(attacker, 'cancelEvade', facts).length : 0;
+  const reinforced = reinforceCovers(defender, attacker);
   const dist: number[] = Array(attackDice + 1).fill(0);
   for (const [total, pa] of landed) {
     for (const roll of faceCounts(defenseDice, dw)) {
@@ -455,10 +494,15 @@ export function attackOdds(
       }
       for (const st of states) {
         let e = st.c[EVADE];
-        if (defender.focus > 0 && e < total && st.c[DFOCUS] > 0) e += st.c[DFOCUS];
+        const fd = st.c[DFOCUS];
+        if (e < total && fd > 0) {
+          if (defender.calculate > 0 && useCalculate(fd, total - e === 1, defender.focus > 0)) e += 1;
+          else if (defender.focus > 0) e += fd;
+        }
         if (defender.evade > 0 && e < total && e < defenseDice) e += 1;
         for (let k = 0; k < cancels; k++) if (e > 0 && e <= total) e -= 1;
-        dist[Math.max(0, total - e)] += pa * st.p;
+        const left = Math.max(0, total - e);
+        dist[reinforced && left >= 2 ? left - 1 : left] += pa * st.p;
       }
     }
   }

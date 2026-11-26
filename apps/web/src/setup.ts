@@ -3,7 +3,7 @@
 import {
   DEFAULT_BUDGET, PILOTS, SHIP_TYPES, UPGRADES, buildAiSquad, effectiveInitiative, fitsSlots, freeSlots, hullOf, isOffClass,
   shipCost, signatureTalents, squadCost, talentSlotCount, upgradeCost, upgradeOptions, validateSquad,
-  type PilotDef, type ShipClass, type Squad, type SquadShip, type SlotType,
+  type ActionType, type PilotDef, type ShipClass, type Squad, type SquadShip, type SlotType,
 } from '@xw/engine';
 
 import { onModelsReady, shipPreview } from './preview';
@@ -68,6 +68,16 @@ function statLine(s: SquadShip) {
   const plus = (k: 'hull' | 'shields') => s.upgrades.reduce((a, u) => a + (UPGRADES[u].stats?.[k] ?? 0), 0);
   const atk = t.primaries.map((w) => `${w.attack}${w.arc === 'rear' ? ' rear' : ''}`).join(' + ');
   return `atk ${atk} · agi ${t.agility} · hull ${t.hull + plus('hull')} · shields ${t.shields + plus('shields')}`;
+}
+
+const ACTION_NAMES: Record<ActionType, string> = {
+  focus: 'Focus', evade: 'Evade', lock: 'Lock', barrelRoll: 'Barrel Roll', boost: 'Boost', repair: 'Repair',
+  rotateArc: 'Rotate', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload',
+};
+/** The hull's action bar: red actions in red, linked actions as "Focus → Rotate". */
+function actionLine(s: SquadShip) {
+  const name = (a: { type: ActionType; red?: boolean }) => (a.red ? `<span class="red-act">${ACTION_NAMES[a.type]}</span>` : ACTION_NAMES[a.type]);
+  return SHIP_TYPES[hullOf(s)].actions.map((a) => (a.linked ? `${name(a)} → ${name(a.linked)}` : name(a))).join(' · ');
 }
 
 type Side = 'you' | 'them';
@@ -220,6 +230,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           <span class="cost">${shipCost(s)}</span><button class="rm" data-rm="${side}:${i}" aria-label="Remove ${esc(p.name)}">✕</button></div>
         <div class="hull-row">${hullPicker(side, s, i)}${isOffClass(s) ? '<span class="hint off-class">outside specialty: -1 initiative</span>' : ''}</div>
         <div class="stats">${statLine(s)}</div>
+        <div class="stats acts">${actionLine(s)}</div>
         <div class="slots"><span class="slot-group">Pilot</span>${pilotRow.join('') || '<span class="hint">no talent slots below initiative 3</span>'}</div>
         <div class="slots"><span class="slot-group">Ship</span>${shipRow.join('')}</div>
       </div>`;

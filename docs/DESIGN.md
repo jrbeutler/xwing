@@ -85,7 +85,11 @@ Keep these rules so this stays cheap:
 | Fly-over | ✅ | Ships may pass over others; only the final position matters |
 | Fleeing | ✅ | Base partly off the board, so the ship is destroyed |
 | Asteroids | ✅ | Moving through or landing on one: roll 1 attack die (hit/crit = damage), skip action |
-| Actions | ✅ | Focus, Evade, Lock (any range band, 0–4, one lock at a time), Barrel Roll, Boost, red actions |
+| Actions | ✅ | Focus, Evade, Lock (any range band, 0–4, one lock at a time), Barrel Roll, Boost, Calculate, Reinforce, Reload, Rotate, Jam, Repair, red actions |
+| Linked actions | ✅ | `ActionDef.linked`: after the first action the ship may perform the linked one (red: +1 stress). Allowed even if the first action left the ship stressed; not after an ion maneuver; one link per activation |
+| Calculate | ✅ | Token; changes 1 focus result (hit attacking, evade defending). Spent instead of focus on a lone focus result, or when one change is enough; kept otherwise. Cleared in the End phase |
+| Reinforce | ✅ | Token for the front or rear half (full 180° arc through the base centre). An attack from a covered attacker with 2+ uncancelled results loses 1 (a hit first). Lasts the round, not spent |
+| Reload | ✅ | Recover 1 charge on a missile, torpedo or device below its starting charges; the ship is disarmed (no attacks) until the End phase |
 | Arcs | ✅ | 90° front/rear wedges through the base corners; bullseye strip detected |
 | Range | ✅ | Closest base-to-base distance *within the arc*; four bands with edges at 60/160/260/360 mm (house rule; the board game uses three 100 mm bands); range 0 allowed |
 | Attack | ✅ | **House rule, four bands** (`RANGE_RULES` in `combat.ts`): range 1 (0–6 cm) −1 attack die, range 2 (6–16 cm) +1 attack die, range 3 (16–26 cm) none, range 4 (26–36 cm) +1 defense die; primary weapons only. The board game has three 10 cm bands with +1 attack die at range 0–1 and +1 defense die at range 3. Obstructed: +1 defense die |
@@ -97,7 +101,9 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
-- Not yet: pilot abilities (beyond signature talents), recurring charges and force, tractor, strain/deplete/disarm, reinforce, coordinate, calculate, reload, SLAM, cloak, linked actions, crew/astromech/sensor upgrade slots, obstacles other than asteroids, and obstacle placement by the players.
+- Not yet: pilot abilities (beyond signature talents), recurring charges and force, tractor, strain/deplete tokens, coordinate, SLAM, cloak, crew/astromech/sensor upgrade slots, obstacles other than asteroids, and obstacle placement by the players.
+- Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
+- The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`), and never barrel rolls or boosts yet, so it never uses the Wasp/Javelin links.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.
@@ -118,8 +124,11 @@ attacks, and partial-maneuver details.
 | Ship | Base | Atk | Agi | Hull | Shd | Actions |
 |---|---|---|---|---|---|---|
 | Kestrel Fighter | small | 3 | 2 | 4 | 2 | Focus, Lock, Barrel Roll |
-| Wasp Interceptor | small | 3 | 3 | 3 | 0 | Focus, Evade, Lock, Barrel Roll, Boost |
-| Bulwark Gunship | medium | 3 front / 2 rear | 1 | 7 | 3 | Focus, Lock, red Boost |
+| Wasp Interceptor | small | 3 | 3 | 3 | 0 | Focus, Evade, Lock, Barrel Roll → red Evade, Boost |
+| Javelin Interceptor | small | 2 | 3 | 2 | 2 | Focus, Evade, Lock, Barrel Roll, Boost → red Focus |
+| Anvil Bomber | small | 2 | 1 | 6 | 2 | Focus, Lock, red Barrel Roll, Reload |
+| Bulwark Gunship | medium | 3 front / 2 rear | 1 | 7 | 3 | Focus, Lock, Reinforce, red Boost |
+| Wayfarer Light Freighter | medium | 2 turret | 2 | 3 | 2 | Focus → Rotate, Lock → Rotate, Calculate, Jam, red Boost |
 
 Factions: Coalition (player) vs Syndicate (AI). Pilots and dials are in `content.ts`.
 
@@ -135,7 +144,7 @@ Next steps:
 - Personalities (aggressive, cautious, flanker).
 - Self-play for balance.
 
-Actions: repairs and jams come first; otherwise Focus, Evade or a Lock (on each enemy) is chosen by value with the exact odds (`bestToken` in `ai.ts`): how much it improves this round's best shot (a lock can make ordnance legal), how much damage it prevents from enemies that can still shoot, and, for a lock, part of its value next round (`TOKEN_WEIGHTS`). Against the old fixed order (focus first) it took 1,500 locks instead of none and fired ordnance 2.4× as often, with no change in win rate (145–147, 8 draws, over 300 mirrored games): positioning decides games far more than token choice.
+Actions: repairs and jams come first; otherwise Focus, Evade, Calculate, Reinforce, Reload or a Lock (on each enemy) is chosen by value with the exact odds (`bestToken` in `ai.ts`): how much it improves this round's best shot (a lock can make ordnance legal), how much damage it prevents from enemies that can still shoot, and, for a lock, part of its value next round (`TOKEN_WEIGHTS`). Against the old fixed order (focus first) it took 1,500 locks instead of none and fired ordnance 2.4× as often, with no change in win rate (145–147, 8 draws, over 300 mirrored games): positioning decides games far more than token choice.
 
 The AI already decides from `viewFor` (the redacted view), the same view a network client gets.
 

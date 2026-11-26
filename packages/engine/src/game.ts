@@ -7,7 +7,7 @@ import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, 
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
 import type {
-  ActionChoice, Command, Decision, Device, DropChoice, GameState, Obstacle, Player, PlayerId, ShipState,
+  ActionChoice, ActionType, Command, Decision, Device, DropChoice, GameState, GreenToken, Obstacle, Player, PlayerId, ShipState,
 } from './types';
 
 /** A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. */
@@ -51,7 +51,7 @@ export function createGame(setup: GameSetup): GameState {
         id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
-        stress: 0, focus: 0, evade: 0, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
+        stress: 0, focus: 0, evade: 0, calculate: 0, reinforce: null, disarmed: false, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
   }
@@ -161,6 +161,9 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
     if (!actionAllowed(sh, a.type) || (ionized && a.type !== 'focus')) continue;
     if (a.type === 'focus') opts.push({ type: 'focus' });
     if (a.type === 'evade') opts.push({ type: 'evade' });
+    if (a.type === 'calculate') opts.push({ type: 'calculate' });
+    if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
+    if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
     if (a.type === 'lock') {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
@@ -203,6 +206,37 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
   }
   if (!ionized) for (const card of repairableCards(sh)) opts.push({ type: 'repair', card });
   return opts;
+}
+
+/** Charges an upgrade starts the battle with (devices get the ship's bonus, e.g. Payload Expert). */
+export const startingCharges = (sh: ShipState, id: string) =>
+  (UPGRADES[id].charges ?? 0) + (UPGRADES[id].device ? statBonus(sh, 'deviceCharges') : 0);
+
+/** Missiles, torpedoes and devices the Reload action could recover a charge on (each listed once). */
+export function reloadable(sh: ShipState) {
+  const seen = new Set<string>();
+  return sh.upgrades.filter((u) => {
+    const def = UPGRADES[u.id];
+    const ordnance = (def.weapon && def.weapon.arc !== 'turret' && def.charges !== undefined) || def.device;
+    if (!ordnance || u.charges >= startingCharges(sh, u.id) || seen.has(u.id)) return false;
+    seen.add(u.id);
+    return true;
+  });
+}
+
+/** The action-bar entry for an action type, if the ship has one. */
+const actionDef = (sh: ShipState, type: ActionChoice['type']) => shipType(sh).actions.find((x) => x.type === type);
+
+/**
+ * The linked action a ship may perform after `done`, as a pending decision, or null. A linked action is
+ * allowed even if the first action left the ship stressed (a red first action), but not after an ion maneuver.
+ */
+function linkedDecision(s: GameState, sh: ShipState, done: ActionChoice): Decision | null {
+  const link = done.type === 'none' ? undefined : actionDef(sh, done.type)?.linked;
+  if (!link || sh.destroyed || !actionAllowed(sh, link.type)) return null;
+  const options = actionOptions(s, sh).filter((o) => o.type === link.type);
+  if (!options.length) return null;
+  return { kind: 'action', playerId: sh.owner, shipId: sh.id, options: [{ type: 'none' }, ...options], linked: { from: done.type as ActionType, red: !!link.red } };
 }
 
 /** Hide information a given player should not see (opponent dials, RNG state). */
@@ -254,8 +288,10 @@ export function apply(prev: GameState, cmd: Command): GameState {
     if (d.kind !== 'action' || d.playerId !== cmd.playerId) throw new Error('Not expecting an action');
     const legal = d.options.some((o) => JSON.stringify(o) === JSON.stringify(cmd.choice));
     if (!legal) throw new Error('Illegal action');
-    performAction(s, ship(s, d.shipId), cmd.choice);
-    s.pending = null;
+    const sh = ship(s, d.shipId);
+    performAction(s, sh, cmd.choice, d.linked ? d.linked.red : !!actionDef(sh, cmd.choice.type)?.red, !!d.linked);
+    s.pending = d.linked || d.ionized ? null : linkedDecision(s, sh, cmd.choice);
+    if (s.pending) return s;
     s.queueIndex++;
     continueActivation(s);
     return s;
@@ -445,7 +481,7 @@ function continueActivation(s: GameState) {
     if (canAct) {
       const options = actionOptions(s, sh, ionized);
       if (options.length > 1) {
-        s.pending = { kind: 'action', playerId: sh.owner, shipId: sh.id, options };
+        s.pending = { kind: 'action', playerId: sh.owner, shipId: sh.id, options, ...(ionized ? { ionized } : {}) };
         return;
       }
     }
@@ -497,32 +533,36 @@ export function jamTargets(s: GameState, sh: ShipState): ShipState[] {
 }
 
 /**
- * Jam: the target loses its Focus token, else its Evade token, else the lock it holds. With none of
- * those it takes a jam token instead (at most one), which cancels the next Focus or Evade it would gain.
+ * Jam: the target loses its Focus token, else Evade, Calculate, Reinforce, else the lock it holds. With none
+ * of those it takes a jam token instead (at most one), which cancels the next token it would gain.
  */
 function jam(s: GameState, from: ShipState, t: ShipState) {
-  let effect: 'focus' | 'evade' | 'lock' | 'jammed';
+  let effect: GreenToken | 'lock' | 'jammed';
   if (t.focus > 0) { t.focus--; effect = 'focus'; }
   else if (t.evade > 0) { t.evade--; effect = 'evade'; }
+  else if (t.calculate > 0) { t.calculate--; effect = 'calculate'; }
+  else if (t.reinforce) { t.reinforce = null; effect = 'reinforce'; }
   else if (t.lock) { t.lock = null; effect = 'lock'; }
   else { t.jam = 1; effect = 'jammed'; }
   s.log.push({ type: 'jam', shipId: from.id, targetId: t.id, effect });
 }
 
-function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
+/** `red`: the action costs a stress (a red action, or a red linked action). */
+function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolean, linked = false) {
   if (a.type === 'none') return;
-  const def = shipType(sh).actions.find((x) => x.type === a.type);
   if (a.type === 'lock') sh.lock = a.targetId;
   if (a.type === 'barrelRoll' || a.type === 'boost') { const from = sh.pose; sh.pose = a.to; triggerMines(s, sh, [from, a.to]); }
   if (a.type === 'rotateArc') sh.turretArc = a.to;
-  s.log.push({ type: 'action', shipId: sh.id, action: a });
-  if (a.type === 'focus' || a.type === 'evade') gainToken(s, sh, a.type);
+  if (a.type === 'reload') { const u = sh.upgrades.find((x) => x.id === a.upgrade)!; u.charges++; sh.disarmed = true; }
+  s.log.push({ type: 'action', shipId: sh.id, action: a, ...(linked ? { linked } : {}) });
+  if (a.type === 'focus' || a.type === 'evade' || a.type === 'calculate') gainToken(s, sh, a.type);
+  if (a.type === 'reinforce') gainToken(s, sh, 'reinforce', a.side);
   if (a.type === 'jam') jam(s, sh, s.ships.find((x) => x.id === a.targetId)!);
   if (a.type === 'repair') {
     discardCard(s, sh, a.card);
     s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
   }
-  if (def?.red) { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
+  if (red) { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
   if (hasCard(sh, 'woundedPilot')) {
     const [roll] = rollAttack(s, 1);
     const hurt = roll === 'hit' || roll === 'crit';
@@ -585,6 +625,9 @@ function endPhase(s: GameState) {
     if (!sh.destroyed) runTriggers(s, sh, 'endPhase');
     sh.focus = 0;
     sh.evade = 0;
+    sh.calculate = 0;
+    sh.reinforce = null;
+    sh.disarmed = false;
     sh.jam = 0;
   }
   s.engagementInitiative = null;

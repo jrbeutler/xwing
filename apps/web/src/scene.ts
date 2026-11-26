@@ -390,7 +390,13 @@ export class BattleScene {
   }
 
   updateLabel(v: ShipView, s: ShipState) {
-    const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : '', s.jam ? '<span class="jm" title="Jammed">⌁</span>' : ''].join('');
+    const tokens = [
+      s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '',
+      s.calculate ? `<span title="Calculate">▣${s.calculate > 1 ? s.calculate : ''}</span>` : '',
+      s.reinforce ? `<span class="rf" title="Reinforced (${s.reinforce})">${s.reinforce === 'front' ? '◓' : '◒'}</span>` : '',
+      s.lock ? '⌖' : '', s.jam ? '<span class="jm" title="Jammed">⌁</span>' : '',
+      s.disarmed ? '<span class="dis" title="Disarmed: reloading, cannot attack this round">⊘</span>' : '',
+    ].join('');
     v.label.element.querySelector('.info')!.innerHTML =
       `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +

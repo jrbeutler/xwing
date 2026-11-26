@@ -13,45 +13,51 @@ export const SHIP_TYPES: Record<string, ShipType> = {
   wasp: {
     id: 'wasp', name: 'Wasp Interceptor', size: 'small', class: 'fighter', cost: 17,
     primaries: [{ arc: 'front', attack: 3 }], agility: 3, hull: 3, shields: 0,
-    actions: [{ type: 'focus' }, { type: 'evade' }, { type: 'lock' }, { type: 'barrelRoll' }, { type: 'boost' }],
+    // Barrel roll → red Evade: dodge, then brace.
+    actions: [{ type: 'focus' }, { type: 'evade' }, { type: 'lock' }, { type: 'barrelRoll', linked: { type: 'evade', red: true } }, { type: 'boost' }],
     dial: parseDial('1TL:w 1TR:w 2TL:w 2BL:b 2S:b 2BR:b 2TR:w 3TL:w 3BL:w 3S:b 3BR:w 3TR:w 3RL:r 3RR:r 4S:b 5S:w 4K:r'),
     slots: ['modification'],
   },
   bulwark: {
     id: 'bulwark', name: 'Bulwark Gunship', size: 'medium', class: 'freighter', cost: 28,
     primaries: [{ arc: 'front', attack: 3 }, { arc: 'rear', attack: 2 }], agility: 1, hull: 7, shields: 3,
-    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'boost', red: true }],
+    // Reinforce: brace the front or rear half against attacks from that side.
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'reinforce' }, { type: 'boost', red: true }],
     dial: parseDial('0X:r 1TL:r 1BL:b 1S:b 1BR:b 1TR:r 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3BL:w 3S:w 3BR:w 4S:w 1RS:r 2SL:r 2SR:r'),
     slots: ['missile', 'turret', 'modification', 'modification'],
   },
   // Bomber class. Stats, actions and dial follow the X-Wing 2nd edition BTL-A4 Y-wing: tough (6 hull,
-  // 2 shields) but slow to turn, with a red barrel roll. Its Reload action, turret and bomb slots need
-  // mechanics the engine does not have yet (ordnance, turret arcs, devices), so they are left out.
+  // 2 shields) but slow to turn, with a red barrel roll and Reload (recover an ordnance or bomb charge,
+  // and hold fire that round).
   anvil: {
     id: 'anvil', name: 'Anvil Bomber', size: 'small', class: 'bomber', cost: 16,
     primaries: [{ arc: 'front', attack: 2 }], agility: 1, hull: 6, shields: 2,
-    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'barrelRoll', red: true }],
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'barrelRoll', red: true }, { type: 'reload' }],
     dial: parseDial('1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:w 3BR:w 3TR:r 4S:r 4K:r'),
     // Y-wing style: turret, ordnance and two device (bomb) slots.
     slots: ['turret', 'torpedo', 'missile', 'device', 'device', 'modification'],
   },
   // Light freighter. Stats and dial follow the X-Wing 2nd edition HWK-290, but on a medium base like the
   // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), it can Jam an
-  // enemy at range 1-2 in that arc, and it carries missiles, torpedoes, a turret and devices. The linked
-  // focus/lock→rotate actions are left out.
+  // enemy at range 1-2 in that arc, and it carries missiles, torpedoes, a turret and devices. Focus and Lock
+  // link to Rotate, and its sensors give it Calculate.
   wayfarer: {
     id: 'wayfarer', name: 'Wayfarer Light Freighter', size: 'medium', class: 'freighter', cost: 17,
     primaries: [{ arc: 'turret', attack: 2 }], agility: 2, hull: 3, shields: 2,
-    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'jam' }, { type: 'boost', red: true }],
+    actions: [
+      { type: 'focus', linked: { type: 'rotateArc' } }, { type: 'lock', linked: { type: 'rotateArc' } },
+      { type: 'calculate' }, { type: 'jam' }, { type: 'boost', red: true },
+    ],
     dial: parseDial('0X:r 1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:b 3BR:w 3TR:r 4S:w'),
     slots: ['missile', 'torpedo', 'turret', 'device', 'device', 'modification', 'modification'],
   },
   // Fast interceptor. Stats, actions and dial follow the X-Wing 2nd edition RZ-1 A-wing: fragile but very
   // agile (agility 3), white focus/evade/lock/barrel roll/boost, a blue-heavy dial with 5-straight and red loops.
+  // Boost → red Focus: dive in and line up the shot.
   javelin: {
     id: 'javelin', name: 'Javelin Interceptor', size: 'small', class: 'fighter', cost: 16,
     primaries: [{ arc: 'front', attack: 2 }], agility: 3, hull: 2, shields: 2,
-    actions: [{ type: 'focus' }, { type: 'evade' }, { type: 'lock' }, { type: 'barrelRoll' }, { type: 'boost' }],
+    actions: [{ type: 'focus' }, { type: 'evade' }, { type: 'lock' }, { type: 'barrelRoll' }, { type: 'boost', linked: { type: 'focus', red: true } }],
     dial: parseDial('1TL:w 1TR:w 2TL:b 2BL:b 2S:b 2BR:b 2TR:b 3SL:r 3TL:w 3BL:w 3S:b 3BR:w 3TR:w 3SR:r 4S:b 5S:b 5K:r'),
     slots: ['missile', 'modification'],
   },

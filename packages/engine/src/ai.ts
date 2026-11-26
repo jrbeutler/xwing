@@ -97,20 +97,24 @@ const bestShot = (s: GameState, a: ShipState) =>
 /**
  * Token weights. lockCarry: share of a lock's value counted for later rounds (it lasts until spent).
  * lockBase: rough value of a lock reroll on a typical shot, for an enemy the ship cannot shoot yet.
- * defense: weight of damage prevented against damage dealt. Mutable for experiments.
+ * defense: weight of damage prevented against damage dealt. reload: value of a recovered ordnance or bomb
+ * charge (paid for by not attacking this round). stress: cost of the stress a red linked action brings.
+ * Mutable for experiments.
  */
-export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1 };
+export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5 };
 
 /**
- * Focus, Evade or a Lock, chosen by what each token is worth, measured with the exact odds:
+ * Focus, Evade, Calculate, Reinforce, a Lock or a Reload, chosen by what each is worth, measured with the exact odds:
  *   attack: how much better this round's best shot gets (a lock can also make ordnance legal);
  *   defense: how much less damage the enemies that can still shoot this ship expect to deal
  *     (each enemy counted once, split across the targets it has);
  *   later: a lock outlasts the round (lockCarry of its value on that enemy), and replacing a lock
- *     gives up the old one.
+ *     gives up the old one; a reload is worth a charge but gives up this round's shot.
+ * Returns the best option worth more than `minValue` (a red linked action must pay for its stress).
  */
-export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[]): ActionChoice | undefined {
-  const tokens = options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'lock');
+export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[], minValue = 0): ActionChoice | undefined {
+  const kinds = ['focus', 'evade', 'lock', 'calculate', 'reinforce', 'reload'];
+  const tokens = options.filter((o) => kinds.includes(o.type));
   if (!tokens.length) return undefined;
   const ship = (id: string) => s.ships.find((x) => x.id === id)!;
   const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
@@ -134,13 +138,20 @@ export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[]):
   const oldLock = sh.lock && enemies.some((e) => e.id === sh.lock) ? sh.lock : null;
   const shotNow = bestShot(s, sh), hitNow = incoming(sh);
   const value = (o: ActionChoice) => {
-    const me: ShipState = o.type === 'focus' ? { ...sh, focus: sh.focus + 1 } : o.type === 'evade' ? { ...sh, evade: sh.evade + 1 } : { ...sh, lock: (o as { targetId: string }).targetId };
+    const me: ShipState =
+      o.type === 'focus' ? { ...sh, focus: sh.focus + 1 }
+      : o.type === 'evade' ? { ...sh, evade: sh.evade + 1 }
+      : o.type === 'calculate' ? { ...sh, calculate: sh.calculate + 1 }
+      : o.type === 'reinforce' ? { ...sh, reinforce: o.side }
+      : o.type === 'reload' ? { ...sh, disarmed: true }
+      : { ...sh, lock: (o as { targetId: string }).targetId };
     let v = bestShot(s, me) - shotNow + TOKEN_WEIGHTS.defense * (hitNow - incoming(me));
     if (o.type === 'lock') v += TOKEN_WEIGHTS.lockCarry * (lockGain(o.targetId) - (oldLock ? lockGain(oldLock) : 0));
+    if (o.type === 'reload') v += TOKEN_WEIGHTS.reload;
     return v;
   };
   const best = tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
-  return best.v > 0 ? best.o : undefined;
+  return best.v > minValue ? best.o : undefined;
 }
 
 /** Rotate the turret toward the closest enemy it could then shoot, if the current arc has none. */
@@ -205,6 +216,13 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     return { type: 'setDials', playerId, dials };
   }
 
+  if (d.kind === 'action' && d.linked) {
+    // A linked action: turn the turret if it has nothing to shoot, else a token worth its stress (if red).
+    const sh = s.ships.find((x) => x.id === d.shipId)!;
+    const choice = turretTurn(s, sh, d.options) ?? bestToken(s, sh, d.options, d.linked.red ? TOKEN_WEIGHTS.stress : 0);
+    return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
+  }
+
   if (d.kind === 'action') {
     const sh = s.ships.find((x) => x.id === d.shipId)!;
     const hasShot = legalTargets(s, sh).length > 0;
@@ -218,7 +236,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     const jamWorth = (o: ActionChoice) => {
       if (o.type !== 'jam') return 0;
       const t = s.ships.find((x) => x.id === o.targetId)!;
-      const tokens = t.focus + t.evade;
+      const tokens = t.focus + t.evade + t.calculate + (t.reinforce ? 1 : 0);
       return tokens ? tokens * 2 + t.evade + (shootable.has(t.id) ? 3 : 0) : 0;
     };
     const jam = [...d.options].sort((a, b) => jamWorth(b) - jamWorth(a)).find((o) => jamWorth(o) > 0);

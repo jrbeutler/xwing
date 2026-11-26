@@ -5,7 +5,7 @@
 // Dice effects (dice counts, rerolls, cancelling evades) are interpreted twice, by resolveAttack and by
 // attackOdds in combat.ts; both read them through the helpers below so they cannot drift apart.
 import { UPGRADES } from './content';
-import type { AttackCondition, Effect, GameState, ShipState, TriggerEvent, UpgradeState } from './types';
+import type { AttackCondition, Effect, GameState, GreenToken, ShipState, TriggerEvent, UpgradeState } from './types';
 
 /** An effect in play, with the upgrade it comes from (whose charges it uses). */
 export interface ActiveEffect<E extends Effect = Effect> { source: UpgradeState; effect: E }
@@ -70,14 +70,15 @@ export function diceDelta(dice: 'attack' | 'defense', facts: AttackFacts, attack
   return d;
 }
 
-/** Give a ship a Focus or Evade token, unless a jam token cancels it. */
-export function gainToken(s: GameState, sh: ShipState, kind: 'focus' | 'evade') {
+/** Give a ship a token (Reinforce: covering `side`), unless a jam token cancels it. */
+export function gainToken(s: GameState, sh: ShipState, kind: GreenToken, side: 'front' | 'rear' = 'front') {
   if (sh.jam > 0) {
     sh.jam--;
     s.log.push({ type: 'jamSpent', shipId: sh.id, lost: kind });
     return;
   }
-  sh[kind]++;
+  if (kind === 'reinforce') sh.reinforce = side;
+  else sh[kind]++;
 }
 
 /** Fire every effect on `sh` triggered by `on`, in upgrade order. */

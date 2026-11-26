@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, type ActionChoice, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
@@ -357,7 +357,7 @@ async function animate(e: GameEvent) {
   switch (e.type) {
     case 'phase':
       phaseEl.textContent = e.phase;
-      if (e.phase === 'end') for (const d of disp) { d.focus = 0; d.evade = 0; d.jam = 0; relabel(d.id); }
+      if (e.phase === 'end') for (const d of disp) { d.focus = 0; d.evade = 0; d.calculate = 0; d.reinforce = null; d.disarmed = false; d.jam = 0; relabel(d.id); }
       return;
     case 'roundStart':
       roundEl.textContent = `Round ${e.round}`;
@@ -394,9 +394,19 @@ async function animate(e: GameEvent) {
       if (d) {
         if (e.action.type === 'focus') d.focus++;
         if (e.action.type === 'evade') d.evade++;
+        if (e.action.type === 'calculate') d.calculate++;
+        if (e.action.type === 'reinforce') d.reinforce = e.action.side;
         if (e.action.type === 'lock') d.lock = e.action.targetId;
+        if (e.action.type === 'reload') {
+          const reload = e.action;
+          const u = d.upgrades.find((x) => x.id === reload.upgrade);
+          if (u) u.charges++;
+          d.disarmed = true;
+        }
         relabel(e.shipId);
       }
+      if (e.action.type === 'reinforce') await scene.floatText(e.shipId, `REINFORCE ${e.action.side.toUpperCase()}`, 'talent-float');
+      if (e.action.type === 'reload') await scene.floatText(e.shipId, `RELOAD ${UPGRADES[e.action.upgrade].name.toUpperCase()}`, 'talent-float');
       return;
     }
     case 'attack':
@@ -409,6 +419,8 @@ async function animate(e: GameEvent) {
       if (t) {
         if (e.effect === 'focus') t.focus = Math.max(0, t.focus - 1);
         else if (e.effect === 'evade') t.evade = Math.max(0, t.evade - 1);
+        else if (e.effect === 'calculate') t.calculate = Math.max(0, t.calculate - 1);
+        else if (e.effect === 'reinforce') t.reinforce = null;
         else if (e.effect === 'lock') t.lock = null;
         else t.jam = 1;
         relabel(e.targetId);
@@ -419,7 +431,13 @@ async function animate(e: GameEvent) {
     }
     case 'jamSpent': {
       const d = dispShip(e.shipId);
-      if (d) { d[e.lost] = Math.max(0, d[e.lost] - 1); d.jam = 0; relabel(e.shipId); }
+      // The engine never gave the token, but the action event already showed it: take it back.
+      if (d) {
+        if (e.lost === 'reinforce') d.reinforce = null;
+        else d[e.lost] = Math.max(0, d[e.lost] - 1);
+        d.jam = 0;
+        relabel(e.shipId);
+      }
       await scene.floatText(e.shipId, `JAMMED: NO ${e.lost.toUpperCase()}`, 'jam-float');
       return;
     }
@@ -601,6 +619,8 @@ async function showAttack(e: AttackEvent) {
     if (t === 'attacker:lock' && ad) ad.lock = null;
     if (t === 'defender:focus' && target) target.focus--;
     if (t === 'defender:evade' && target) target.evade--;
+    if (t === 'attacker:calculate' && ad) ad.calculate--;
+    if (t === 'defender:calculate' && target) target.calculate--;
     const used = upgradeUsed(t);
     if (used) {
       const [ship, id, upgrade] = used;
@@ -613,6 +633,7 @@ async function showAttack(e: AttackEvent) {
   }
   relabel(a.id);
   relabel(d.id);
+  if (e.reinforced) void scene.floatText(d.id, 'REINFORCED', 'talent-float');
   // Ordnance spends a charge; ion weapons leave ion tokens.
   if (e.weapon) { const u = ad?.upgrades.find((x) => x.id === e.weapon); if (u) u.charges--; }
   if (e.ion && target) {
@@ -677,11 +698,13 @@ function describe(e: GameEvent): string | null {
       if (e.partial) return `${nameHtml(e.shipId)} bumped ${e.bumped.map(nameHtml).join(', ')}`;
       return null;
     case 'stress': return e.delta > 0 ? `${nameHtml(e.shipId)} gains stress` : `${nameHtml(e.shipId)} clears stress`;
-    case 'action': return e.action.type === 'none' || e.action.type === 'jam' ? null : `${nameHtml(e.shipId)} performs ${actionText(e.action)}`;
+    case 'action': return e.action.type === 'none' || e.action.type === 'jam' ? null : `${nameHtml(e.shipId)} performs ${actionText(e.action)}${e.linked ? ' (linked)' : ''}`;
     case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
     case 'attack': {
       const o = attackOutcome(e);
       const talents = e.spent.map((t) => t.split(':')[1]).filter((t) => UPGRADES[t]).map((t) => UPGRADES[t].name);
+      if (e.spent.some((t) => t.endsWith(':calculate'))) talents.push('calculate');
+      if (e.reinforced) talents.push('reinforced: 1 result cancelled');
       // Tokens the dice policy kept on purpose: focus held for defense, a lock saved for later.
       const kept = (e.kept ?? []).map((t) => (t === 'attacker:focus' ? 'holds focus' : 'keeps lock'));
       return `${nameHtml(e.attackerId)} fires ${e.weapon ? `${UPGRADES[e.weapon].name} ` : ''}at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}${kept.length ? `; ${kept.join(', ')}` : ''}): ` +
@@ -715,18 +738,21 @@ function describe(e: GameEvent): string | null {
       return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (rolled ${h.roll.join(', ')})` : ''}`).join('; ');
     }
     case 'jam': {
-      const what = { focus: 'its Focus', evade: 'its Evade', lock: 'its lock', jammed: '' }[e.effect];
+      const what = { focus: 'its Focus', evade: 'its Evade', calculate: 'its Calculate', reinforce: 'its Reinforce', lock: 'its lock', jammed: '' }[e.effect];
       return e.effect === 'jammed'
         ? `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>jammed</b> (its next Focus or Evade is lost)`
         : `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>loses ${what}</b>`;
     }
-    case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost === 'focus' ? 'Focus' : 'Evade'} is lost`;
+    case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost[0].toUpperCase() + e.lost.slice(1)} is lost`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
     default: return null;
   }
 }
+
+const actionTypeName = (t: ActionType) =>
+  ({ barrelRoll: 'Barrel roll', rotateArc: 'Rotate', boost: 'Boost', focus: 'Focus', evade: 'Evade', lock: 'Lock', repair: 'Repair', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload' })[t];
 
 function actionText(a: ActionChoice): string {
   switch (a.type) {
@@ -739,6 +765,9 @@ function actionText(a: ActionChoice): string {
     case 'repair': return `Repair ${DAMAGE_CARDS[a.card].title}`;
     case 'rotateArc': return `Rotate turret to face ${a.to}`;
     case 'jam': return `Jam ${shipById(a.targetId).name}`;
+    case 'calculate': return 'Calculate';
+    case 'reinforce': return `Reinforce ${a.side}`;
+    case 'reload': return `Reload ${UPGRADES[a.upgrade].name}`;
   }
 }
 
@@ -786,7 +815,7 @@ function renderDecision() {
   }
   scene.setPlanned([]);
   scene.setMarkers([]);
-  if (d.kind === 'action') return renderAction(d.shipId, d.options);
+  if (d.kind === 'action') return renderAction(d.shipId, d.options, d.linked);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
@@ -1411,12 +1440,16 @@ const GREEN = 0x7cf0c5, RED = 0xff5a5a;
 /** How far (mm) the pointer may be from a barrel roll / boost spot and still snap. */
 const ACTION_SNAP = 45;
 
-function renderAction(shipId: string, options: ActionChoice[]) {
+/** `linked`: this is the linked action offered after another one (only its options, maybe red). */
+function renderAction(shipId: string, options: ActionChoice[], linked?: { from: ActionType; red: boolean }) {
   const s = shipById(shipId);
+  const linkNote = linked ? `Linked after ${actionTypeName(linked.from)}${linked.red ? ' (red: +1 stress)' : ''}` : '';
+  const red = linked?.red ? 'red' : undefined;
   const spots = options.filter((o): o is Spot => o.type === 'barrelRoll' || o.type === 'boost');
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
   const jams = options.filter((o): o is JamChoice => o.type === 'jam');
-  const simple = [...options.filter((o) => o.type === 'focus' || o.type === 'evade' || o.type === 'repair'), { type: 'none' } as ActionChoice];
+  const instant = (o: ActionChoice) => ['focus', 'evade', 'calculate', 'reinforce', 'reload', 'repair'].includes(o.type);
+  const simple = [...options.filter(instant), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
   /**
    * The targeted action picked from the ring (lock / barrel roll / boost), or null while the ring is
@@ -1462,8 +1495,22 @@ function renderAction(shipId: string, options: ActionChoice[]) {
     const narrow = (t: 'lock' | 'jam' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
       ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
     const items: RadialItem[] = [];
-    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: 'Focus: turn focus results into hits or evades', onClick: () => choose({ type: 'focus' }) });
-    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: 'Evade: add an evade result when defending', onClick: () => choose({ type: 'evade' }) });
+    const stress = linked?.red ? ' (red: +1 stress)' : '';
+    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: `Focus: turn focus results into hits or evades${stress}`, cls: red, onClick: () => choose({ type: 'focus' }) });
+    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: `Evade: add an evade result when defending${stress}`, cls: red, onClick: () => choose({ type: 'evade' }) });
+    if (has('calculate')) items.push({ icon: ICONS.calculate, label: 'Calc', title: `Calculate: change 1 focus result to a hit or evade, attacking or defending${stress}`, cls: red, onClick: () => choose({ type: 'calculate' }) });
+    for (const o of options) {
+      if (o.type !== 'reinforce') continue;
+      items.push({
+        icon: ICONS.reinforce, label: o.side === 'front' ? 'Reinf. fr.' : 'Reinf. rear',
+        title: `Reinforce ${o.side}: attacks from your ${o.side} half lose 1 of 2+ hits this round${stress}`, cls: red, onClick: () => choose(o),
+      });
+    }
+    for (const o of options) {
+      if (o.type !== 'reload') continue;
+      const u = UPGRADES[o.upgrade];
+      items.push({ icon: ICONS.reload, label: 'Reload', title: `Reload ${u.name}: recover 1 charge, but you cannot attack this round${stress}`, cls: red, onClick: () => choose(o) });
+    }
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
     if (jams.length) items.push(narrow('jam', ICONS.jam, 'Jam', 'Jam: strip an enemy\'s Focus, Evade or lock (range 1-2 in your arc); then click a ringed enemy'));
     if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
@@ -1474,8 +1521,8 @@ function renderAction(shipId: string, options: ActionChoice[]) {
       const c = DAMAGE_CARDS[o.card];
       items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
     }
-    items.push({ icon: ICONS.skip, label: 'Skip', title: 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
-    scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick an action' });
+    items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+    scene.showRadial(s.pose, items, { key: linked ? `linked|${linked.from}` : 'menu', caption: linked ? `${linkNote}: take it or skip` : 'Pick an action' });
   };
 
   const show = () => {
@@ -1496,11 +1543,11 @@ function renderAction(shipId: string, options: ActionChoice[]) {
       : only === 'lock' ? 'tap a ringed enemy to lock it' : only === 'jam' ? 'tap a ringed enemy to jam it' : 'pick from the ring around your ship';
     const btns: BarButton[] = only ? [{ label: 'Back', onClick: back }]
       : simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
-    if (cand && cand.type !== 'none' && cand.type !== 'focus' && cand.type !== 'evade') {
+    if (cand && cand.type !== 'none' && !instant(cand)) {
       const c = cand;
       btns.unshift({ label: 'Do it', cls: 'primary', onClick: () => choose(c) });
     }
-    setBar({ status: cand ? `${who}: ${actionText(cand)}` : `${who}: ${boardHint}`, buttons: btns });
+    setBar({ status: cand ? `${who}: ${actionText(cand)}` : `${who}: ${linked ? `${linkNote}, ` : ''}${boardHint}`, buttons: btns });
   };
   const pick = (p: P): ActionChoice | null => {
     const picked = scene.pickShip(p.clientX, p.clientY);
@@ -1528,13 +1575,15 @@ function renderAction(shipId: string, options: ActionChoice[]) {
   };
 
   const ring = [
-    'Pick from the ring around your ship: Focus and Evade act at once',
+    `Pick from the ring around your ship: ${['Focus', 'Evade', 'Calculate', 'Reinforce', 'Reload'].filter((n) => options.some((o) => o.type === n.toLowerCase())).join(', ') || 'instant actions'} act at once`,
     locks.length ? '<b style="color:#ffd166">Lock</b> then click a ringed enemy' : '',
     jams.length ? '<b style="color:#c58bff">Jam</b> then click a ringed enemy to strip its Focus, Evade or lock' : '',
     spots.some((o) => o.type === 'barrelRoll') ? '<b style="color:#7cf0c5">Roll</b> shows the barrel-roll spots' : '',
     spots.some((o) => o.type === 'boost') ? '<b style="color:#9be37c">Boost</b> shows the boost spots' : '',
   ].filter(Boolean);
-  detail.innerHTML = `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
+  detail.innerHTML = linked
+    ? `<h2>Linked action: ${s.name}</h2><p class="hint">${linkNote}. Take it from the ring, or skip.</p>${critList(s)}`
+    : `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
@@ -1866,6 +1915,9 @@ newGame();
 (window as unknown as { __xw: unknown }).__xw = {
   scene,
   get state() { return state; },
+  /** The player this device is acting for, and a way to send its commands (as the UI would). */
+  get me() { return me; },
+  send: (cmd: Command) => send(cmd),
   /** Input state, for diagnosing taps that do nothing. */
   get input() { return { busy, stage, mode: !!mode, multi, touches: [...touches], pointerDown, selected, compact }; },
   finalPose: (shipId: string, dialIndex: number) => {

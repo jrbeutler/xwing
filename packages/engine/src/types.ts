@@ -5,9 +5,13 @@ import type { DamageCardId } from './damage';
 export type PlayerId = string;
 /** Firing arcs by facing: primaries use front/rear; a turret's arc can face any of the four. */
 export type ArcName = 'front' | 'rear' | 'left' | 'right';
-export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam';
+export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam' | 'calculate' | 'reinforce' | 'reload';
 
-export interface ActionDef { type: ActionType; red?: boolean }
+/**
+ * An action on a ship's action bar. `linked`: after performing it, the ship may perform this second action
+ * (gaining a stress if it is red), even if the first action left it stressed.
+ */
+export interface ActionDef { type: ActionType; red?: boolean; linked?: { type: ActionType; red?: boolean } }
 
 /** Kinds of upgrade slot a ship can have (power-ups go in matching slots). */
 export type SlotType = 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device';
@@ -169,6 +173,12 @@ export interface ShipState {
   lock: string | null;
   /** Jam tokens: each cancels the next Focus or Evade token the ship would gain. Cleared in the End phase. */
   jam: number;
+  /** Calculate tokens: each changes 1 focus result to a hit (attacking) or an evade (defending). Cleared in the End phase. */
+  calculate: number;
+  /** Reinforce token: the half of the ship it covers, or null. Cleared in the End phase. */
+  reinforce: 'front' | 'rear' | null;
+  /** Disarmed (after a Reload): cannot attack this round. Cleared in the End phase. */
+  disarmed: boolean;
   /** Ion tokens: an ionized ship flies a white 1-straight instead of its dial. */
   ion: number;
   /** Which way the ship's turret arc faces (ships with a turret upgrade). */
@@ -195,7 +205,11 @@ export type ActionChoice =
   | { type: 'boost'; bearing: 'straight' | 'bankLeft' | 'bankRight'; to: Pose }
   | { type: 'repair'; card: DamageCardId }
   | { type: 'rotateArc'; to: ArcName }
-  | { type: 'jam'; targetId: string };
+  | { type: 'jam'; targetId: string }
+  | { type: 'calculate' }
+  | { type: 'reinforce'; side: 'front' | 'rear' }
+  /** Recover 1 charge on a missile, torpedo or device upgrade; the ship is disarmed for the round. */
+  | { type: 'reload'; upgrade: string };
 
 export interface TargetInfo {
   targetId: string;
@@ -212,9 +226,18 @@ export interface TargetInfo {
 
 export type Decision =
   | { kind: 'planning'; waitingOn: PlayerId[] }
-  | { kind: 'action'; playerId: PlayerId; shipId: string; options: ActionChoice[] }
+  | {
+      kind: 'action'; playerId: PlayerId; shipId: string; options: ActionChoice[];
+      /** This is the linked action offered after `from` (red: it costs a stress). */
+      linked?: { from: ActionType; red: boolean };
+      /** The ship flew an ion maneuver: Focus only, and no linked action. */
+      ionized?: boolean;
+    }
   | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[] }
   | { kind: 'system'; playerId: PlayerId; shipId: string; options: DropChoice[] };
+
+/** Tokens a ship gains from actions and loses in the End phase (jam takes them away). */
+export type GreenToken = 'focus' | 'evade' | 'calculate' | 'reinforce';
 
 export type AttackFace = 'hit' | 'crit' | 'focus' | 'blank';
 export type DefenseFace = 'evade' | 'focus' | 'blank';
@@ -225,7 +248,7 @@ export type GameEvent =
   | { type: 'dialRevealed'; shipId: string; maneuver: Maneuver }
   | { type: 'moved'; shipId: string; path: Pose[]; final: Pose; partial: boolean; bumped: string[]; obstacles: string[]; fled: boolean }
   | { type: 'stress'; shipId: string; delta: number }
-  | { type: 'action'; shipId: string; action: ActionChoice }
+  | { type: 'action'; shipId: string; action: ActionChoice; linked?: boolean }
   | { type: 'obstacleHit'; shipId: string; obstacleId: string; result: AttackFace }
   | {
       type: 'attack'; attackerId: string; defenderId: string; arc: ArcName; range: number; obstructed: boolean;
@@ -235,6 +258,8 @@ export type GameEvent =
       kept?: string[];
       /** Secondary weapon used (absent for the primary) and ion tokens it gave. */
       weapon?: string; ion?: number;
+      /** The defender's reinforce token cancelled 1 hit or crit. */
+      reinforced?: boolean;
     }
   | {
       /** A face-up damage card was dealt, triggered, or left the ship (repaired / discarded). */
@@ -245,9 +270,9 @@ export type GameEvent =
   /** An upgrade was used, spent or recovered; `focus` / `shields` say what it gave the ship (a jam may still cancel the focus). */
   | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered'; focus?: number; shields?: number }
   /** A jam landed: what the target lost (a token, its lock), or 'jammed' when it had nothing and took a jam token. */
-  | { type: 'jam'; shipId: string; targetId: string; effect: 'focus' | 'evade' | 'lock' | 'jammed' }
+  | { type: 'jam'; shipId: string; targetId: string; effect: GreenToken | 'lock' | 'jammed' }
   /** A jammed ship's jam token cancelled a token it was about to gain. */
-  | { type: 'jamSpent'; shipId: string; lost: 'focus' | 'evade' }
+  | { type: 'jamSpent'; shipId: string; lost: GreenToken }
   | { type: 'deviceDropped'; shipId: string; device: Device }
   | {
       type: 'deviceDetonated'; device: Device;
