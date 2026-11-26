@@ -25,6 +25,14 @@ export const ICONS = {
   mine: svg('<circle cx="12" cy="12" r="5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l2.8 2.8M16.2 16.2 19 19M19 5l-2.8 2.8M7.8 16.2 5 19"/>'),
   /** Jam: signal waves cut by a slash. */
   jam: svg('<path d="M5 17a9 9 0 0 1 0-10M8 14.5a5 5 0 0 1 0-5M19 7a9 9 0 0 1 0 10M16 9.5a5 5 0 0 1 0 5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><path d="M4 21 20 3"/>'),
+  /** Calculate: a small processor chip. */
+  calculate: svg('<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>'),
+  /** Reinforce: a shield, one half filled by the side it covers. */
+  reinforce: svg('<path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3z"/><path d="M12 3v18"/>'),
+  /** Reload: a circular arrow around a round. */
+  reload: svg('<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/><circle cx="12" cy="12" r="2.5"/>'),
+  /** Coordinate: a signal from one ship to another. */
+  coordinate: svg('<circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="7" r="2.5"/><path d="M8 15 16 9"/><path d="M5 10a6 6 0 0 1 5-5M19 14a6 6 0 0 1-5 5"/>'),
   /** Back to the menu. */
   back: svg('<path d="M10 6 4 12l6 6"/><path d="M4 12h11a5 5 0 0 1 0 10h-2"/>'),
 } as const;

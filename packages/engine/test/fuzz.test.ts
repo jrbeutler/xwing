@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { createGame, apply, aiDecide, legalDial, buildAiSquad, autoDeploy, generateAsteroids, viewFor } from '../src/index';
+import { createGame, apply, aiDecide, legalDial, buildAiSquad, autoDeploy, generateObstacles, viewFor } from '../src/index';
 import type { GameState, Command } from '../src/types';
 
 const pick = <T,>(xs: T[], r: () => number) => xs[Math.floor(r() * xs.length)];
@@ -20,7 +20,7 @@ it('random human vs AI never gets an offered move refused', () => {
         p1: p1.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: near[i] })),
         p2: p2.ships.map((s, i) => ({ pilotId: s.pilotId, upgrades: s.upgrades, pose: far[i] })),
       },
-      obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
+      obstacles: generateObstacles({ rng: seed ^ 0x5eed }),
     });
     games++;
     for (let n = 0; n < 3000 && g.phase !== 'over'; n++) {

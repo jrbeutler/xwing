@@ -15,6 +15,12 @@ h2 { margin: 0 0 8px; font-size: 15px; } h3 { margin: 0; font-size: 14px; }
 .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
 .card.done { border-color: var(--accent); }
 .stats { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+.stats.acts { margin-top: -6px; }
+.sq-ship .ability { font-size: 12px; margin: -4px 0 8px; color: var(--text, #dfe8f5); }
+.sq-ship .ability b { color: #ffd166; font-weight: 600; margin-right: 4px; }
+.sq-ship .ab { color: #ffd166; }
+.card .ability b { color: #ffd166; font-weight: 600; }
+.stats .red-act { color: #ff7a7a; }
 .dial { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
 .dial button, .opt { background: #0d1526; border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 6px 4px; cursor: pointer; font-size: 13px; }
 .dial button:hover, .opt:hover { border-color: var(--accent); }
@@ -260,6 +266,7 @@ option.dear { color: #ff9a9a; }
   font-size: 12px; padding: 3px 8px; border-radius: 10px; background: rgba(5, 8, 15, .85); border: 1px solid var(--line); }
 
 .rad-item.repair { color: #ffb08a; }
+.rad-item.red { color: #ff7a7a; border-color: #ff5a5a; }
 .rad-item.repair .rad-label { font-size: 8px; letter-spacing: 0; max-width: 46px; overflow: hidden; }
 
 /* ---------- gunsight: target readout in the gunner's view ---------- */
@@ -296,6 +303,8 @@ html.compact #log.open { cursor: pointer; }
 /* Jam: purple, like its ring */
 .jam-float { color: #c58bff; }
 .label .jm { color: #c58bff; }
+.label .rf { color: #8fd3ff; }
+.label .dis { color: #ff8a5a; }
 
 /* ---------------- end of battle ---------------- */
 #finale { --tone: #ffd166; --glow: rgba(255, 209, 102, .55); position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;

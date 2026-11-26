@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { attackDiceFor, defenseDiceFor, legalTargets, resolveAttack } from '../src/combat';
 import { apply, createGame, isIonized } from '../src/game';
-import type { GameState, ShipState, TargetInfo } from '../src/types';
+import type { GameState, TargetInfo } from '../src/types';
 
 /** Attacker (Tobin, Kestrel) facing a Wasp `gap` mm ahead, base edge to base edge. */
 const lineUp = (gap: number, upgrades: string[], defender = 'syl-ketch') => createGame({

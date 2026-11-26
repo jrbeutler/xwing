@@ -1,12 +1,13 @@
 import {
   Polygon, Pose, basePolygon, clipHalfPlane, fwd, leftOf, polygonDistance, scale, segmentIntersectsPolygon, toWorld, vec,
 } from './geometry';
-import { BASE_SIZE, RANGE_BAND, TEMPLATE_WIDTH } from './maneuvers';
+import { BASE_SIZE, TEMPLATE_WIDTH } from './maneuvers';
 import { nextInt } from './rng';
 import {
   attackDicePenalty, canModifyAttack, defenseDicePenalty, discardCard, drawDamageCard, hasCard,
 } from './damage';
 import { SHIP_TYPES, UPGRADES } from './content';
+import { AttackFacts, attackEffects, diceDelta, diceSources, payFor, runTriggers } from './effects';
 import type { ArcName, AttackFace, DefenseFace, GameState, Obstacle, ShipState, TargetInfo } from './types';
 
 /**
@@ -100,6 +101,7 @@ export function rangeBetween(a: ShipState, b: ShipState): number | null {
 
 export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[] {
   const out: TargetInfo[] = [];
+  if (attacker.disarmed) return out; // reloaded this round
   for (const t of state.ships) {
     if (t.owner === attacker.owner || t.destroyed) continue;
     let best: TargetInfo | null = null;
@@ -142,36 +144,58 @@ export function rollDefense(state: GameState, n: number): DefenseFace[] {
   return Array.from({ length: Math.max(0, n) }, () => DEFENSE_DIE[nextInt(state, 8)]);
 }
 
-/**
- * Resolve one primary attack. Dice modification is automated for now with a sensible
- * policy (lock reroll → focus → defender focus → evade token); interactive mods come later.
- */
-/** Attack dice for a shot: weapon value, +1 at range 1 (primary only), minus damage-card penalties. Shared with attackOdds. */
-export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack' | 'range' | 'weapon'>) =>
-  Math.max(0, t.attack + (isPrimary(t) ? RANGE_RULES.attack[t.range] ?? 0 : 0) - attackDicePenalty(attacker));
-/**
- * Defense dice: agility, +1 at range 3 (primary only), +1 obstructed, +1 Stealth Coating, -1 for an Outmaneuver attacker,
- * minus damage-card penalties. Shared with attackOdds.
- */
-export const defenseDiceFor = (defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed' | 'weapon'> & { arc?: ArcName; turret?: boolean }, attacker?: ShipState) =>
-  Math.max(0, shipType(defender).agility + (isPrimary(t) ? RANGE_RULES.defense[t.range] ?? 0 : 0) + (t.obstructed ? 1 : 0) + (stealthActive(defender) ? 1 : 0)
-    - defenseDicePenalty(defender) - (attacker && outmaneuvers(attacker, defender, t.arc, t.weapon, t.turret) ? 1 : 0));
+/** The attack-shaped part of a target entry: what the dice and effect rules need to know about a shot. */
+export type ShotInfo = Pick<TargetInfo, 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'attack' | 'arc' | 'weapon' | 'turret' | 'bullseye'>>;
 
 /**
- * The talent that lets the attacker reroll 1 attack die on this attack, if any: Marksman (primary, bullseye),
- * Steady Gunner (through a turret arc), Ordnance Specialist (a missile or torpedo). Used first, before a lock.
+ * The facts effect conditions test (AttackCondition). `outsideDefenderArcs` is only measured if an effect
+ * asks for it, and is false when the attacker is not known.
  */
-export function rerollTalent(attacker: ShipState, t: Pick<TargetInfo, 'weapon'> & { bullseye?: boolean; turret?: boolean }): string | undefined {
-  const weapon = weaponOf(t);
-  const turret = !!t.turret || weapon?.arc === 'turret';
-  if (isPrimary(t) && !turret && t.bullseye && upgradeOf(attacker, 'marksman')) return 'marksman';
-  if (turret && upgradeOf(attacker, 'steady-gunner')) return 'steady-gunner';
-  if (!isPrimary(t) && !turret && upgradeOf(attacker, 'ordnance-specialist')) return 'ordnance-specialist';
-  return undefined;
+export function attackFacts(t: ShotInfo, defender: ShipState, attacker?: ShipState): AttackFacts {
+  const turret = !!t.turret || weaponOf(t)?.arc === 'turret';
+  let outside: boolean | undefined;
+  return {
+    primary: isPrimary(t), turret, bullseye: !!t.bullseye, frontArc: (t.arc ?? 'front') === 'front' && !turret,
+    range: t.range, defenderStressed: defender.stress > 0,
+    get outsideDefenderArcs() { return (outside ??= !!attacker && !inFiringArc(defender, attacker)); },
+  };
 }
 
-/** Stealth Coating: an extra defense die while its charge lasts (lost on first damage). */
-const stealthActive = (sh: ShipState) => sh.upgrades.some((u) => u.id === 'stealth-coating' && u.charges > 0);
+/**
+ * Attack dice for a shot: weapon value, range modifier (primary only), effects (when the defender is known),
+ * minus damage-card penalties. Shared with attackOdds.
+ */
+export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack'> & ShotInfo, defender?: ShipState) =>
+  Math.max(0, t.attack + (isPrimary(t) ? RANGE_RULES.attack[t.range] ?? 0 : 0) - attackDicePenalty(attacker)
+    + (defender ? diceDelta('attack', attackFacts(t, defender, attacker), attacker, defender) : 0));
+/**
+ * Defense dice: agility, range modifier (primary only), +1 obstructed, both ships' dice effects (Stealth Coating,
+ * an Outmaneuver attacker), minus damage-card penalties. Without `attacker`, only the defender's effects count.
+ * Shared with attackOdds.
+ */
+export const defenseDiceFor = (defender: ShipState, t: ShotInfo, attacker?: ShipState) =>
+  Math.max(0, shipType(defender).agility + (isPrimary(t) ? RANGE_RULES.defense[t.range] ?? 0 : 0) + (t.obstructed ? 1 : 0)
+    + diceDelta('defense', attackFacts(t, defender, attacker), attacker, defender) - defenseDicePenalty(defender));
+
+/**
+ * Whether the defender's reinforce token covers this attacker: some of the attacker's base lies in the
+ * defender's full front (or rear) arc, the half of the table in front of (or behind) its centre line.
+ */
+export function reinforceCovers(defender: ShipState, attacker?: ShipState): boolean {
+  if (!defender.reinforce || !attacker) return false;
+  const dir = fwd(defender.pose.h + (defender.reinforce === 'rear' ? Math.PI : 0));
+  return clipHalfPlane(shipPolygon(attacker), vec(defender.pose.x, defender.pose.y), dir).length >= 3;
+}
+
+/**
+ * Calculate on attack or defense changes one focus result. It is used instead of the focus token when one
+ * result is all there is (or all that is needed), keeping the focus token, and alone when focus is not spent.
+ */
+const useCalculate = (focusResults: number, needOne: boolean, focusWouldBeSpent: boolean) =>
+  focusResults > 0 && (focusResults === 1 || needOne || !focusWouldBeSpent);
+
+/** Attack dice to reroll for the attacker's reroll effects (e.g. Marksman), before any lock. */
+const rerollCount = (fx: { effect: { dice: number } }[]) => fx.reduce((a, x) => a + x.effect.dice, 0);
 
 /** A fitted upgrade, optionally only if it still has a charge. */
 export const upgradeOf = (sh: ShipState, id: string, needCharge = false) =>
@@ -181,22 +205,63 @@ export const upgradeOf = (sh: ShipState, id: string, needCharge = false) =>
 export const inFiringArc = (from: ShipState, target: ShipState) =>
   shipType(from).primaries.some((w) => clipToArc(from.pose, w.arc === 'turret' ? from.turretArc : w.arc, shipPolygon(target)).length >= 3);
 
-/** Outmaneuver: a front-arc attack from outside the defender's firing arcs costs it a defense die (turret shots are not front-arc attacks). */
-const outmaneuvers = (attacker: ShipState, defender: ShipState, arc: ArcName = 'front', weapon?: string, turret = false) =>
-  arc === 'front' && !turret && !(weapon && UPGRADES[weapon]?.weapon?.arc === 'turret') && !!upgradeOf(attacker, 'outmaneuver') && !inFiringArc(defender, attacker);
+/**
+ * Whether `ship` can still be shot this round: an enemy that has not fired yet in this Engagement phase
+ * (or any enemy, outside it) has it in a primary arc and in range. Measured against `ship` as passed, so
+ * a planning ghost works too.
+ */
+export function stillThreatened(state: GameState, ship: ShipState): boolean {
+  if (!state.ships || state.phase === 'over' || state.phase === 'end') return false;
+  const waiting = state.phase === 'engagement' ? new Set(state.queue.slice(state.queueIndex + 1)) : null;
+  return state.ships.some((e) => e.owner !== ship.owner && !e.removed && !e.disarmed && e.id !== ship.id && (!waiting || waiting.has(e.id)) &&
+    shipType(e).primaries.some((w) => measureArc(state, e, ship, w.arc === 'turret' ? e.turretArc : w.arc as ArcName) !== null));
+}
 
 /**
- * Resolve one primary attack. Dice modification is automated with a fixed policy that attackOdds mirrors:
- *   attack: talent reroll (Marksman, Steady Gunner, Ordnance Specialist) → lock reroll → focus;
- *   defense: Elusive reroll → focus → evade token → attacker's Crack Shot (bullseye).
+ * How the automatic dice policy treats the attacker's tokens on one attack, worked out before the roll.
+ *   holdFocus: an enemy can still shoot the attacker this round and it has defense dice, so focus is kept
+ *     for defense unless it turns 2+ dice or could make the shot lethal (and lock/talent rerolls take focus
+ *     results too, as if there were no focus token).
+ *   saveLock: a primary attack by a ship with lock-only ordnance still loaded keeps the lock (for next
+ *     round's torpedo) unless the reroll covers 2+ dice.
+ *   health / defenseDice: no token is spent once hits + crits reach health + defenseDice, the most the
+ *     defender could cancel and still die (not for ion weapons, whose extra hits become ion tokens).
+ */
+export interface SpendPlan { holdFocus: boolean; saveLock: boolean; health: number; defenseDice: number; capped: boolean }
+export function spendPlan(state: GameState | undefined, attacker: ShipState, defender: ShipState, t: Pick<TargetInfo, 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'weapon' | 'arc' | 'turret'>>): SpendPlan {
+  const primary = isPrimary(t);
+  return {
+    holdFocus: attacker.focus > 0 && shipType(attacker).agility - defenseDicePenalty(attacker) > 0 && !!state && stillThreatened(state, attacker),
+    saveLock: primary && attacker.upgrades.some((u) => UPGRADES[u.id].weapon?.requires === 'lock' && hasAmmo(u)),
+    health: defender.shields + defender.hull,
+    defenseDice: defenseDiceFor(defender, t, attacker),
+    capped: weaponOf(t)?.effect !== 'ion',
+  };
+}
+/** Hits + crits already enough that no token can add anything. */
+const enough = (p: SpendPlan, total: number) => p.capped && total >= p.health + p.defenseDice;
+/** Focus results when focus is being held: spend it anyway if it turns 2+ dice or could finish the defender. */
+const spendHeldFocus = (p: SpendPlan, total: number, focus: number) => focus >= 2 || total + focus >= p.health;
+
+/**
+ * Resolve one primary attack. Dice modification is automated with a policy that attackOdds mirrors:
+ *   attack: reroll effects (Marksman, Steady Gunner, Ordnance Specialist) → lock reroll → focus, each skipped
+ *     when it cannot help (see SpendPlan: overkill, holding focus for defense, saving a lock for ordnance);
+ *   attack: Calculate changes 1 focus result instead of spending focus when that is enough (see useCalculate);
+ *   defense: reroll effects (Elusive) → calculate or focus → evade token → the attacker's cancel-evade effects (Crack Shot);
+ *   then a reinforce token covering the attacker cancels 1 of 2+ uncancelled results.
  * A die is rerolled at most once. Blinded Pilot stops all of the attacker's modifications.
+ * `kept` lists tokens the policy chose not to spend although they could have changed a die.
  */
 export function resolveAttack(state: GameState, attacker: ShipState, defender: ShipState, t: TargetInfo) {
-  const spent: string[] = [];
-  const attackDice = attackDiceFor(attacker, t);
+  const spent: string[] = [], kept: string[] = [];
+  const plan = spendPlan(state, attacker, defender, t);
+  const attackDice = attackDiceFor(attacker, t, defender);
   const defenseDice = defenseDiceFor(defender, t, attacker);
   const mods = canModifyAttack(attacker);
   const primary = isPrimary(t), weapon = weaponOf(t);
+  const facts = attackFacts(t, defender, attacker);
+  const diceBy = diceSources(facts, attacker, defender); // before the roll: damage can switch effects off (Stealth Coating)
   if (!primary) { const u = upgradeOf(attacker, t.weapon!); if (u && UPGRADES[u.id].charges !== undefined) u.charges--; }
 
   const attackRoll = rollAttack(state, attackDice);
@@ -204,23 +269,43 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const rerolled = new Set<number>();
   const reroll = (idx: number[]) => { const rr = rollAttack(state, idx.length); idx.forEach((i, k) => { atk[i] = rr[k]; rerolled.add(i); }); };
   const canFocus = attacker.focus > 0;
-  const talent = mods ? rerollTalent(attacker, t) : undefined;
-  if (talent) {
-    const i = [atk.indexOf('blank'), canFocus ? -1 : atk.indexOf('focus')].find((x) => x >= 0);
-    if (i !== undefined) { reroll([i]); spent.push(`attacker:${talent}`); }
+  // Focus results are worth rerolling when there is no focus token, or it is being held for defense.
+  const focusRerollable = !canFocus || plan.holdFocus;
+  const landed = () => atk.filter((f) => f === 'hit' || f === 'crit').length;
+  const rerollFx = mods ? attackEffects(attacker, 'rerollAttack', facts) : [];
+  if (rerollFx.length && !enough(plan, landed())) {
+    // Blanks first, then focus results (when focus is not being spent on them).
+    const n = rerollCount(rerollFx);
+    const blanks = atk.flatMap((f, i) => (f === 'blank' ? [i] : []));
+    const focus = focusRerollable ? atk.flatMap((f, i) => (f === 'focus' ? [i] : [])) : [];
+    const idx = [...blanks, ...focus].slice(0, n);
+    if (idx.length) {
+      reroll(idx);
+      for (const fx of rerollFx) { payFor(fx); spent.push(`attacker:${fx.source.id}`); }
+    }
   }
   if (mods && attacker.lock === defender.id) {
-    const idx = atk.map((f, i) => (!rerolled.has(i) && (f === 'blank' || (!canFocus && f === 'focus')) ? i : -1)).filter((i) => i >= 0);
-    if (idx.length) {
+    const idx = atk.map((f, i) => (!rerolled.has(i) && (f === 'blank' || (focusRerollable && f === 'focus')) ? i : -1)).filter((i) => i >= 0);
+    if (idx.length && (enough(plan, landed()) || (plan.saveLock && idx.length <= 1))) kept.push('attacker:lock');
+    else if (idx.length) {
       reroll(idx);
       attacker.lock = null;
       spent.push('attacker:lock');
     }
   }
-  if (mods && canFocus && atk.includes('focus')) {
-    atk.forEach((f, i) => { if (f === 'focus') atk[i] = 'hit'; });
-    attacker.focus--;
-    spent.push('attacker:focus');
+  const focusDice = atk.filter((f) => f === 'focus').length;
+  const wantFocus = mods && canFocus && focusDice > 0 && !enough(plan, landed()) && (!plan.holdFocus || spendHeldFocus(plan, landed(), focusDice));
+  if (mods && attacker.calculate > 0 && !enough(plan, landed()) && useCalculate(focusDice, false, wantFocus)) {
+    atk[atk.indexOf('focus')] = 'hit';
+    attacker.calculate--;
+    spent.push('attacker:calculate');
+  } else if (mods && canFocus && focusDice) {
+    if (enough(plan, landed()) || (plan.holdFocus && !spendHeldFocus(plan, landed(), focusDice))) kept.push('attacker:focus');
+    else {
+      atk.forEach((f, i) => { if (f === 'focus') atk[i] = 'hit'; });
+      attacker.focus--;
+      spent.push('attacker:focus');
+    }
   }
   if (weapon?.effect === 'proton') { const i = atk.indexOf('hit'); if (i >= 0) atk[i] = 'crit'; }
   const hits = atk.filter((f) => f === 'hit').length;
@@ -229,19 +314,29 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const defenseRoll = rollDefense(state, defenseDice);
   const def = [...defenseRoll];
   const evades = () => def.filter((f) => f === 'evade').length;
-  const elusive = upgradeOf(defender, 'elusive', true);
-  if (elusive && evades() < hits + crits) {
-    const i = [def.indexOf('blank'), defender.focus > 0 ? -1 : def.indexOf('focus')].find((x) => x >= 0);
-    if (i !== undefined) {
-      def[i] = rollDefense(state, 1)[0];
-      elusive.charges--;
-      spent.push('defender:elusive');
+  const defRerollFx = attackEffects(defender, 'rerollDefense', facts);
+  if (defRerollFx.length && evades() < hits + crits) {
+    // Blanks first, then focus results if there is no focus token to turn them.
+    const blanks = def.flatMap((f, i) => (f === 'blank' ? [i] : []));
+    const focus = defender.focus > 0 ? [] : def.flatMap((f, i) => (f === 'focus' ? [i] : []));
+    const idx = [...blanks, ...focus].slice(0, rerollCount(defRerollFx));
+    if (idx.length) {
+      const rr = rollDefense(state, idx.length);
+      idx.forEach((i, k) => { def[i] = rr[k]; });
+      for (const fx of defRerollFx) { payFor(fx); spent.push(`defender:${fx.source.id}`); }
     }
   }
-  if (defender.focus > 0 && evades() < hits + crits && def.includes('focus')) {
-    def.forEach((f, i) => { if (f === 'focus') def[i] = 'evade'; });
-    defender.focus--;
-    spent.push('defender:focus');
+  const defFocus = def.filter((f) => f === 'focus').length;
+  if (evades() < hits + crits && defFocus > 0) {
+    if (defender.calculate > 0 && useCalculate(defFocus, hits + crits - evades() === 1, defender.focus > 0)) {
+      def[def.indexOf('focus')] = 'evade';
+      defender.calculate--;
+      spent.push('defender:calculate');
+    } else if (defender.focus > 0) {
+      def.forEach((f, i) => { if (f === 'focus') def[i] = 'evade'; });
+      defender.focus--;
+      spent.push('defender:focus');
+    }
   }
   if (defender.evade > 0 && evades() < hits + crits) {
     const i = def.findIndex((f) => f !== 'evade');
@@ -251,18 +346,22 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
       spent.push('defender:evade');
     }
   }
-  const crack = mods && primary && t.bullseye ? upgradeOf(attacker, 'crack-shot', true) : undefined;
-  if (crack && evades() > 0 && evades() <= hits + crits) {
-    def[def.indexOf('evade')] = 'blank';
-    crack.charges--;
-    spent.push('attacker:crack-shot');
+  for (const fx of mods ? attackEffects(attacker, 'cancelEvade', facts) : []) {
+    if (evades() > 0 && evades() <= hits + crits) {
+      def[def.indexOf('evade')] = 'blank';
+      payFor(fx);
+      spent.push(`attacker:${fx.source.id}`);
+    }
   }
 
   let e = evades();
-  const finalHits = Math.max(0, hits - e);
+  let finalHits = Math.max(0, hits - e);
   e = Math.max(0, e - hits);
-  const finalCrits = Math.max(0, crits - e);
-  let ion = 0, dmg;
+  let finalCrits = Math.max(0, crits - e);
+  // Reinforce: against an attacker in the covered half, 2+ uncancelled results lose one (a hit first).
+  const reinforced = finalHits + finalCrits >= 2 && reinforceCovers(defender, attacker);
+  if (reinforced) { if (finalHits > 0) finalHits--; else finalCrits--; }
+  let ion = 0, dmg: { shieldDamage: number; hullDamage: number };
   if (weapon?.effect === 'ion' && finalHits + finalCrits > 0) {
     // Ion: one hit's worth of damage; everything else that got through becomes ion tokens.
     ion = finalHits + finalCrits - 1;
@@ -271,8 +370,12 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   } else {
     dmg = sufferDamage(state, defender, finalHits, finalCrits);
   }
+  // Effects that follow a hit (e.g. a pilot ability that stresses the defender).
+  if (dmg.shieldDamage + dmg.hullDamage > 0) runTriggers(state, attacker, 'attackHit', { facts, defender });
   return {
-    attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, hits: finalHits, crits: finalCrits, ...dmg,
+    attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, ...(kept.length ? { kept } : {}), ...(reinforced ? { reinforced } : {}),
+    ...(diceBy.length ? { diceBy } : {}),
+    hits: finalHits, crits: finalCrits, ...dmg,
     ...(primary ? {} : { weapon: t.weapon, ion }),
   };
 }
@@ -321,16 +424,18 @@ const ATK_FACES: AttackFace[] = ['hit', 'crit', 'focus', 'blank'];
 const DEF_FACES: DefenseFace[] = ['evade', 'focus', 'blank'];
 
 /**
- * Exact odds for `resolveAttack(attacker, defender, t)` given both ships' current tokens and upgrades.
+ * Exact odds for `resolveAttack(state, attacker, defender, t)` given both ships' current tokens and upgrades.
  * Mirrors its automated policy step by step; keep the two in sync (the test suite checks them against
  * each other by simulation).
  */
 export function attackOdds(
   attacker: ShipState, defender: ShipState,
-  t: Pick<TargetInfo, 'attack' | 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'bullseye' | 'arc' | 'weapon'>>,
+  t: Pick<TargetInfo, 'attack' | 'range' | 'obstructed'> & Partial<Pick<TargetInfo, 'bullseye' | 'arc' | 'weapon' | 'turret'>>,
+  /** The game, so the odds know whether focus will be held for defense (pass it whenever you have it). */
+  state?: GameState,
 ): AttackOdds {
   // Note: dice odds only. Damage-card cascades (Direct Hit!, Fuel Leak...) are not included in `dist`.
-  const attackDice = attackDiceFor(attacker, t);
+  const attackDice = attackDiceFor(attacker, t, defender);
   const defenseDice = defenseDiceFor(defender, t, attacker);
   const mods = canModifyAttack(attacker);
   const aw = faceWeights(ATTACK_DIE, ATK_FACES), dw = faceWeights(DEFENSE_DIE, DEF_FACES);
@@ -341,52 +446,68 @@ export function attackOdds(
   const landed = new Map<number, number>();
   const add = (k: number, p: number) => landed.set(k, (landed.get(k) ?? 0) + p);
   const canFocus = attacker.focus > 0;
-  const primary = isPrimary(t), weapon = weaponOf(t);
-  const useTalentReroll = mods && !!rerollTalent(attacker, t); // any 1-die reroll talent
+  const weapon = weaponOf(t);
+  const plan = spendPlan(state, attacker, defender, t);
+  const focusRerollable = !canFocus || plan.holdFocus;
+  const facts = attackFacts(t, defender, attacker);
+  const talentRerolls = mods ? rerollCount(attackEffects(attacker, 'rerollAttack', facts)) : 0;
   const useLock = mods && attacker.lock === defender.id;
   const useFocus = mods && canFocus;
+  const useCalc = mods && attacker.calculate > 0;
   const [HIT, CRIT, FOCUS, BLANK] = [0, 1, 2, 3];
   for (const roll of faceCounts(attackDice, aw)) {
     // Dice split into not-yet-rerolled (u) and rerolled (r) counts, by face.
     let states = [{ u: roll.counts, r: [0, 0, 0, 0], p: roll.p }];
-    if (useTalentReroll) {
-      const src = roll.counts[BLANK] > 0 ? BLANK : !canFocus && roll.counts[FOCUS] > 0 ? FOCUS : -1;
-      if (src >= 0) {
-        const u = roll.counts.map((x, i) => (i === src ? x - 1 : x));
-        states = reroll(1, aw).map((o) => ({ u, r: o.counts, p: roll.p * o.p }));
+    if (talentRerolls && !enough(plan, roll.counts[HIT] + roll.counts[CRIT])) {
+      const b = Math.min(roll.counts[BLANK], talentRerolls);
+      const f = focusRerollable ? Math.min(roll.counts[FOCUS], talentRerolls - b) : 0;
+      if (b + f > 0) {
+        const u = roll.counts.map((x, i) => (i === BLANK ? x - b : i === FOCUS ? x - f : x));
+        states = reroll(b + f, aw).map((o) => ({ u, r: o.counts, p: roll.p * o.p }));
       }
     }
     for (const st of states) {
-      const n = useLock ? st.u[BLANK] + (canFocus ? 0 : st.u[FOCUS]) : 0;
-      const kept = n ? st.u.map((x, i) => (i === BLANK || (!canFocus && i === FOCUS) ? 0 : x)) : st.u;
+      let n = useLock ? st.u[BLANK] + (focusRerollable ? st.u[FOCUS] : 0) : 0;
+      if (enough(plan, st.u[HIT] + st.u[CRIT] + st.r[HIT] + st.r[CRIT]) || (plan.saveLock && n <= 1)) n = 0;
+      const kept = n ? st.u.map((x, i) => (i === BLANK || (focusRerollable && i === FOCUS) ? 0 : x)) : st.u;
       for (const o of reroll(n, aw)) {
         const f = plus(plus(kept, st.r), o.counts);
-        add(f[HIT] + f[CRIT] + (useFocus ? f[FOCUS] : 0), st.p * o.p);
+        const total = f[HIT] + f[CRIT], fd = f[FOCUS];
+        const spendFocus = useFocus && fd > 0 && !enough(plan, total) && (!plan.holdFocus || spendHeldFocus(plan, total, fd));
+        const calc = useCalc && !enough(plan, total) && useCalculate(fd, false, spendFocus);
+        add(total + (calc ? 1 : spendFocus ? fd : 0), st.p * o.p);
       }
     }
   }
 
   // Defense against each attack total.
   const [EVADE, DFOCUS, DBLANK] = [0, 1, 2];
-  const elusive = !!upgradeOf(defender, 'elusive', true);
-  const crack = mods && primary && !!t.bullseye && !!upgradeOf(attacker, 'crack-shot', true);
+  const defRerolls = rerollCount(attackEffects(defender, 'rerollDefense', facts));
+  const cancels = mods ? attackEffects(attacker, 'cancelEvade', facts).length : 0;
+  const reinforced = reinforceCovers(defender, attacker);
   const dist: number[] = Array(attackDice + 1).fill(0);
   for (const [total, pa] of landed) {
     for (const roll of faceCounts(defenseDice, dw)) {
       let states = [{ c: roll.counts, p: roll.p }];
-      if (elusive && roll.counts[EVADE] < total) {
-        const src = roll.counts[DBLANK] > 0 ? DBLANK : defender.focus === 0 && roll.counts[DFOCUS] > 0 ? DFOCUS : -1;
-        if (src >= 0) {
-          const kept = roll.counts.map((x, i) => (i === src ? x - 1 : x));
-          states = reroll(1, dw).map((o) => ({ c: plus(kept, o.counts), p: roll.p * o.p }));
+      if (defRerolls && roll.counts[EVADE] < total) {
+        const b = Math.min(roll.counts[DBLANK], defRerolls);
+        const f = defender.focus === 0 ? Math.min(roll.counts[DFOCUS], defRerolls - b) : 0;
+        if (b + f > 0) {
+          const kept = roll.counts.map((x, i) => (i === DBLANK ? x - b : i === DFOCUS ? x - f : x));
+          states = reroll(b + f, dw).map((o) => ({ c: plus(kept, o.counts), p: roll.p * o.p }));
         }
       }
       for (const st of states) {
         let e = st.c[EVADE];
-        if (defender.focus > 0 && e < total && st.c[DFOCUS] > 0) e += st.c[DFOCUS];
+        const fd = st.c[DFOCUS];
+        if (e < total && fd > 0) {
+          if (defender.calculate > 0 && useCalculate(fd, total - e === 1, defender.focus > 0)) e += 1;
+          else if (defender.focus > 0) e += fd;
+        }
         if (defender.evade > 0 && e < total && e < defenseDice) e += 1;
-        if (crack && e > 0 && e <= total) e -= 1;
-        dist[Math.max(0, total - e)] += pa * st.p;
+        for (let k = 0; k < cancels; k++) if (e > 0 && e <= total) e -= 1;
+        const left = Math.max(0, total - e);
+        dist[reinforced && left >= 2 ? left - 1 : left] += pa * st.p;
       }
     }
   }
@@ -425,11 +546,7 @@ export function sufferDamage(s: GameState, ship: ShipState, hits: number, crits:
   };
   for (let i = 0; i < hits; i++) one(false);
   for (let i = 0; i < crits; i++) one(true);
-  const stealth = ship.upgrades.find((u) => u.id === 'stealth-coating' && u.charges > 0);
-  if (stealth && shieldDamage + hullDamage > 0) {
-    stealth.charges = 0;
-    s.log.push({ type: 'upgrade', shipId: ship.id, upgrade: stealth.id, what: 'spent' });
-  }
+  if (shieldDamage + hullDamage > 0) runTriggers(s, ship, 'damaged');
   return { shieldDamage, hullDamage };
 }
 

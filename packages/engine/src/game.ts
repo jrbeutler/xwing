@@ -1,12 +1,13 @@
 import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
-import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
+import { OBSTACLE_RULES, PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { gainToken, recoverRecurringCharges, runTriggers, statBonus } from './effects';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
 import type {
-  ActionChoice, Command, Decision, Device, DropChoice, GameState, Obstacle, Player, PlayerId, ShipState,
+  ActionChoice, ActionType, Command, Decision, Device, DropChoice, GameState, GreenToken, Obstacle, ObstacleKind, Player, PlayerId, ShipState,
 } from './types';
 
 /** A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. */
@@ -31,9 +32,9 @@ export function createGame(setup: GameSetup): GameState {
     version: 1, rng: setup.seed | 0, round: 0, maxRounds: setup.maxRounds ?? 12, phase: 'planning',
     players: setup.players, firstPlayer: setup.players[0].id, ships: [], obstacles: setup.obstacles ?? [],
     queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null, devices: [],
-    // Shuffled from its own seed so the dice sequence is unchanged by the deck.
-    damageDeck: newDamageDeck({ rng: (setup.seed ^ 0xdec4) | 0 }), damageDiscard: [],
+    damageDeck: [], damageDiscard: [],
   };
+  state.damageDeck = newDamageDeck(state); // shuffled with the game's own RNG
   const fielded = new Map<string, number>(); // generic pilots flown more than once get numbered
   for (const p of setup.players) {
     setup.squads[p.id].forEach((e, i) => {
@@ -41,7 +42,7 @@ export function createGame(setup: GameSetup): GameState {
       const t = SHIP_TYPES[hullOf(e)];
       // Signature talents come with the pilot; they take talent slots ahead of bought upgrades.
       const ups = allUpgrades({ ...e, upgrades: e.upgrades ?? [] }).map((id) => UPGRADES[id]);
-      const payload = ups.some((u) => u.id === 'payload-expert') ? 1 : 0;
+      const payload = statBonus(ups.map((u) => u.id), 'deviceCharges');
       const hull = t.hull + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
       const shields = t.shields + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
       const n = (fielded.get(pilot.id) ?? 0) + 1;
@@ -50,7 +51,8 @@ export function createGame(setup: GameSetup): GameState {
         id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
-        stress: 0, focus: 0, evade: 0, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
+        ability: pilot.ability ? { id: pilot.id, charges: pilot.ability.charges ?? 0 } : null,
+        stress: 0, focus: 0, evade: 0, calculate: 0, reinforce: null, disarmed: false, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
   }
@@ -58,27 +60,42 @@ export function createGame(setup: GameSetup): GameState {
   return state;
 }
 
-/** Random convex asteroids in the middle of the board, kept apart from each other. */
-export function generateAsteroids(seedState: { rng: number }, count = 5): Obstacle[] {
-  const out: Obstacle[] = [];
-  let tries = 0;
-  while (out.length < count && tries++ < 500) {
-    const cx = 200 + nextFloat(seedState) * (BOARD_SIZE - 400);
-    const cy = 250 + nextFloat(seedState) * (BOARD_SIZE - 500);
-    const r = 28 + nextFloat(seedState) * 22;
-    const pts = Array.from({ length: 8 }, (_, i) => {
-      const a = (i / 8) * Math.PI * 2 + nextFloat(seedState) * 0.5;
-      const rr = r * (0.75 + nextFloat(seedState) * 0.35);
-      return vec(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
-    });
-    const poly = convexHull(pts);
-    const tooClose = out.some((o) => {
-      const c = o.polygon.reduce((a, p) => ({ x: a.x + p.x / o.polygon.length, y: a.y + p.y / o.polygon.length }), { x: 0, y: 0 });
-      return Math.hypot(c.x - cx, c.y - cy) < 150;
-    });
-    if (!tooClose) out.push({ id: `rock-${out.length}`, kind: 'asteroid', polygon: poly });
+/** How many obstacles of each kind a random board gets (generateObstacles). */
+export const DEFAULT_OBSTACLE_MIX: Record<ObstacleKind, number> = { asteroid: 3, debris: 2, gas: 1 };
+
+/**
+ * A random board: `mix` obstacles of each kind in the middle of the table, kept apart from each other.
+ * Asteroids are rocky blobs, debris fields long and thin, gas clouds big and round. Same seed, same board.
+ */
+export function generateObstacles(seedState: { rng: number }, mix: Partial<Record<ObstacleKind, number>> = DEFAULT_OBSTACLE_MIX): Obstacle[] {
+  const shape: Record<ObstacleKind, { r: [number, number]; stretch: [number, number]; points: number; jag: number }> = {
+    asteroid: { r: [28, 50], stretch: [1, 1], points: 8, jag: 0.35 },
+    debris: { r: [45, 65], stretch: [0.35, 0.5], points: 10, jag: 0.25 },
+    gas: { r: [50, 70], stretch: [0.8, 1], points: 12, jag: 0.15 },
+  };
+  const order = (Object.keys(mix) as ObstacleKind[]).flatMap((k) => Array<ObstacleKind>(mix[k] ?? 0).fill(k));
+  const out: (Obstacle & { c: { x: number; y: number }; r: number })[] = [];
+  for (const kind of order) {
+    const sh = shape[kind];
+    for (let tries = 0; tries < 300; tries++) {
+      const r = sh.r[0] + nextFloat(seedState) * (sh.r[1] - sh.r[0]);
+      const cx = 160 + nextFloat(seedState) * (BOARD_SIZE - 320);
+      const cy = 230 + nextFloat(seedState) * (BOARD_SIZE - 460);
+      const stretch = sh.stretch[0] + nextFloat(seedState) * (sh.stretch[1] - sh.stretch[0]);
+      const turn = nextFloat(seedState) * Math.PI;
+      const pts = Array.from({ length: sh.points }, (_, i) => {
+        const a = (i / sh.points) * Math.PI * 2 + nextFloat(seedState) * 0.4;
+        const rr = r * (1 - sh.jag / 2 + nextFloat(seedState) * sh.jag);
+        const lx = Math.cos(a) * rr, ly = Math.sin(a) * rr * stretch;
+        return vec(cx + lx * Math.cos(turn) - ly * Math.sin(turn), cy + lx * Math.sin(turn) + ly * Math.cos(turn));
+      });
+      // Keep a ship's width (and then some) between obstacles so there is always a way through.
+      if (out.some((o) => Math.hypot(o.c.x - cx, o.c.y - cy) < o.r + r + 70)) continue;
+      out.push({ id: `${kind}-${out.length}`, kind, polygon: convexHull(pts), c: { x: cx, y: cy }, r });
+      break;
+    }
   }
-  return out;
+  return out.map(({ id, kind, polygon }) => ({ id, kind, polygon }));
 }
 
 // ---------------------------------------------------------------------------
@@ -153,13 +170,20 @@ function downsample<T>(xs: T[], n: number): T[] {
   return Array.from({ length: n }, (_, i) => xs[Math.round((i / (n - 1)) * (xs.length - 1))]);
 }
 
-/** `ionized`: the ship just flew an ion maneuver, which leaves it only the Focus action. */
-export function actionOptions(s: GameState, sh: ShipState, ionized = false): ActionChoice[] {
+/**
+ * `ionized`: the ship just flew an ion maneuver, which leaves it only the Focus action.
+ * `coordinated`: it is acting because another ship coordinated it, so it cannot coordinate in turn.
+ */
+export function actionOptions(s: GameState, sh: ShipState, ionized = false, coordinated = false): ActionChoice[] {
   const opts: ActionChoice[] = [{ type: 'none' }];
   for (const a of shipType(sh).actions) {
     if (!actionAllowed(sh, a.type) || (ionized && a.type !== 'focus')) continue;
     if (a.type === 'focus') opts.push({ type: 'focus' });
     if (a.type === 'evade') opts.push({ type: 'evade' });
+    if (a.type === 'calculate') opts.push({ type: 'calculate' });
+    if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
+    if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
+    if (a.type === 'coordinate' && !coordinated) for (const t of coordinateTargets(s, sh)) opts.push({ type: 'coordinate', targetId: t.id });
     if (a.type === 'lock') {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
@@ -202,6 +226,59 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
   }
   if (!ionized) for (const card of repairableCards(sh)) opts.push({ type: 'repair', card });
   return opts;
+}
+
+/** Charges an upgrade starts the battle with (devices get the ship's bonus, e.g. Payload Expert). */
+export const startingCharges = (sh: ShipState, id: string) =>
+  (UPGRADES[id].charges ?? 0) + (UPGRADES[id].device ? statBonus(sh, 'deviceCharges') : 0);
+
+/** Missiles, torpedoes and devices the Reload action could recover a charge on (each listed once). */
+export function reloadable(sh: ShipState) {
+  const seen = new Set<string>();
+  return sh.upgrades.filter((u) => {
+    const def = UPGRADES[u.id];
+    const ordnance = (def.weapon && def.weapon.arc !== 'turret' && def.charges !== undefined) || def.device;
+    if (!ordnance || u.charges >= startingCharges(sh, u.id) || seen.has(u.id)) return false;
+    seen.add(u.id);
+    return true;
+  });
+}
+
+/** The action-bar entry for an action type, if the ship has one. */
+const actionDef = (sh: ShipState, type: ActionChoice['type']) => shipType(sh).actions.find((x) => x.type === type);
+
+/**
+ * The linked action a ship may perform after `done`, as a pending decision, or null. A linked action is
+ * allowed even if the first action left the ship stressed (a red first action), but not after an ion maneuver.
+ */
+function linkedDecision(s: GameState, sh: ShipState, done: ActionChoice): Extract<Decision, { kind: 'action' }> | null {
+  // Coordinate hands the turn to the coordinated ship instead; it has no link of its own.
+  const link = done.type === 'none' || done.type === 'coordinate' ? undefined : actionDef(sh, done.type)?.linked;
+  if (!link || sh.destroyed || !actionAllowed(sh, link.type)) return null;
+  const options = actionOptions(s, sh).filter((o) => o.type === link.type);
+  if (!options.length) return null;
+  return { kind: 'action', playerId: sh.owner, shipId: sh.id, options: [{ type: 'none' }, ...options], linked: { from: done.type as ActionType, red: !!link.red } };
+}
+
+/** Range limit of Coordinate. */
+export const COORDINATE_RANGE = 2;
+
+/** The actions a coordinated ship may take: what it could do now, except Coordinate (no chains). */
+export const coordinatedOptions = (s: GameState, t: ShipState) => actionOptions(s, t, isIonized(t), true);
+
+/** Friendly ships at range 0-2 that could act if coordinated: not stressed, and with an action to take. */
+export function coordinateTargets(s: GameState, sh: ShipState): ShipState[] {
+  return activeShips(s).filter((t) => {
+    if (t.owner !== sh.owner || t.id === sh.id || t.stress > 0) return false;
+    const r = rangeBetween(sh, t);
+    return r !== null && r <= COORDINATE_RANGE && coordinatedOptions(s, t).length > 1;
+  });
+}
+
+/** The decision for a ship coordinated by `by`: its options (plus none). */
+function coordinateDecision(s: GameState, t: ShipState, by: ShipState): Decision {
+  const ionized = isIonized(t);
+  return { kind: 'action', playerId: t.owner, shipId: t.id, options: coordinatedOptions(s, t), coordinated: { by: by.id }, ...(ionized ? { ionized } : {}) };
 }
 
 /** Hide information a given player should not see (opponent dials, RNG state). */
@@ -253,8 +330,15 @@ export function apply(prev: GameState, cmd: Command): GameState {
     if (d.kind !== 'action' || d.playerId !== cmd.playerId) throw new Error('Not expecting an action');
     const legal = d.options.some((o) => JSON.stringify(o) === JSON.stringify(cmd.choice));
     if (!legal) throw new Error('Illegal action');
-    performAction(s, ship(s, d.shipId), cmd.choice);
-    s.pending = null;
+    const sh = ship(s, d.shipId);
+    performAction(s, sh, cmd.choice, d.linked ? d.linked.red : !!actionDef(sh, cmd.choice.type)?.red, !!d.linked, d.coordinated?.by);
+    // What comes next before the activation moves on: the linked action (a coordinated ship gets its link
+    // too), or the ship this one just coordinated. Coordinated ships cannot coordinate again.
+    const link = d.linked || d.ionized ? null : linkedDecision(s, sh, cmd.choice);
+    let next: Decision | null = link && d.coordinated ? { ...link, coordinated: d.coordinated } : link;
+    if (!next && cmd.choice.type === 'coordinate') next = coordinateDecision(s, ship(s, cmd.choice.targetId), sh);
+    s.pending = next;
+    if (s.pending) return s;
     s.queueIndex++;
     continueActivation(s);
     return s;
@@ -430,21 +514,17 @@ function continueActivation(s: GameState) {
       s.queueIndex++;
       continue;
     }
-    for (const oid of mv.obstacles) {
-      const [face] = rollAttack(s, 1);
-      s.log.push({ type: 'obstacleHit', shipId: sh.id, obstacleId: oid, result: face });
-      if (face === 'hit') sufferDamage(s, sh, 1, 0);
-      if (face === 'crit') sufferDamage(s, sh, 0, 1);
-    }
+    for (const oid of mv.obstacles) obstacleContact(s, sh, s.obstacles.find((o) => o.id === oid)!);
     afterManeuver(s, sh, m, mv.obstacles.length > 0, ionized);
     triggerMines(s, sh, [...mv.path, mv.final]);
     if (sh.hull <= 0 || sh.destroyed) { destroy(s, sh); s.queueIndex++; continue; }
 
-    const canAct = !mv.partial && mv.obstacles.length === 0 && sh.stress === 0;
+    const skip = mv.obstacles.some((oid) => OBSTACLE_RULES[s.obstacles.find((o) => o.id === oid)!.kind].skipAction);
+    const canAct = !mv.partial && !skip && sh.stress === 0;
     if (canAct) {
       const options = actionOptions(s, sh, ionized);
       if (options.length > 1) {
-        s.pending = { kind: 'action', playerId: sh.owner, shipId: sh.id, options };
+        s.pending = { kind: 'action', playerId: sh.owner, shipId: sh.id, options, ...(ionized ? { ionized } : {}) };
         return;
       }
     }
@@ -455,17 +535,27 @@ function continueActivation(s: GameState) {
   beginEngagement(s);
 }
 
-/** Talents that reward fully executing a red maneuver. */
+/**
+ * A ship moved through or onto an obstacle: stress first, then 1 attack die and what it deals (OBSTACLE_RULES).
+ * Damage cards it deals are logged after the obstacle event.
+ */
+function obstacleContact(s: GameState, sh: ShipState, o: Obstacle) {
+  const rule = OBSTACLE_RULES[o.kind];
+  if (rule.stress) sh.stress += rule.stress;
+  const [face] = rollAttack(s, 1);
+  const ev: Extract<GameState['log'][number], { type: 'obstacleHit' }> = {
+    type: 'obstacleHit', shipId: sh.id, obstacleId: o.id, kind: o.kind, result: face, shieldDamage: 0, hullDamage: 0,
+    ...(rule.stress ? { stress: rule.stress } : {}),
+  };
+  s.log.push(ev);
+  const hit = rule.hitOn.includes(face) ? 1 : 0, crit = rule.critOn.includes(face) ? 1 : 0;
+  if (hit || crit) Object.assign(ev, sufferDamage(s, sh, hit, crit));
+  if (rule.ionOn.includes(face)) { sh.ion++; ev.ion = 1; }
+}
+
+/** Effects that reward fully executing a red maneuver (Elusive, Hotshot). */
 function afterRedManeuver(s: GameState, sh: ShipState) {
-  const elusive = upgradeOf(sh, 'elusive');
-  if (elusive && elusive.charges < (UPGRADES.elusive.charges ?? 1)) {
-    elusive.charges++;
-    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'elusive', what: 'recovered' });
-  }
-  if (upgradeOf(sh, 'hotshot')) {
-    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'hotshot', what: 'used' });
-    gainToken(s, sh, 'focus');
-  }
+  runTriggers(s, sh, 'redManeuverExecuted');
 }
 
 /** Damage cards that react to the maneuver a ship just flew. */
@@ -493,7 +583,7 @@ export const BUMP_STRESS = 1;
 
 /** Range limit of the Jam action (inside one of the jammer's firing arcs). Signal Jammer adds 1. */
 export const JAM_RANGE = 2;
-export const jamRange = (sh: ShipState) => JAM_RANGE + (upgradeOf(sh, 'signal-jammer') ? 1 : 0);
+export const jamRange = (sh: ShipState) => JAM_RANGE + statBonus(sh, 'jamRange');
 
 /** Enemies this ship could jam: at range 1-2 (1-3 with Signal Jammer) inside any of its firing arcs, turret included. */
 export function jamTargets(s: GameState, sh: ShipState): ShipState[] {
@@ -503,43 +593,38 @@ export function jamTargets(s: GameState, sh: ShipState): ShipState[] {
   }));
 }
 
-/** Give a ship a Focus or Evade token, unless a jam token cancels it. */
-function gainToken(s: GameState, sh: ShipState, kind: 'focus' | 'evade') {
-  if (sh.jam > 0) {
-    sh.jam--;
-    s.log.push({ type: 'jamSpent', shipId: sh.id, lost: kind });
-    return;
-  }
-  sh[kind]++;
-}
-
 /**
- * Jam: the target loses its Focus token, else its Evade token, else the lock it holds. With none of
- * those it takes a jam token instead (at most one), which cancels the next Focus or Evade it would gain.
+ * Jam: the target loses its Focus token, else Evade, Calculate, Reinforce, else the lock it holds. With none
+ * of those it takes a jam token instead (at most one), which cancels the next token it would gain.
  */
 function jam(s: GameState, from: ShipState, t: ShipState) {
-  let effect: 'focus' | 'evade' | 'lock' | 'jammed';
+  let effect: GreenToken | 'lock' | 'jammed';
   if (t.focus > 0) { t.focus--; effect = 'focus'; }
   else if (t.evade > 0) { t.evade--; effect = 'evade'; }
+  else if (t.calculate > 0) { t.calculate--; effect = 'calculate'; }
+  else if (t.reinforce) { t.reinforce = null; effect = 'reinforce'; }
   else if (t.lock) { t.lock = null; effect = 'lock'; }
   else { t.jam = 1; effect = 'jammed'; }
   s.log.push({ type: 'jam', shipId: from.id, targetId: t.id, effect });
 }
 
-function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
+/** `red`: the action costs a stress (a red action, or a red linked action). */
+function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolean, linked = false, coordinatedBy?: string) {
   if (a.type === 'none') return;
-  const def = shipType(sh).actions.find((x) => x.type === a.type);
   if (a.type === 'lock') sh.lock = a.targetId;
   if (a.type === 'barrelRoll' || a.type === 'boost') { const from = sh.pose; sh.pose = a.to; triggerMines(s, sh, [from, a.to]); }
   if (a.type === 'rotateArc') sh.turretArc = a.to;
-  s.log.push({ type: 'action', shipId: sh.id, action: a });
-  if (a.type === 'focus' || a.type === 'evade') gainToken(s, sh, a.type);
+  if (a.type === 'reload') { const u = sh.upgrades.find((x) => x.id === a.upgrade)!; u.charges++; sh.disarmed = true; }
+  s.log.push({ type: 'action', shipId: sh.id, action: a, ...(linked ? { linked } : {}), ...(coordinatedBy ? { coordinatedBy } : {}) });
+  if (a.type === 'focus' || a.type === 'evade' || a.type === 'calculate') gainToken(s, sh, a.type);
+  if (a.type === 'reinforce') gainToken(s, sh, 'reinforce', a.side);
   if (a.type === 'jam') jam(s, sh, s.ships.find((x) => x.id === a.targetId)!);
   if (a.type === 'repair') {
     discardCard(s, sh, a.card);
     s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
   }
-  if (def?.red) { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
+  if (red) { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
+  runTriggers(s, sh, 'actionPerformed', { action: a.type });
   if (hasCard(sh, 'woundedPilot')) {
     const [roll] = rollAttack(s, 1);
     const hurt = roll === 'hit' || roll === 'crit';
@@ -599,14 +684,12 @@ function endPhase(s: GameState) {
   s.log.push({ type: 'phase', phase: 'end' });
   for (const sh of s.ships) {
     if (sh.destroyed) sh.removed = true;
-    const dc = !sh.destroyed && sh.shields < sh.maxShields ? upgradeOf(sh, 'damage-control', true) : undefined;
-    if (dc) {
-      dc.charges--;
-      sh.shields++;
-      s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'damage-control', what: 'used' });
-    }
+    if (!sh.destroyed) { runTriggers(s, sh, 'endPhase'); recoverRecurringCharges(s, sh); }
     sh.focus = 0;
     sh.evade = 0;
+    sh.calculate = 0;
+    sh.reinforce = null;
+    sh.disarmed = false;
     sh.jam = 0;
   }
   s.engagementInitiative = null;
@@ -634,9 +717,9 @@ export function pendingFor(s: GameState, playerId: PlayerId): Decision | null {
   return d.playerId === playerId ? d : null;
 }
 
-/** A standard skirmish: the two placeholder squads facing each other across asteroids. */
+/** A standard skirmish: the two placeholder squads facing each other across a random board. */
 export function quickSkirmish(seed: number): GameState {
-  const rocks = generateAsteroids({ rng: seed ^ 0x5eed }, 5);
+  const obstacles = generateObstacles({ rng: seed ^ 0x5eed });
   const h1 = Math.PI / 2, h2 = -Math.PI / 2;
   return createGame({
     seed,
@@ -658,6 +741,6 @@ export function quickSkirmish(seed: number): GameState {
         { pilotId: 'grunt-seven', pose: { x: 694, y: 844, h: h2 } },
       ],
     },
-    obstacles: rocks,
+    obstacles,
   });
 }

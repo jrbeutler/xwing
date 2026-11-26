@@ -9,7 +9,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
-import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
+import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildDebris, buildGasCloud, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
 import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState, RANGE_RULES } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
@@ -247,7 +247,8 @@ export class BattleScene {
     this.obstacleGroup.clear();
     obstacles.forEach((o, i) => {
       const poly = o.polygon.map((p) => { const v = toV3(p.x, p.y); return { x: v.x, z: v.z }; });
-      this.obstacleGroup.add(buildAsteroid(poly, i * 7.31 + 1.7));
+      const seed = i * 7.31 + 1.7;
+      this.obstacleGroup.add(o.kind === 'debris' ? buildDebris(poly, seed) : o.kind === 'gas' ? buildGasCloud(poly, seed) : buildAsteroid(poly, seed));
     });
   }
 
@@ -390,7 +391,13 @@ export class BattleScene {
   }
 
   updateLabel(v: ShipView, s: ShipState) {
-    const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : '', s.jam ? '<span class="jm" title="Jammed">⌁</span>' : ''].join('');
+    const tokens = [
+      s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '',
+      s.calculate ? `<span title="Calculate">▣${s.calculate > 1 ? s.calculate : ''}</span>` : '',
+      s.reinforce ? `<span class="rf" title="Reinforced (${s.reinforce})">${s.reinforce === 'front' ? '◓' : '◒'}</span>` : '',
+      s.lock ? '⌖' : '', s.jam ? '<span class="jm" title="Jammed">⌁</span>' : '',
+      s.disarmed ? '<span class="dis" title="Disarmed: reloading, cannot attack this round">⊘</span>' : '',
+    ].join('');
     v.label.element.querySelector('.info')!.innerHTML =
       `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +

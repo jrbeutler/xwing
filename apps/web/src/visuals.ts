@@ -271,6 +271,88 @@ export function buildAsteroid(poly: { x: number; z: number }[], seed: number): T
   return g;
 }
 
+/** Faint outline of an obstacle's true footprint, in its hazard colour. */
+function footprint(poly: { x: number; z: number }[], color: number, opacity = 0.45) {
+  return new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(poly.map((p) => new THREE.Vector3(p.x, 0.5, p.z))),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity }),
+  );
+}
+const insidePoly = (poly: { x: number; z: number }[], x: number, z: number) => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+};
+/** Small deterministic random numbers from a seed (so a board looks the same every time it is drawn). */
+const seeded = (seed: number) => { let t = Math.floor(seed * 9973) | 0; return () => ((t = (t * 1103515245 + 12345) | 0) >>> 8) / 16777216; };
+
+/** Debris field: a scatter of tumbling hull plates and girders inside the footprint. */
+export function buildDebris(poly: { x: number; z: number }[], seed: number): THREE.Group {
+  const rnd = seeded(seed);
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+  const g = new THREE.Group();
+  const plate = new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.55, metalness: 0.7, flatShading: true });
+  const burnt = new THREE.MeshStandardMaterial({ color: 0x2c2a29, roughness: 0.9, metalness: 0.3, flatShading: true });
+  const glow = new THREE.MeshBasicMaterial({ color: 0xff9a4a });
+  const area = (x1 - x0) * (z1 - z0);
+  const n = Math.round(THREE.MathUtils.clamp(area / 120, 24, 70));
+  for (let k = 0, tries = 0; k < n && tries < n * 20; tries++) {
+    const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0);
+    if (!insidePoly(poly, x, z)) continue;
+    k++;
+    const size = 4 + rnd() * 11;
+    const girder = rnd() < 0.3;
+    const geo = girder ? new THREE.BoxGeometry(size * 2.2, 1.2, 1.6) : new THREE.BoxGeometry(size, 0.8 + rnd() * 1.4, size * (0.4 + rnd() * 0.6));
+    const m = new THREE.Mesh(geo, rnd() < 0.6 ? plate : burnt);
+    m.position.set(x, 3 + rnd() * 14, z);
+    m.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI);
+    m.castShadow = true;
+    g.add(m);
+    if (rnd() < 0.12) { // a few smouldering edges
+      const ember = new THREE.Mesh(new THREE.SphereGeometry(0.9, 6, 4), glow);
+      ember.position.copy(m.position).add(new THREE.Vector3(size * 0.3, 0.5, 0));
+      g.add(ember);
+    }
+  }
+  g.add(footprint(poly, 0xd8c56a));
+  return g;
+}
+
+/** Gas cloud: soft glowing billows over a faint tinted floor, in the footprint. */
+export function buildGasCloud(poly: { x: number; z: number }[], seed: number): THREE.Group {
+  const rnd = seeded(seed);
+  const c = poly.reduce((a, p) => ({ x: a.x + p.x / poly.length, z: a.z + p.z / poly.length }), { x: 0, z: 0 });
+  const g = new THREE.Group();
+  const tints = [0x8f6bff, 0x5fd6c8, 0xb07cff];
+  const n = 14;
+  for (let k = 0, tries = 0; k < n && tries < 200; tries++) {
+    const a = rnd() * Math.PI * 2, f = Math.sqrt(rnd()) * 0.75;
+    const R = radiusAt(poly, c, a);
+    const x = c.x + Math.cos(a) * R * f, z = c.z + Math.sin(a) * R * f;
+    if (!insidePoly(poly, x, z)) continue;
+    k++;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTexture(), color: tints[k % tints.length], transparent: true, opacity: 0.22 + rnd() * 0.18,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    }));
+    const s = R * (0.7 + rnd() * 0.7);
+    sprite.scale.set(s, s * 0.8, 1);
+    sprite.position.set(x, 6 + rnd() * 16, z);
+    g.add(sprite);
+  }
+  const shape = new THREE.Shape(poly.map((p) => new THREE.Vector2(p.x, -p.z)));
+  const floor = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color: 0x7a5cff, transparent: true, opacity: 0.12, depthWrite: false }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = 0.3;
+  g.add(floor);
+  g.add(footprint(poly, 0xb08cff, 0.55));
+  return g;
+}
+
 // ---------------- table surface ----------------
 /** Bake a starfield-and-nebula play mat with a faint range grid into a texture (GPU, once). */
 export function bakeBoardTexture(renderer: THREE.WebGLRenderer, divisions: number, res = 2048): THREE.Texture {

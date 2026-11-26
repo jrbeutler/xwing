@@ -35,7 +35,7 @@ viewFor(state, playerId) -> GameState     // redacts hidden info (opponent dials
 
 - The **state** is plain data. The RNG state is a single integer inside it.
 - **Commands**: `setDials`, `action`, `attack`. Every input from a human, the AI or the network goes through `apply`.
-- **Decisions**: `planning` (simultaneous, waits on several players), `action`, `attack`.
+- **Decisions**: `planning` (simultaneous, waits on several players), `system` (drop a device), `action`, `attack`. An `action` decision can be a follow-up in the same activation: `linked` (the linked action after the first) or `coordinated` (a friend acting because this ship coordinated it); the activation moves on once the chain ends.
 - **Events** are the only thing a renderer needs: `moved` (with a sampled path), `attack` (with dice), `destroyed`, and so on.
 
 ### Path to Unreal
@@ -45,6 +45,31 @@ Unreal does not run TypeScript, so the engine is designed so that moving to Unre
 1. **Multiplayer server first.** Wrap the engine in a WebSocket server: `client → Command`, `server → {view, newEvents, pending}`. The server holds the real state and sends each client `viewFor(state, player)`. That design is *required* anyway for secret dials.
 2. **Unreal client.** Unreal connects to the same protocol (WebSocket plugin + JSON). It renders poses from events exactly like the web client does, because the coordinate system and units (mm, radians, +y up on the board) are specified here.
 3. **Offline/single-player in Unreal.** Either bundle the Node server as a local sidecar, or port the engine to C++. The engine is small (geometry, templates, phase machine, combat), and the test suite plus recorded game logs (seed + commands → expected events) become the acceptance tests for the port.
+
+### Effects (what upgrades and pilot abilities do)
+
+Upgrades and named pilots' abilities describe what they do as data: `UpgradeDef.effects` and
+`PilotDef.ability` in `content.ts`, interpreted by `effects.ts`. The rules code asks "which effects apply
+now?" and never checks for an upgrade or pilot by id, so a new talent, upgrade or pilot ability is a content
+change. In play, an ability is a source like an upgrade (`ShipState.ability`, id = the pilot's id, with its
+own charges), listed before the ship's upgrades; `effectSource(id)` names any source for clients. Effect kinds:
+
+| Kind | What it does | Used by |
+|---|---|---|
+| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating; Mara Venn, Tobin Reyes, Kira Solace, Bram Holloway |
+| `rerollAttack` | Reroll up to N attack dice (blanks first, then focus results) | Marksman, Steady Gunner, Ordnance Specialist |
+| `rerollDefense` | Reroll up to N defense dice | Elusive |
+| `cancelEvade` | Cancel 1 of the defender's evade results | Crack Shot |
+| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`, `actionPerformed`, `attackHit`), if conditions hold (shields/charges below max, which action, an `AttackCondition`), run ops (`gainFocus`, `gainCalculate`, `stressDefender`, `recoverShield`, `recoverCharge`, `loseCharges`) | Hotshot, Elusive, Damage Control, Stealth Coating; Syl Ketch, Ilse Kord, Wren Tal, Drav Okono, Tessa Varn, Corin Hale |
+| `stat` | Flat bonus to a looked-up number (`jamRange`, `deviceCharges`) | Signal Jammer, Payload Expert |
+
+Attack effects can be limited with an `AttackCondition` (primary, turret, bullseye, front arc, attacker
+outside the defender's arcs, defender stressed, a range of bands). `cost: 'charge'` spends one of the
+source's charges per use; `needsCharge` only requires one; `recurring` sources get 1 charge back in each
+End phase ("once per round"). Attack events list the sources whose dice effects changed the dice (`diceBy`). Dice effects are read by both `resolveAttack` and `attackOdds` through the same helpers,
+and `test/effects.test.ts` checks the two against each other for effects the shipped content doesn't use yet
+(multi-die rerolls, attack-dice changes, stacking). Triggers log an `upgrade` event that says what they gave
+(`focus`, `calculate`, `shields`), so clients don't need to know any upgrade or pilot by name.
 
 Keep these rules so this stays cheap:
 - No rendering, timing or platform calls in `packages/engine`.
@@ -62,20 +87,28 @@ Keep these rules so this stays cheap:
 | Bumping | ✅ | Ship backs along its path until clear. Partial maneuver skips the action and loses the final rotation. **House rule:** a bump also costs 1 stress |
 | Fly-over | ✅ | Ships may pass over others; only the final position matters |
 | Fleeing | ✅ | Base partly off the board, so the ship is destroyed |
-| Asteroids | ✅ | Moving through or landing on one: roll 1 attack die (hit/crit = damage), skip action |
-| Actions | ✅ | Focus, Evade, Lock (any range band, 0–4, one lock at a time), Barrel Roll, Boost, red actions |
+| Obstacles | ✅ | Three kinds (`OBSTACLE_RULES` in `content.ts`). Moving through or landing on one: **asteroid** roll 1 attack die, hit = 1 damage, crit = 1 critical damage, skip action; **debris field** 1 stress, then roll: crit = 1 critical damage; **gas cloud** roll: anything but a blank = 1 ion token, keep the action. All obstruct attacks (+1 defense die). Scenarios pass their own layout in `GameSetup.obstacles`; otherwise `generateObstacles` lays out a random mix (default 3 asteroids, 2 debris fields, 1 gas cloud), kept apart with room to fly between. Players never place obstacles |
+| Actions | ✅ | Focus, Evade, Lock (any range band, 0–4, one lock at a time), Barrel Roll, Boost, Calculate, Reinforce, Reload, Rotate, Jam, Repair, red actions |
+| Linked actions | ✅ | `ActionDef.linked`: after the first action the ship may perform the linked one (red: +1 stress). Allowed even if the first action left the ship stressed; not after an ion maneuver; one link per activation |
+| Calculate | ✅ | Token; changes 1 focus result (hit attacking, evade defending). Spent instead of focus on a lone focus result, or when one change is enough; kept otherwise. Cleared in the End phase |
+| Reinforce | ✅ | Token for the front or rear half (full 180° arc through the base centre). An attack from a covered attacker with 2+ uncancelled results loses 1 (a hit first). Lasts the round, not spent |
+| Coordinate | ✅ | A friendly ship at range 0-2, not stressed, immediately performs an action (Focus-only if ionized) and its linked action; it cannot coordinate in turn, and still acts in its own activation. Coordinate itself has no linked action |
+| Reload | ✅ | Recover 1 charge on a missile, torpedo or device below its starting charges; the ship is disarmed (no attacks) until the End phase |
 | Arcs | ✅ | 90° front/rear wedges through the base corners; bullseye strip detected |
 | Range | ✅ | Closest base-to-base distance *within the arc*; four bands with edges at 60/160/260/360 mm (house rule; the board game uses three 100 mm bands); range 0 allowed |
 | Attack | ✅ | **House rule, four bands** (`RANGE_RULES` in `combat.ts`): range 1 (0–6 cm) −1 attack die, range 2 (6–16 cm) +1 attack die, range 3 (16–26 cm) none, range 4 (26–36 cm) +1 defense die; primary weapons only. The board game has three 10 cm bands with +1 attack die at range 0–1 and +1 defense die at range 3. Obstructed: +1 defense die |
 | Dice | ✅ | Attack 3 hit / 1 crit / 2 focus / 2 blank. Defense 3 evade / 2 focus / 3 blank |
-| Damage | ✅ (simplified) | Shields absorb first. **Crits are 1 damage; no damage deck yet** |
+| Damage | ✅ | Shields absorb first. Crits that reach the hull deal a face-up damage card (2nd edition deck, `damage.ts`) |
 | Simultaneous fire | ✅ | Ships destroyed during an initiative step still attack in that step |
 | Win condition | ✅ | Last player with ships; at the round cap (12), most hull+shields left wins |
 
 ### Simplifications and to-do (rules)
 
-- Dice modification is **automatic** (lock reroll → focus → defender focus → evade). Next: interactive modify steps for humans.
-- No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
+- Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
+- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, and a scenario format (missions) that would lay out obstacles by design.
+- The AI checks the whole path of a maneuver for obstacles (the rules count flying through the same as landing on one), weighted asteroid > debris > gas, and looks one move ahead: it avoids ending nose-up to an obstacle when a short straight and both gentle banks would all hit one next round (`OBSTACLE_AVOID` in `ai.ts`). AI-vs-AI games average about half an obstacle contact per game (down from about 10). It does not predict bumps, so it may skip a move that a collision would have stopped short of an obstacle.
+- Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
+- The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`), and never barrel rolls or boosts yet, so it never uses the Wasp/Javelin links.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.
@@ -96,22 +129,46 @@ attacks, and partial-maneuver details.
 | Ship | Base | Atk | Agi | Hull | Shd | Actions |
 |---|---|---|---|---|---|---|
 | Kestrel Fighter | small | 3 | 2 | 4 | 2 | Focus, Lock, Barrel Roll |
-| Wasp Interceptor | small | 3 | 3 | 3 | 0 | Focus, Evade, Lock, Barrel Roll, Boost |
-| Bulwark Gunship | medium | 3 front / 2 rear | 1 | 7 | 3 | Focus, Lock, red Boost |
+| Wasp Interceptor | small | 3 | 3 | 3 | 0 | Focus, Evade, Lock, Barrel Roll → red Evade, Boost |
+| Javelin Interceptor | small | 2 | 3 | 2 | 2 | Focus, Evade, Lock, Barrel Roll, Boost → red Focus |
+| Anvil Bomber | small | 2 | 1 | 6 | 2 | Focus, Lock, red Barrel Roll, Reload |
+| Bulwark Gunship | medium | 3 front / 2 rear | 1 | 7 | 3 | Focus, Lock, Reinforce, Coordinate, red Boost |
+| Wayfarer Light Freighter | medium | 2 turret | 2 | 3 | 2 | Focus → Rotate, Lock → Rotate, Calculate, Jam, red Boost |
 
 Factions: Coalition (player) vs Syndicate (AI). Pilots and dials are in `content.ts`.
+
+Named pilots' abilities (each costs 2 points in the pilot's price, 3 for the extra-die ones):
+
+| Pilot | Ship | Ability |
+|---|---|---|
+| Mara Venn | Wasp | Long-Range Dodger: +1 defense die at range 3-4 |
+| Syl Ketch | Wasp | Slipstream: after a Barrel Roll or Boost, gain 1 calculate |
+| Tobin Reyes | Kestrel | Press the Attack: +1 attack die on primary attacks against a stressed ship |
+| Ilse Kord | Kestrel | Steady Nerves: once per round, after losing shields or hull, gain 1 focus |
+| Kira Solace | Javelin | Ambush: +1 attack die on primary front-arc attacks from outside the defender's arcs |
+| Wren Tal | Javelin | Rattle: once per round, after a damaging attack on a ship in the bullseye, it gains 1 stress |
+| Bram Holloway | Anvil | Torpedo Run: +1 attack die with missiles or torpedoes at range 3 |
+| Drav Okono | Bulwark | Command Presence: after a Coordinate, gain 1 focus |
+| Tessa Varn | Wayfarer | Signal Analysis: after a Jam, gain 1 calculate |
+| Corin Hale | Wayfarer | Fire Control: after a Rotate, gain 1 calculate |
+
+Over 300 AI-vs-AI games, named pilots' sides won 44-55% of the games they were in (noise at this sample
+size). The AI values the tokens these abilities give after Jam and Coordinate (`actionBonus` in `ai.ts`);
+it never barrel rolls or boosts yet, so Slipstream never fires for it.
 
 ## AI
 
 v1 is a one-ply lookahead. For each legal maneuver it scores the end position: enemies in
-my arc (closer is better), me in their predicted arc (bad), board edges, obstacles,
-distance to the nearest enemy, and stress. It adds a small jitter so it isn't predictable.
+my arc (closer is better), me in their predicted arc (bad), board edges, obstacles flown
+through or onto (and ending boxed in by one), distance to the nearest enemy, and stress. It adds a small jitter so it isn't predictable.
 
 Next steps:
 - Sample enemy maneuvers instead of predicting straight-2.
 - Two-ply search over activation order.
 - Personalities (aggressive, cautious, flanker).
 - Self-play for balance.
+
+Actions: repairs and jams come first; then Coordinate if the best action a friend in range could take is worth more than the ship's own (`coordinateChoice`); otherwise Focus, Evade, Calculate, Reinforce, Reload or a Lock (on each enemy) is chosen by value with the exact odds (`bestToken` in `ai.ts`): how much it improves this round's best shot (a lock can make ordnance legal), how much damage it prevents from enemies that can still shoot, and, for a lock, part of its value next round (`TOKEN_WEIGHTS`). Against the old fixed order (focus first) it took 1,500 locks instead of none and fired ordnance 2.4× as often, with no change in win rate (145–147, 8 draws, over 300 mirrored games): positioning decides games far more than token choice.
 
 The AI already decides from `viewFor` (the redacted view), the same view a network client gets.
 
