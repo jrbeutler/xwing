@@ -77,7 +77,8 @@ export class BattleScene {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   labels = new CSS2DRenderer();
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(45, 1, 1, 6000);
+  // Near plane well off 1: depth precision near the board matters more than seeing things 1 mm away.
+  camera = new THREE.PerspectiveCamera(45, 1, 10, 6000);
   controls: OrbitControls;
   ships = new Map<string, ShipView>();
   ghost = new THREE.Group();
@@ -150,6 +151,7 @@ export class BattleScene {
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.bias = -0.0005;
+    sun.shadow.normalBias = 1.5; // no shadow acne stripes on the flat board
     sun.shadow.radius = 3;
     Object.assign(sun.shadow.camera, { left: -600, right: 600, top: 600, bottom: -600, far: 2500 });
     this.scene.add(sun);
@@ -220,7 +222,9 @@ export class BattleScene {
     // table slab and a raised, lit frame around the play area
     const slab = new THREE.Mesh(new THREE.BoxGeometry(BOARD_SIZE + 40, 14, BOARD_SIZE + 40),
       new THREE.MeshStandardMaterial({ color: 0x0b111d, metalness: 0.6, roughness: 0.5 }));
-    slab.position.y = -7.2;
+    // Top 3 mm under the board: much closer and phones' depth buffers can't separate them (the slab shows
+    // through the board in black stripes).
+    slab.position.y = -10;
     slab.receiveShadow = true;
     this.scene.add(slab);
     const frameMat = new THREE.MeshStandardMaterial({ color: 0x1a2436, metalness: 0.8, roughness: 0.3 });
