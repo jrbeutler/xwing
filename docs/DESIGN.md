@@ -119,7 +119,7 @@ The AI already decides from `viewFor` (the redacted view), the same view a netwo
 
 1. ✅ **Movement and combat vertical slice**: engine + tests + 3D web client vs AI.
 2. **Rules depth**: interactive dice mods, damage deck, more actions, more obstacle types, pilot abilities as data-driven effect hooks.
-3. **Multiplayer**: `apps/server` (WebSocket, rooms, reconnection, server-authoritative state), lobby in the web client.
+3. **Multiplayer**: ✅ local pass-and-play (two players on one device, hand-over screens hide each player's planning). Next: `apps/server` (WebSocket, rooms, reconnection, server-authoritative state), lobby in the web client.
 4. **Missions**: scenario files (deployment zones, objectives, reinforcements, turn limits), mission scripting hooks.
 5. **Campaign**: pilot XP and traits, injuries and permadeath, hangar and upgrades, carrier facilities, star map with rising threat, save/load.
 6. **Own universe**: replace the placeholder content, art direction, audio.

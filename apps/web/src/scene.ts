@@ -849,9 +849,12 @@ export class BattleScene {
     });
   }
 
-  /** The original desktop view of the whole table. */
+  /** Which edge the camera looks from: 1 = player 1's (near) edge, -1 = player 2's (far) edge. */
+  facing: 1 | -1 = 1;
+
+  /** The original desktop view of the whole table, from the current `facing` edge. */
   resetView(ms = 500) {
-    this.flyTo(new THREE.Vector3(0, 0, 60), new THREE.Vector3(0, 1080, 640), ms);
+    this.flyTo(new THREE.Vector3(0, 0, 60 * this.facing), new THREE.Vector3(0, 1080, 640 * this.facing), ms);
   }
 
   private fitCam = new THREE.PerspectiveCamera();
@@ -877,7 +880,7 @@ export class BattleScene {
     const target = toV3(cx, cy, 0);
     let d = Math.max(hw / (tv * (w / h) * (availW / w)), hh / (tv * (availH / h)));
     const place = () => {
-      cam.position.copy(target).add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d));
+      cam.position.copy(target).add(new THREE.Vector3(0, Math.cos(tilt) * d, Math.sin(tilt) * d * this.facing));
       cam.lookAt(target);
       cam.updateMatrixWorld();
     };
@@ -889,8 +892,9 @@ export class BattleScene {
       const y0 = Math.min(...px.map((p) => p.y)), y1 = Math.max(...px.map((p) => p.y));
       d *= Math.max((x1 - x0) / (availW * zoom), (y1 - y0) / availH) * 1.04;
       const mmPerPx = (2 * d * tv) / h;
-      target.x -= (midX - (x0 + x1) / 2) * mmPerPx;
-      target.z -= ((midY - (y0 + y1) / 2) * mmPerPx) / Math.cos(tilt);
+      // Seen from the far edge, screen right is -x and screen down is -z.
+      target.x -= (midX - (x0 + x1) / 2) * mmPerPx * this.facing;
+      target.z -= ((midY - (y0 + y1) / 2) * mmPerPx * this.facing) / Math.cos(tilt);
     }
     place();
     this.flyTo(target, cam.position.clone(), ms);
