@@ -108,7 +108,7 @@ Keep these rules so this stays cheap:
 - Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, and a scenario format (missions) that would lay out obstacles by design.
 - The AI checks the whole path of a maneuver for obstacles (the rules count flying through the same as landing on one), weighted asteroid > debris > gas, and looks one move ahead: it avoids ending nose-up to an obstacle when a short straight and both gentle banks would all hit one next round (`OBSTACLE_AVOID` in `ai.ts`). AI-vs-AI games average about half an obstacle contact per game (down from about 10). It does not predict bumps, so it may skip a move that a collision would have stopped short of an obstacle.
 - Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
-- The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`), and never barrel rolls or boosts yet, so it never uses the Wasp/Javelin links.
+- The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, and takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`).
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.
@@ -153,8 +153,8 @@ Named pilots' abilities (each costs 2 points in the pilot's price, 3 for the ext
 | Corin Hale | Wayfarer | Fire Control: after a Rotate, gain 1 calculate |
 
 Over 300 AI-vs-AI games, named pilots' sides won 44-55% of the games they were in (noise at this sample
-size). The AI values the tokens these abilities give after Jam and Coordinate (`actionBonus` in `ai.ts`);
-it never barrel rolls or boosts yet, so Slipstream never fires for it.
+size). The AI values the tokens these abilities give after an action (`actionBonus` in `ai.ts`), e.g. Syl
+Ketch's calculate after a Barrel Roll or Boost.
 
 ## AI
 
@@ -162,13 +162,27 @@ v1 is a one-ply lookahead. For each legal maneuver it scores the end position: e
 my arc (closer is better), me in their predicted arc (bad), board edges, obstacles flown
 through or onto (and ending boxed in by one), distance to the nearest enemy, and stress. It adds a small jitter so it isn't predictable.
 
+Enemy positions are predicted (`predictEnemies`, `PREDICTION` in `ai.ts`): the AI puts itself in each enemy's
+seat, scores that enemy's legal maneuvers with the same scoring (assuming our ships fly straight ahead), and
+keeps the best 3, weighted by exp((score − best) / 8); every candidate of ours is scored against each likely
+enemy position by its weight. It uses only what a player can see: stressed enemies can't pick red maneuvers,
+ionized ones drift 1 straight, damage cards change how a maneuver flies. In AI-vs-AI games the most likely
+guess lands a median 38 mm from where the enemy actually ends (within 50 mm 66% of the time), against 84 mm
+(25%) for the old guess of 100 mm straight ahead; that is the AI predicting itself, so humans will be harder to
+read. Over 300 mirrored games it beat the straight-ahead AI 173–120 (7 draws). A planning decision takes about
+12 ms (6 ms before).
+
+The same planning gives players a learning aid (`suggestManeuvers`): for each of a player's ships, the
+maneuver the AI would fly (without its random jitter) plus what it expects there: enemies likely in arc
+(chance and range) and enemies likely to have the ship in an arc. The client calls it with
+`viewFor(state, player)`, so it only uses what that player can see; it is a per-player option at setup.
+
 Next steps:
-- Sample enemy maneuvers instead of predicting straight-2.
 - Two-ply search over activation order.
 - Personalities (aggressive, cautious, flanker).
 - Self-play for balance.
 
-Actions: repairs and jams come first; then Coordinate if the best action a friend in range could take is worth more than the ship's own (`coordinateChoice`); otherwise Focus, Evade, Calculate, Reinforce, Reload or a Lock (on each enemy) is chosen by value with the exact odds (`bestToken` in `ai.ts`): how much it improves this round's best shot (a lock can make ordnance legal), how much damage it prevents from enemies that can still shoot, and, for a lock, part of its value next round (`TOKEN_WEIGHTS`). Against the old fixed order (focus first) it took 1,500 locks instead of none and fired ordnance 2.4× as often, with no change in win rate (145–147, 8 draws, over 300 mirrored games): positioning decides games far more than token choice.
+Actions: repairs and jams come first; then Coordinate if the best action a friend in range could take is worth more than the ship's own (`coordinateChoice`); otherwise Focus, Evade, Calculate, Reinforce, Reload or a Lock (on each enemy) is chosen by value with the exact odds (`bestToken` in `ai.ts`): how much it improves this round's best shot (a lock can make ordnance legal), how much damage it prevents from enemies that can still shoot, and, for a lock, part of its value next round (`TOKEN_WEIGHTS`). Barrel Roll and Boost are weighed the same way (`repositionValue`): the better shot from the new position and the damage it avoids, with enemies that have not moved yet this round counted at half (their position is not final), plus the linked action it opens (e.g. the Wasp's red Evade, minus its stress), minus stress for a red reposition, a mine on the way, ending near the board edge, or ending boxed in by an obstacle. Over 900 mirrored games against the same AI without repositioning it won 444–429 (27 draws), which is within noise; it does use the actions (about 2.5 rolls or boosts per game per side, 0.3 linked actions after them) and makes Slipstream fire. An action decision takes about 2.5 ms (0.8 ms without repositioning). Against the old fixed order (focus first) it took 1,500 locks instead of none and fired ordnance 2.4× as often, with no change in win rate (145–147, 8 draws, over 300 mirrored games): positioning decides games far more than token choice.
 
 The AI already decides from `viewFor` (the redacted view), the same view a network client gets.
 

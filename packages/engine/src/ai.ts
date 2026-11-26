@@ -1,11 +1,11 @@
-// Baseline AI: one-ply lookahead. Scores each candidate maneuver by the position it
-// produces against a naive prediction of enemy movement. Fast, beatable, good enough
-// to test rules; later AIs can plug into the same `decide` contract.
+// Baseline AI: one-ply lookahead. Scores each candidate maneuver by the position it produces against
+// where the enemies will likely be (it predicts each enemy's maneuver by scoring it from that enemy's seat).
+// Fast, beatable, good enough to test rules; later AIs can plug into the same `decide` contract.
 import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, isIonized, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
@@ -42,12 +42,46 @@ function arcScore(fromPose: Pose, fromSize: number, toPoly: ReturnType<typeof sh
   return table[bandOf(polygonDistance(basePolygon(fromPose, fromSize), clipped).d)];
 }
 
-function predictEnemy(e: ShipState): Pose {
+/** A likely end position for an enemy this round, with its probability. */
+export interface Prediction { pose: Pose; w: number }
+
+/** The naive guess: 100 mm straight ahead. Also what a modelled enemy assumes about our ships. */
+const straightAhead = (e: ShipState): Prediction[] => {
   const f = fwd(e.pose.h);
-  return { x: e.pose.x + f.x * 100, y: e.pose.y + f.y * 100, h: e.pose.h };
+  return [{ pose: { x: e.pose.x + f.x * 100, y: e.pose.y + f.y * 100, h: e.pose.h }, w: 1 }];
+};
+
+/**
+ * How the AI predicts enemy maneuvers. 'modeled': it puts itself in each enemy's seat, scores that enemy's
+ * legal maneuvers with scoreManeuver (assuming our ships fly straight ahead), and keeps the `top` best,
+ * weighted by exp((score - best) / temperature). 'straight': everyone flies 100 mm straight ahead.
+ * Ionized enemies are known to drift 1 straight; stressed ones cannot pick red maneuvers. Mutable for experiments.
+ */
+export const PREDICTION = { mode: 'modeled' as 'modeled' | 'straight', top: 3, temperature: 8 };
+
+/** Likely end positions of every enemy of `playerId`, computed once per decision. */
+export function predictEnemies(s: GameState, playerId: PlayerId): Map<string, Prediction[]> {
+  return new Map(activeShips(s).filter((e) => e.owner !== playerId).map((e) => [e.id, predictShip(s, e)]));
 }
 
-export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number): number {
+function predictShip(s: GameState, e: ShipState): Prediction[] {
+  if (PREDICTION.mode === 'straight') return straightAhead(e);
+  const size = shipSize(e);
+  if (isIonized(e)) return [{ pose: maneuverFinalPose(e.pose, size, ION_MANEUVER), w: 1 }];
+  const naive = new Map(activeShips(s).filter((x) => x.owner !== e.owner).map((x) => [x.id, straightAhead(x)]));
+  const scored = legalDial(s, e).map((i) => ({ i, sc: scoreManeuver(s, e, i, () => 0, naive) }))
+    .filter((x) => x.sc > -1000).sort((a, b) => b.sc - a.sc).slice(0, PREDICTION.top);
+  if (!scored.length) return straightAhead(e);
+  const raw = scored.map((x) => Math.exp((x.sc - scored[0].sc) / PREDICTION.temperature));
+  const total = raw.reduce((a, b) => a + b, 0);
+  return scored.map((x, k) => ({ pose: maneuverFinalPose(e.pose, size, maneuverFor(e, x.i)), w: raw[k] / total }));
+}
+
+/**
+ * How good a maneuver's end position looks. `predictions`: where the enemies will likely be (predictEnemies);
+ * without it every enemy is assumed to fly straight ahead.
+ */
+export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number, predictions?: Map<string, Prediction[]>): number {
   const m = maneuverFor(sh, dialIndex); // as damage cards make it fly
   const size = shipSize(sh);
   const pose = maneuverFinalPose(sh.pose, size, m);
@@ -67,16 +101,20 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   const role = roleOf(sh);
   const turret = hasTurretPrimary(sh);
   let nearest = Infinity;
+  const { PREFERS, THREAT } = tables();
   for (const e of activeShips(s).filter((x) => x.owner !== sh.owner)) {
-    const ep = predictEnemy(e);
     const eSize = shipSize(e);
-    const ePoly = basePolygon(ep, eSize);
-    const { PREFERS, THREAT } = tables();
-    score += arcScore(pose, size, ePoly, PREFERS[role], turret);
-    score -= 0.6 * arcScore(ep, eSize, poly, THREAT, hasTurretPrimary(e));
-    const gap = polygonDistance(poly, ePoly).d;
-    nearest = Math.min(nearest, gap);
-    if (gap < 25) score -= 30; // about to collide: a bump costs the action and a stress
+    let gapE = 0;
+    // Each likely enemy end position counts by its probability.
+    for (const { pose: ep, w } of predictions?.get(e.id) ?? straightAhead(e)) {
+      const ePoly = basePolygon(ep, eSize);
+      score += w * arcScore(pose, size, ePoly, PREFERS[role], turret);
+      score -= w * 0.6 * arcScore(ep, eSize, poly, THREAT, hasTurretPrimary(e));
+      const gap = polygonDistance(poly, ePoly).d;
+      gapE += w * gap;
+      if (gap < 25) score -= w * 30; // about to collide: a bump costs the action and a stress
+    }
+    nearest = Math.min(nearest, gapE);
   }
   // Keep a distance: range 1 is for interceptors only; beyond range 3, close in.
   const [r1, ...rest] = RANGE_RULES.edges, reach = rest.length ? rest[rest.length - 1] : r1;
@@ -131,9 +169,14 @@ const bestShot = (s: GameState, a: ShipState) =>
  * defense: weight of damage prevented against damage dealt. reload: value of a recovered ordnance or bomb
  * charge (paid for by not attacking this round). stress: cost of the stress a red linked action brings.
  * abilityToken: rough value of a token an ability gives after an action (e.g. calculate after a Jam).
- * Mutable for experiments.
+ * The rest weigh barrel rolls and boosts (see repositionValue). Mutable for experiments.
  */
-export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5, abilityToken: 0.4 };
+export const TOKEN_WEIGHTS = {
+  lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5, abilityToken: 0.4,
+  // Barrel roll and boost: weight of shots at / threats from enemies that have not moved yet this round, and
+  // the costs of a mine on the way, each mm closer than 80 mm to the board edge, and ending boxed in.
+  unmoved: 0.5, mine: 1.5, edge: 0.01, boxedIn: 0.6,
+};
 
 /** What the ship's own triggered effects (pilot abilities, talents) add to performing `action`: tokens they give. */
 export function actionBonus(sh: ShipState, action: ActionChoice['type']): number {
@@ -143,7 +186,8 @@ export function actionBonus(sh: ShipState, action: ActionChoice['type']): number
 }
 
 /**
- * Focus, Evade, Calculate, Reinforce, a Lock or a Reload, chosen by what each is worth, measured with the exact odds:
+ * Focus, Evade, Calculate, Reinforce, a Lock, a Reload, a Barrel Roll or a Boost, chosen by what each is worth,
+ * measured with the exact odds (repositions: see repositionValue):
  *   attack: how much better this round's best shot gets (a lock can also make ordnance legal);
  *   defense: how much less damage the enemies that can still shoot this ship expect to deal
  *     (each enemy counted once, split across the targets it has);
@@ -160,18 +204,11 @@ export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[], 
 export function tokenChoice(s: GameState, sh: ShipState, options: ActionChoice[]): { o: ActionChoice; v: number } | undefined {
   const kinds = ['focus', 'evade', 'lock', 'calculate', 'reinforce', 'reload'];
   const tokens = options.filter((o) => kinds.includes(o.type));
-  if (!tokens.length) return undefined;
+  const moves = AI_OPTIONS.reposition ? options.filter((o): o is Reposition => o.type === 'barrelRoll' || o.type === 'boost') : [];
+  if (!tokens.length && !moves.length) return undefined;
   const ship = (id: string) => s.ships.find((x) => x.id === id)!;
   const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
-  const waiting = s.phase === 'engagement' ? new Set(s.queue.slice(s.queueIndex + 1)) : null;
-  // Enemies that can still shoot this ship, with their best shot at it and how many targets they have.
-  const threats = enemies.filter((e) => !waiting || waiting.has(e.id)).flatMap((e) => {
-    const ts = legalTargets(s, e);
-    const atMe = ts.filter((t) => t.targetId === sh.id);
-    return atMe.length ? [{ e, atMe, share: 1 / new Set(ts.map((t) => t.targetId)).size }] : [];
-  });
-  const incoming = (me: ShipState) => threats.reduce((a, { e, atMe, share }) =>
-    a + share * Math.max(...atMe.map((t) => attackOdds(e, me, t, s).expected)), 0);
+  const incoming = threatsTo(s, sh);
   // What a lock on `id` adds to a shot at that enemy now, or a base value if it is not a target yet.
   const lockGain = (id: string) => {
     const shots = legalTargets(s, { ...sh, lock: id }).filter((t) => t.targetId === id);
@@ -195,7 +232,76 @@ export function tokenChoice(s: GameState, sh: ShipState, options: ActionChoice[]
     if (o.type === 'reload') v += TOKEN_WEIGHTS.reload;
     return v + actionBonus(sh, o.type);
   };
-  return tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
+  return [
+    ...tokens.map((o) => ({ o, v: value(o) })),
+    ...moves.map((o) => ({ o: o as ActionChoice, v: repositionValue(s, sh, o) })),
+  ].sort((a, b) => b.v - a.v)[0];
+}
+
+type Reposition = Extract<ActionChoice, { type: 'barrelRoll' | 'boost' }>;
+
+/** Switches for experiments: `reposition` lets the AI barrel roll and boost. */
+export const AI_OPTIONS = { reposition: true };
+
+/**
+ * Expected damage `me` takes this round from the enemies that can still shoot it in `st` (each enemy split
+ * across the targets it has). `unmoved`: weight for enemies that have not moved yet this round, whose
+ * positions are not final (1 counts them fully, as token choice always has).
+ */
+function threatsTo(st: GameState, sh: ShipState, unmoved = 1) {
+  const waiting = st.phase === 'engagement' ? new Set(st.queue.slice(st.queueIndex + 1)) : null;
+  const moved = movedThisRound(st);
+  const threats = activeShips(st).filter((e) => e.owner !== sh.owner && (!waiting || waiting.has(e.id))).flatMap((e) => {
+    const ts = legalTargets(st, e);
+    const atMe = ts.filter((t) => t.targetId === sh.id);
+    const weight = moved.has(e.id) ? 1 : unmoved;
+    return atMe.length && weight ? [{ e, atMe, share: weight / new Set(ts.map((t) => t.targetId)).size }] : [];
+  });
+  return (me: ShipState) => threats.reduce((a, { e, atMe, share }) => a + share * Math.max(...atMe.map((t) => attackOdds(e, me, t, st).expected)), 0);
+}
+
+/** Ships whose position is final for this round: all of them outside Activation, else those that have moved. */
+function movedThisRound(st: GameState): Set<string> {
+  if (st.phase !== 'activation') return new Set(st.ships.map((x) => x.id));
+  return new Set(st.queue.slice(0, st.queueIndex));
+}
+
+/** The best shot `a` has in `st`, shots at enemies that have not moved yet weighted by `unmoved`. */
+const bestShotWeighted = (st: GameState, a: ShipState, unmoved: number) => {
+  const moved = movedThisRound(st);
+  return Math.max(0, ...legalTargets(st, a).map((t) => {
+    const d = st.ships.find((x) => x.id === t.targetId)!;
+    return shotWorth(st, a, d, t) * (moved.has(d.id) ? 1 : unmoved);
+  }));
+};
+
+/**
+ * What a barrel roll or boost is worth, in the same units as a token: the better shot it gives this round
+ * and the damage it avoids (enemies that have not moved yet counted at TOKEN_WEIGHTS.unmoved), plus the
+ * linked action it allows, minus stress (red), a mine on the way, hugging the board edge, or ending where
+ * every gentle move next round hits an obstacle.
+ */
+function repositionValue(s: GameState, sh: ShipState, o: Reposition): number {
+  const W = TOKEN_WEIGHTS;
+  const me: ShipState = { ...sh, pose: o.to };
+  const moved: GameState = { ...s, ships: s.ships.map((x) => (x.id === sh.id ? me : x)) };
+  let v = bestShotWeighted(moved, me, W.unmoved) - bestShotWeighted(s, sh, W.unmoved)
+    + W.defense * (threatsTo(s, sh, W.unmoved)(sh) - threatsTo(moved, me, W.unmoved)(me));
+  const def = shipType(sh).actions.find((a) => a.type === o.type);
+  if (def?.red) v -= W.stress;
+  // The linked action it opens (e.g. a red Evade after a roll), valued from the new position.
+  if (def?.linked) {
+    const follow = actionOptions(moved, me).filter((x) => x.type === def.linked!.type);
+    const best = follow.length ? tokenChoice(moved, me, follow) : undefined;
+    if (best) v += Math.max(0, best.v - (def.linked.red ? W.stress : 0));
+  }
+  const size = shipSize(sh);
+  const path = [sh.pose, o.to].map((p) => basePolygon(p, size));
+  if (s.devices.some((d) => d.kind === 'mine' && path.some((b) => polygonsOverlap(b, devicePolygon(d))))) v -= W.mine;
+  const edge = Math.min(o.to.x, o.to.y, BOARD_SIZE - o.to.x, BOARD_SIZE - o.to.y);
+  if (edge < 80) v -= (80 - edge) * W.edge;
+  if (s.obstacles.length && ESCAPES.every((next) => obstacleCost(s, o.to, size, next) > 0)) v -= W.boxedIn;
+  return v + actionBonus(sh, o.type);
 }
 
 /**
@@ -246,7 +352,10 @@ function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoic
   const near = (pose: Pose, size: number, reach: number) => polygonDistance(token, basePolygon(pose, size)).d <= reach;
   const friendsEnd = activeShips(s).filter((x) => x.owner === sh.owner)
     .map((x) => ({ pose: x.dial === null ? x.pose : maneuverFinalPose(x.pose, shipSize(x), maneuverFor(x, x.dial)), size: shipSize(x) }));
-  const enemies = activeShips(s).filter((x) => x.owner !== sh.owner).map((e) => ({ pose: predictEnemy(e), size: shipSize(e) }));
+  // Each enemy's most likely end position.
+  const enemies = [...predictEnemies(s, sh.owner)].map(([id, ps]) => ({
+    pose: ps.reduce((a, b) => (b.w > a.w ? b : a)).pose, size: shipSize(s.ships.find((x) => x.id === id)!),
+  }));
   const score = (o: Extract<DropChoice, { type: 'drop' }>) => {
     const dev = UPGRADES[o.upgrade].device!;
     const reach = dev.kind === 'bomb' ? 100 : 60;
@@ -259,6 +368,82 @@ function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoic
   return best.sc > 0 ? best.o : none;
 }
 
+/** The best-scoring legal maneuver for each of `playerId`'s ships against the predicted enemy positions. */
+function planDials(s: GameState, playerId: PlayerId, jitter: () => number, predictions: Map<string, Prediction[]>): Record<string, number> {
+  const dials: Record<string, number> = {};
+  for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
+    let best = -Infinity, bestIdx = legalDial(s, sh)[0];
+    for (const i of legalDial(s, sh)) {
+      const sc = scoreManeuver(s, sh, i, jitter, predictions);
+      if (sc > best) { best = sc; bestIdx = i; }
+    }
+    dials[sh.id] = bestIdx;
+  }
+  return dials;
+}
+
+/** The AI's recommended maneuver for one ship, and what it expects from it (for players learning the game). */
+export interface Suggestion {
+  /** Index into the ship's dial. */
+  dial: number;
+  /** Enemies likely in this ship's arc after the move: chance (0-1) and the range band at their most likely position. */
+  shots: { shipId: string; chance: number; range: number }[];
+  /** Enemies likely to have this ship in one of their arcs after the move, and how likely. */
+  threats: { shipId: string; chance: number }[];
+  /** Obstacles the move flies through or onto (normally none: the AI avoids them). */
+  obstacles: string[];
+}
+
+/**
+ * What the AI would fly for each of `playerId`'s ships (its planning without the random jitter), with the
+ * shots and threats it expects there. Call it with `viewFor(state, playerId)` so hidden dials stay hidden.
+ */
+export function suggestManeuvers(s: GameState, playerId: PlayerId): Record<string, Suggestion> {
+  const predictions = predictEnemies(s, playerId);
+  const dials = planDials(s, playerId, () => 0, predictions);
+  const out: Record<string, Suggestion> = {};
+  for (const [id, dial] of Object.entries(dials)) {
+    const sh = s.ships.find((x) => x.id === id)!;
+    const m = maneuverFor(sh, dial);
+    const size = shipSize(sh);
+    const me: ShipState = { ...sh, pose: maneuverFinalPose(sh.pose, size, m) };
+    const shots: Suggestion['shots'] = [], threats: Suggestion['threats'] = [];
+    for (const [eid, ps] of predictions) {
+      const e = s.ships.find((x) => x.id === eid)!;
+      let hit = 0, threat = 0, range = 0, bestW = -1;
+      for (const p of ps) {
+        const there: ShipState = { ...e, pose: p.pose };
+        const r = bestRange(me, there);
+        if (r !== null) { hit += p.w; if (p.w > bestW) { bestW = p.w; range = r; } }
+        if (bestRange(there, me) !== null) threat += p.w;
+      }
+      if (hit >= 0.3) shots.push({ shipId: eid, chance: hit, range });
+      if (threat >= 0.3) threats.push({ shipId: eid, chance: threat });
+    }
+    shots.sort((a, b) => b.chance - a.chance);
+    threats.sort((a, b) => b.chance - a.chance);
+    const path = [...maneuverPath(sh.pose, size, m, PATH_STEP).path, me.pose].map((p) => basePolygon(p, size));
+    const obstacles = s.obstacles.filter((o) => path.some((b) => polygonsOverlap(b, o.polygon))).map((o) => o.id);
+    out[id] = { dial, shots, threats, obstacles };
+  }
+  return out;
+}
+
+/** The closest range band at which `from` could fire a primary weapon at `to` (turret arcs can be rotated), or null. */
+function bestRange(from: ShipState, to: ShipState): number | null {
+  let best: number | null = null;
+  for (const w of shipType(from).primaries) {
+    const arcs: ArcName[] = w.arc === 'turret' ? ['front', 'left', 'right', 'rear'] : [w.arc];
+    for (const arc of arcs) {
+      const clipped = clipToArc(from.pose, arc, shipPolygon(to));
+      if (clipped.length < 3) continue;
+      const r = rangeBand(polygonDistance(shipPolygon(from), clipped).d);
+      if (r !== null && r <= maxRangeBand() && (best === null || r < best)) best = r;
+    }
+  }
+  return best;
+}
+
 export function decide(s: GameState, playerId: PlayerId): Command | null {
   const d = pendingFor(s, playerId);
   if (!d) return null;
@@ -267,16 +452,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
   const jitter = () => nextFloat(local);
 
   if (d.kind === 'planning') {
-    const dials: Record<string, number> = {};
-    for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
-      let best = -Infinity, bestIdx = legalDial(s, sh)[0];
-      for (const i of legalDial(s, sh)) {
-        const sc = scoreManeuver(s, sh, i, jitter);
-        if (sc > best) { best = sc; bestIdx = i; }
-      }
-      dials[sh.id] = bestIdx;
-    }
-    return { type: 'setDials', playerId, dials };
+    return { type: 'setDials', playerId, dials: planDials(s, playerId, jitter, predictEnemies(s, playerId)) };
   }
 
   if (d.kind === 'action' && d.linked) {

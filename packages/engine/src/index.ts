@@ -8,4 +8,4 @@ export * from './effects';
 export * from './squad';
 export * from './game';
 export * from './rng';
-export { decide as aiDecide, scoreManeuver } from './ai';
+export { decide as aiDecide, scoreManeuver, suggestManeuvers, type Suggestion } from './ai';
