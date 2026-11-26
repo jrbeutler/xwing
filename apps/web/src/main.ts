@@ -1611,6 +1611,8 @@ newGame();
 (window as unknown as { __xw: unknown }).__xw = {
   scene,
   get state() { return state; },
+  /** Input state, for diagnosing taps that do nothing. */
+  get input() { return { busy, stage, mode: !!mode, multi, touches: [...touches], pointerDown, selected, compact }; },
   finalPose: (shipId: string, dialIndex: number) => {
     const s = shipById(shipId);
     return maneuverFinalPose(s.pose, sizeOf(s), SHIP_TYPES[s.typeId].dial[dialIndex]);
