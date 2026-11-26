@@ -1,15 +1,18 @@
 // Loads the imported ship models once and hands out per-team clones.
 // Until a model has loaded (or if it fails) the procedural model in visuals.ts stands in.
 //
-// Team colours: every ship on a side wears the same paint (the team colour passed to build()).
-// Textured models keep only their surface detail: the old colour maps are greyscale detail maps
-// (scripts/shrink-textures.py) that the paint shows through, and glow masks tinted with the same colour.
+// Team colours: hulls are silver with highlights in the team colour (passed to build()).
+// - Textured models: greyscale detail maps (scripts/shrink-textures.py) shade the paint, and an accent
+//   mask (scripts/make-accent-masks.py, from the original colour maps) says where the team colour goes.
+// - Untextured models: a named part, or a region of the hull (wing tips, nose), carries the accent.
+// Lights and glow maps shine in the team colour too.
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import fighterUrl from './assets/spaceship/fighter.bin?url'; // packed by scripts/pack-models.mjs
 import fighterDetail from './assets/spaceship/base.jpg?url';
 import fighterGlow from './assets/spaceship/emissive.jpg?url';
+import fighterAccent from './assets/spaceship/accent.jpg?url';
 import normalUrl from './assets/spaceship/normal.jpg?url';
 import roughUrl from './assets/spaceship/roughness.jpg?url';
 import metalUrl from './assets/spaceship/metallic.jpg?url';
@@ -74,6 +77,60 @@ async function bytes(url: string): Promise<ArrayBuffer> {
 }
 
 const castShadows = (o: THREE.Object3D) => o.traverse((m) => { if ((m as THREE.Mesh).isMesh) m.castShadow = true; });
+
+/** Hull silver (sRGB hex; three converts it to linear). */
+const SILVER = 0xc6ccd5;
+
+/**
+ * Silver paint with team-coloured highlights. Where the accent is 1 the hull takes the team colour,
+ * where it is 0 it stays silver; any detail map still shades both. The accent comes from a mask texture
+ * (same UVs as the detail map) or from a per-vertex `accent` attribute (see markAccents).
+ */
+function teamPaint(team: number, params: THREE.MeshStandardMaterialParameters, accent: { map?: THREE.Texture | null; attribute?: boolean } = {}) {
+  const m = new THREE.MeshStandardMaterial({ ...params, color: 0xffffff });
+  const useMap = !!(accent.map && params.map), useAttr = !!accent.attribute;
+  const source = useMap && useAttr ? 'both' : useMap ? 'map' : useAttr ? 'attr' : 'none';
+  const uniforms = { uSilver: { value: new THREE.Color(SILVER) }, uTeam: { value: new THREE.Color(team) }, uAccentMap: { value: accent.map ?? null } };
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, uniforms);
+    if (useAttr) {
+      sh.vertexShader = 'attribute float accent;\nvarying float vAccent;\n' +
+        sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvAccent = accent;');
+    }
+    const acc = source === 'both' ? 'max(texture2D(uAccentMap, vMapUv).r, vAccent)'
+      : source === 'map' ? 'texture2D(uAccentMap, vMapUv).r' : source === 'attr' ? 'vAccent' : '0.0';
+    sh.fragmentShader = `uniform vec3 uSilver;\nuniform vec3 uTeam;\n${useMap ? 'uniform sampler2D uAccentMap;\n' : ''}${useAttr ? 'varying float vAccent;\n' : ''}` +
+      sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>\n\tdiffuseColor.rgb *= mix(uSilver, uTeam, clamp(${acc}, 0.0, 1.0));`);
+  };
+  m.customProgramCacheKey = () => `team-paint-${source}`;
+  return m;
+}
+
+/**
+ * Give an untextured model's meshes a per-vertex `accent` (1 = team colour) from where each vertex sits in
+ * the finished model (+X forward, Z across): the outer part of the wings and the tip of the nose.
+ */
+function markAccents(outer: THREE.Object3D, { wing = 0.7, nose = 0.82 } = {}) {
+  outer.updateMatrixWorld(true);
+  // Work in the model's own frame (before its display scale), measuring the extent and the vertices alike.
+  const inv = new THREE.Matrix4().copy(outer.matrixWorld).invert();
+  const meshes: { mesh: THREE.Mesh; pts: THREE.Vector3[] }[] = [];
+  const box = new THREE.Box3();
+  outer.traverse((n) => {
+    const mesh = n as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const toOuter = new THREE.Matrix4().multiplyMatrices(inv, mesh.matrixWorld);
+    const pos = mesh.geometry.attributes.position;
+    const pts = Array.from({ length: pos.count }, (_, i) => new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(toOuter));
+    for (const p of pts) box.expandByPoint(p);
+    meshes.push({ mesh, pts });
+  });
+  const zMax = Math.max(Math.abs(box.min.z), Math.abs(box.max.z)), xMax = box.max.x;
+  for (const { mesh, pts } of meshes) {
+    const a = Float32Array.from(pts, (p) => (Math.abs(p.z) > wing * zMax || p.x > nose * xMax ? 1 : 0));
+    mesh.geometry.setAttribute('accent', new THREE.BufferAttribute(a, 1));
+  }
+}
 
 /** Memoise one material (or set) per team colour. */
 function perColor<T>(make: (color: number) => T): (color: number) => T {
@@ -141,15 +198,15 @@ async function loadFighter(renderer: THREE.WebGLRenderer) {
     t.anisotropy = renderer.capabilities.getMaxAnisotropy();
     return t;
   });
-  const [parts, detail, glow, nrm, rough, metal, ao] = await Promise.all([
+  const [parts, detail, glow, accent, nrm, rough, metal, ao] = await Promise.all([
     bytes(fighterUrl).then(parsePacked),
-    tex(fighterDetail, true), tex(fighterGlow, true), tex(normalUrl), tex(roughUrl), tex(metalUrl), tex(aoUrl),
+    tex(fighterDetail, true), tex(fighterGlow, true), tex(fighterAccent), tex(normalUrl), tex(roughUrl), tex(metalUrl), tex(aoUrl),
   ]);
-  const paint = perColor((color) => new THREE.MeshStandardMaterial({
-    color, map: detail, emissive: color, emissiveMap: glow, emissiveIntensity: 2.2,
+  const paint = perColor((color) => teamPaint(color, {
+    map: detail, emissive: color, emissiveMap: glow, emissiveIntensity: 2.2,
     normalMap: nrm, normalScale: new THREE.Vector2(1, -1), // DirectX-style normal map → flip green
-    roughnessMap: rough, metalnessMap: metal, metalness: 0.7, roughness: 1, aoMap: ao,
-  }));
+    roughnessMap: rough, metalnessMap: metal, metalness: 0.8, roughness: 1, aoMap: ao,
+  }, { map: accent }));
   const { outer, box } = normalise(packedGroup(parts, () => paint(0xffffff)), Math.PI / 2, 38); // source nose points +Z
   castShadows(outer);
   templates.kestrel = {
@@ -160,11 +217,11 @@ async function loadFighter(renderer: THREE.WebGLRenderer) {
 
 async function loadFreighter() {
   const parts = parsePacked(await bytes(freighterUrl));
-  // No textures came with this model: painted metal in the team colour with darker plating,
+  // No textures came with this model: a silver hull with its armour plating in the team colour,
   // flat-shaded to keep its hard-surface panelling crisp.
   const paint = perColor((color) => ({
-    hull: new THREE.MeshStandardMaterial({ color, metalness: 0.45, roughness: 0.55, flatShading: true }),
-    plate: new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.45), metalness: 0.6, roughness: 0.45, flatShading: true }),
+    hull: teamPaint(color, { metalness: 0.6, roughness: 0.4, flatShading: true }),
+    plate: new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.8), metalness: 0.5, roughness: 0.45, flatShading: true }),
   }));
   const pick = (color: number, name: string) => (name === 'plate' ? paint(color).plate : paint(color).hull);
   const outer = packedGroup(parts, (p) => pick(0xffffff, p.name));
@@ -190,7 +247,7 @@ async function loadInterceptor() {
     let m = byColor.get(color);
     if (!m) {
       m = {
-        hull: new THREE.MeshStandardMaterial({ color, metalness: 0.45, roughness: 0.45 }),
+        hull: teamPaint(color, { metalness: 0.6, roughness: 0.38 }, { attribute: true }),
         lights: new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(2.5) }),
       };
       byColor.set(color, m);
@@ -198,6 +255,7 @@ async function loadInterceptor() {
     return m;
   };
   const { outer, box } = normalise(obj, Math.PI / 2, 34); // source nose points +Z
+  markAccents(outer, { wing: 0.62, nose: 0.8 });
   castShadows(outer);
   templates.wasp = {
     build(_skin, color) {
@@ -236,19 +294,21 @@ async function loadBomber(renderer: THREE.WebGLRenderer) {
     const id = /Material\.(\d+)/.exec(p.material)?.[1] ?? '';
     if (!maps.has(id)) maps.set(id, await Promise.all([
       map(`m${id}_base.jpg`, true), map(`m${id}_normal.jpg`), map(`m${id}_rough.jpg`), map(`m${id}_metal.jpg`), map(`m${id}_emissive.jpg`, true),
+      map(`m${id}_accent.jpg`),
     ]));
   }
   // The one untextured part is the canopy.
   const canopy = new THREE.MeshStandardMaterial({ color: 0x0b1626, metalness: 0.9, roughness: 0.1, emissive: 0x0c2f4a, emissiveIntensity: 0.6 });
-  const paint = perColor((color) => new Map([...maps].map(([id, [base, normal, rough, metal, emissive]]) => [id, base
-    ? new THREE.MeshStandardMaterial({
-      color, map: base, normalMap: normal, roughnessMap: rough, metalnessMap: metal, roughness: 1, metalness: 0.7,
+  const paint = perColor((color) => new Map([...maps].map(([id, [base, normal, rough, metal, emissive, accent]]) => [id, base
+    ? teamPaint(color, {
+      map: base, normalMap: normal, roughnessMap: rough, metalnessMap: metal, roughness: 1, metalness: 0.8,
       emissiveMap: emissive, emissive: emissive ? color : 0x000000, emissiveIntensity: 2, side: THREE.DoubleSide,
-    })
+    }, { map: accent, attribute: true })
     : canopy])));
   const pick = (color: number, material: string) => paint(color).get(/Material\.(\d+)/.exec(material)?.[1] ?? '') ?? canopy;
   const outer = packedGroup(parts, (p) => pick(0xffffff, p.material));
   outer.children.forEach((m, i) => { m.userData.material = parts[i].material; });
+  markAccents(outer, { wing: 0.72, nose: 0.86 }); // its painted trim is thin, so the wing tips and nose carry the colour too
   castShadows(outer);
   const box = new THREE.Box3().setFromObject(outer);
   templates.anvil = {
@@ -261,8 +321,9 @@ async function loadBomber(renderer: THREE.WebGLRenderer) {
 /** The Javelin: an untextured model, painted in the team colour. */
 async function loadJavelin() {
   const parts = parsePacked(await bytes(javelinUrl));
-  const paint = perColor((color) => new THREE.MeshStandardMaterial({ color, metalness: 0.45, roughness: 0.45 }));
+  const paint = perColor((color) => teamPaint(color, { metalness: 0.6, roughness: 0.38 }, { attribute: true }));
   const outer = packedGroup(parts, () => paint(0xffffff));
+  markAccents(outer, { wing: 0.68, nose: 0.84 });
   castShadows(outer);
   const box = new THREE.Box3().setFromObject(outer);
   templates.javelin = {
@@ -283,9 +344,11 @@ async function loadWayfarer(renderer: THREE.WebGLRenderer) {
   const [fbx, base, emissive] = await Promise.all([
     bytes(wayfarerUrl).then((b) => new FBXLoader(manager).parse(b, '')), tex(wayfarerBase), tex(wayfarerEmissive),
   ]);
-  const paint = perColor((color) => new THREE.MeshStandardMaterial({
-    color, map: base, emissiveMap: emissive, emissive: color, emissiveIntensity: 2, metalness: 0.45, roughness: 0.5,
-  }));
+  // Its texture paints most of the hull, so a mask would make it mostly team colour: accent the
+  // outer pods and the nose instead.
+  const paint = perColor((color) => teamPaint(color, {
+    map: base, emissiveMap: emissive, emissive: color, emissiveIntensity: 2, metalness: 0.6, roughness: 0.42,
+  }, { attribute: true }));
   fbx.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh) return;
@@ -293,6 +356,7 @@ async function loadWayfarer(renderer: THREE.WebGLRenderer) {
     if (/gun/i.test(m.name)) m.userData.turretGun = true; // swivels with the turret arc
   });
   const { outer, box } = normalise(fbx, Math.PI / 2, 58); // source nose points +Z; a medium ship, Bulwark-sized
+  markAccents(outer, { wing: 0.7, nose: 0.82 });
   castShadows(outer);
   templates.wayfarer = {
     build(_skin, color) { const m = paint(color); return paintClone(outer, () => m); },
