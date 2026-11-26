@@ -1,6 +1,26 @@
 // Placeholder universe. Everything here is data so a custom setting can replace it.
 import { parseDial } from './maneuvers';
-import type { PilotDef, ShipType, UpgradeDef } from './types';
+import type { ObstacleKind, ObstacleRule, PilotDef, ShipType, UpgradeDef } from './types';
+
+/**
+ * Obstacles. A ship that moves through or lands on one rolls 1 attack die and suffers its effects; every
+ * kind also obstructs attacks drawn through it (+1 defense die). Scenarios place them; otherwise the board
+ * gets a random mix (generateObstacles).
+ */
+export const OBSTACLE_RULES: Record<ObstacleKind, ObstacleRule> = {
+  asteroid: {
+    name: 'Asteroid', text: 'Roll 1 attack die: a hit deals 1 damage, a crit 1 critical damage. You skip your action.',
+    stress: 0, hitOn: ['hit'], critOn: ['crit'], ionOn: [], skipAction: true,
+  },
+  debris: {
+    name: 'Debris field', text: 'Gain 1 stress, then roll 1 attack die: a crit deals 1 critical damage.',
+    stress: 1, hitOn: [], critOn: ['crit'], ionOn: [], skipAction: false,
+  },
+  gas: {
+    name: 'Gas cloud', text: 'Roll 1 attack die: anything but a blank gives you 1 ion token. You keep your action.',
+    stress: 0, hitOn: [], critOn: [], ionOn: ['hit', 'crit', 'focus'], skipAction: false,
+  },
+};
 
 export const SHIP_TYPES: Record<string, ShipType> = {
   kestrel: {

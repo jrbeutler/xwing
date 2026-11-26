@@ -214,7 +214,23 @@ export interface ShipState {
   removed: boolean;
 }
 
-export interface Obstacle { id: string; kind: 'asteroid'; polygon: Polygon }
+/** Obstacle types. What each does to a ship that moves through or onto it is in OBSTACLE_RULES (content.ts). */
+export type ObstacleKind = 'asteroid' | 'debris' | 'gas';
+export interface Obstacle { id: string; kind: ObstacleKind; polygon: Polygon }
+
+/** What one kind of obstacle does to a ship that moves through or lands on it; all obstacles also obstruct attacks. */
+export interface ObstacleRule {
+  name: string;
+  text: string;
+  /** Stress gained on contact (before the die). */
+  stress: number;
+  /** Results of the 1 attack die rolled on contact that deal 1 hit / 1 crit / 1 ion token. */
+  hitOn: AttackFace[];
+  critOn: AttackFace[];
+  ionOn: AttackFace[];
+  /** The ship skips its action this round. */
+  skipAction: boolean;
+}
 
 export interface Player { id: PlayerId; name: string; faction: string }
 
@@ -275,7 +291,11 @@ export type GameEvent =
   | { type: 'moved'; shipId: string; path: Pose[]; final: Pose; partial: boolean; bumped: string[]; obstacles: string[]; fled: boolean }
   | { type: 'stress'; shipId: string; delta: number }
   | { type: 'action'; shipId: string; action: ActionChoice; linked?: boolean; coordinatedBy?: string }
-  | { type: 'obstacleHit'; shipId: string; obstacleId: string; result: AttackFace }
+  /** A ship moved through or onto an obstacle: the die it rolled and what it suffered. */
+  | {
+      type: 'obstacleHit'; shipId: string; obstacleId: string; kind: ObstacleKind; result: AttackFace;
+      shieldDamage: number; hullDamage: number; stress?: number; ion?: number;
+    }
   | {
       type: 'attack'; attackerId: string; defenderId: string; arc: ArcName; range: number; obstructed: boolean;
       attackRoll: AttackFace[]; attackFinal: AttackFace[]; defenseRoll: DefenseFace[]; defenseFinal: DefenseFace[];

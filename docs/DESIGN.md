@@ -87,7 +87,7 @@ Keep these rules so this stays cheap:
 | Bumping | ✅ | Ship backs along its path until clear. Partial maneuver skips the action and loses the final rotation. **House rule:** a bump also costs 1 stress |
 | Fly-over | ✅ | Ships may pass over others; only the final position matters |
 | Fleeing | ✅ | Base partly off the board, so the ship is destroyed |
-| Asteroids | ✅ | Moving through or landing on one: roll 1 attack die (hit/crit = damage), skip action |
+| Obstacles | ✅ | Three kinds (`OBSTACLE_RULES` in `content.ts`). Moving through or landing on one: **asteroid** roll 1 attack die, hit = 1 damage, crit = 1 critical damage, skip action; **debris field** 1 stress, then roll: crit = 1 critical damage; **gas cloud** roll: anything but a blank = 1 ion token, keep the action. All obstruct attacks (+1 defense die). Scenarios pass their own layout in `GameSetup.obstacles`; otherwise `generateObstacles` lays out a random mix (default 3 asteroids, 2 debris fields, 1 gas cloud), kept apart with room to fly between. Players never place obstacles |
 | Actions | ✅ | Focus, Evade, Lock (any range band, 0–4, one lock at a time), Barrel Roll, Boost, Calculate, Reinforce, Reload, Rotate, Jam, Repair, red actions |
 | Linked actions | ✅ | `ActionDef.linked`: after the first action the ship may perform the linked one (red: +1 stress). Allowed even if the first action left the ship stressed; not after an ion maneuver; one link per activation |
 | Calculate | ✅ | Token; changes 1 focus result (hit attacking, evade defending). Spent instead of focus on a lone focus result, or when one change is enough; kept otherwise. Cleared in the End phase |
@@ -105,7 +105,8 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
-- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, obstacles other than asteroids, and obstacle placement by the players.
+- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, and a scenario format (missions) that would lay out obstacles by design.
+- The AI only checks where a maneuver ends, not what it flies through, so it still clips obstacles on the way (about 10 contacts a game in AI-vs-AI). It dislikes ending on asteroids most, then debris, then gas (`OBSTACLE_AVOID`).
 - Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
 - The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`), and never barrel rolls or boosts yet, so it never uses the Wasp/Javelin links.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.

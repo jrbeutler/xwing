@@ -1,5 +1,5 @@
 import {
-  BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
+  BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, effectSource, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
@@ -108,7 +108,8 @@ function startDeployment(setup: BattleSetup) {
       [P1]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: near[i] })),
       [P2]: setup.opponent.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: far[i] })),
     },
-    obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
+    // No scenario yet: a random mix of asteroids, debris fields and gas clouds.
+    obstacles: generateObstacles({ rng: seed ^ 0x5eed }),
   });
   shown = 0;
   plan = {};
@@ -450,13 +451,19 @@ async function animate(e: GameEvent) {
       return;
     }
     case 'obstacleHit': {
-      const hit = e.result === 'hit' || e.result === 'crit';
       const d = dispShip(e.shipId);
-      if (hit && d) {
-        if (d.shields > 0) { d.shields--; void scene.shieldFlash(e.shipId); } else { d.hull--; void scene.sparks(e.shipId); void scene.shake(e.shipId); }
+      if (d) {
+        d.shields -= e.shieldDamage;
+        d.hull -= e.hullDamage;
+        d.stress += e.stress ?? 0;
+        d.ion += e.ion ?? 0;
         relabel(e.shipId);
       }
-      await scene.floatText(e.shipId, hit ? 'ASTEROID −1' : 'ASTEROID', 'p2c');
+      if (e.shieldDamage) void scene.shieldFlash(e.shipId);
+      if (e.hullDamage) { void scene.sparks(e.shipId); void scene.shake(e.shipId); }
+      const dmg = e.shieldDamage + e.hullDamage;
+      const what = [dmg ? `−${dmg}` : '', e.stress ? `+${e.stress} STRESS` : '', e.ion ? 'ION +1' : ''].filter(Boolean).join(' ');
+      await scene.floatText(e.shipId, `${OBSTACLE_RULES[e.kind].name.toUpperCase()}${what ? ` ${what}` : ''}`, e.ion ? 'ion-float' : 'p2c');
       return;
     }
     case 'damageCard':
@@ -710,7 +717,12 @@ function describe(e: GameEvent): string | null {
     case 'stress': return e.delta > 0 ? `${nameHtml(e.shipId)} gains stress` : `${nameHtml(e.shipId)} clears stress`;
     case 'action': return e.action.type === 'none' || e.action.type === 'jam' ? null
       : `${nameHtml(e.shipId)} performs ${actionText(e.action)}${e.linked ? ' (linked)' : ''}${e.coordinatedBy ? ` (coordinated by ${nameHtml(e.coordinatedBy)})` : ''}`;
-    case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
+    case 'obstacleHit': {
+      const dmg = e.shieldDamage + e.hullDamage;
+      const parts = [`rolls ${e.result}`, e.stress ? `${e.stress} stress` : '', dmg ? `${dmg} damage` : '', e.ion ? '1 ion' : ''].filter(Boolean);
+      const skip = OBSTACLE_RULES[e.kind].skipAction ? '; no action' : '';
+      return `${nameHtml(e.shipId)} hits ${/^[AEIOU]/.test(OBSTACLE_RULES[e.kind].name) ? 'an' : 'a'} ${OBSTACLE_RULES[e.kind].name.toLowerCase()} (${parts.join(', ')}${skip})`;
+    }
     case 'attack': {
       const o = attackOutcome(e);
       const talents = [...(e.diceBy ?? []), ...e.spent.map((t) => t.split(':')[1])].filter((t) => effectSource(t)).map((t) => effectSource(t)!.name);
@@ -1371,7 +1383,7 @@ function renderPlanning() {
   for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click to set it. Special moves (K-turn, loops, rolls) are the buttons under the ship: click once to preview, again to set.
-    A ringed dot hides one; <b>F</b> flips to it. Blue clears stress, red adds it.</p>`;
+    A ringed dot hides one; <b>F</b> flips to it. Blue clears stress, red adds it.</p>${obstacleLegend()}`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
     const card = document.createElement('div');
@@ -1630,6 +1642,17 @@ const weaponName = (t: Pick<Target, 'weapon'>) => (isPrimary(t) ? 'Primary' : UP
 const targetText = (t: Target, attacker?: ShipState) =>
   `${shipById(t.targetId).name}: ${isPrimary(t) ? '' : `${weaponName(t)}, `}range ${t.range}, ` +
   `${attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
+
+/** What each kind of obstacle on this board does, for the planning panel (all of them block line of sight). */
+function obstacleLegend(): string {
+  const kinds = [...new Set(state.obstacles.map((o) => o.kind))];
+  if (!kinds.length) return '';
+  const swatch: Record<string, string> = { asteroid: '#d08a4a', debris: '#d8c56a', gas: '#b08cff' };
+  return `<details class="legend"><summary>Obstacles: ${kinds.map((k) => `<span style="color:${swatch[k]}">${OBSTACLE_RULES[k].name}</span>`).join(' · ')}</summary>
+    <p class="hint">Flying through or onto one:</p>
+    ${kinds.map((k) => `<p class="hint"><b style="color:${swatch[k]}">${OBSTACLE_RULES[k].name}</b>: ${OBSTACLE_RULES[k].text}</p>`).join('')}
+    <p class="hint">All of them obstruct attacks drawn through them (+1 defense die).</p></details>`;
+}
 
 /** The pilot's ability, with its charges if it has any, e.g. "Steady Nerves 0/1" (hover for the text). */
 function abilityLine(s: ShipState): string {

@@ -38,6 +38,8 @@ node apps/web/scripts/bake-obj.mjs path/to/Intergalactic_Spaceship.obj apps/web/
 
 **Spending tokens:** dice tokens are spent for you, and only when they help. A ship keeps its **focus for defense** when an enemy that hasn't fired yet this round can still shoot it, unless the focus would change 2 or more dice or could finish off the target; while it holds focus, a lock reroll also rerolls focus results. A ship carrying a loaded torpedo or missile that needs a lock keeps that lock rather than spend it rerolling a single die with its lasers. Nothing is spent once the hits already guarantee a kill. The log says when a ship "holds focus" or "keeps lock".
 
+**Obstacles:** each battle gets a random mix (a scenario can lay them out instead; you don't place them). Flying through or onto an **asteroid** rolls a die for 1 damage (a crit is critical damage) and costs your action; a **debris field** gives 1 stress and its die only hurts on a crit; a **gas cloud** gives an ion token unless the die is blank, but you keep your action. All of them block line of sight (+1 defense die). The planning panel's **Obstacles** line lists what is on the board and what each does.
+
 **Hit odds:** enemies inside the arc show your exact chance to land at least one damage, the expected damage, and the chance to destroy them. These come from the dice, range bonuses, obstruction and both ships' tokens. While picking a target the numbers are exact. While planning or previewing a boost/roll they're marked *if here*: computed from where your ghost ends up, against enemies where they stand now (they'll move too).
 
 Drag to orbit the camera; scroll to zoom.

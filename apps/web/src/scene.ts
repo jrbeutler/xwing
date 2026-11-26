@@ -9,7 +9,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
-import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
+import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildDebris, buildGasCloud, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
 import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState, RANGE_RULES } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
@@ -247,7 +247,8 @@ export class BattleScene {
     this.obstacleGroup.clear();
     obstacles.forEach((o, i) => {
       const poly = o.polygon.map((p) => { const v = toV3(p.x, p.y); return { x: v.x, z: v.z }; });
-      this.obstacleGroup.add(buildAsteroid(poly, i * 7.31 + 1.7));
+      const seed = i * 7.31 + 1.7;
+      this.obstacleGroup.add(o.kind === 'debris' ? buildDebris(poly, seed) : o.kind === 'gas' ? buildGasCloud(poly, seed) : buildAsteroid(poly, seed));
     });
   }
 

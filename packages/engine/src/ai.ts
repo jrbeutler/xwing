@@ -10,7 +10,7 @@ import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
 import { charged, effectsOf } from './effects';
-import type { ActionChoice, ActionType, ArcName, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
+import type { ActionChoice, ActionType, ArcName, ObstacleKind, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
 
 /**
  * How much a ship likes having a target at each range band (0 = out of range). Most ships want range 2
@@ -54,7 +54,8 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   const poly = basePolygon(pose, size);
   if (!inBounds(poly)) return -1000;
   let score = 0;
-  if (s.obstacles.some((o) => polygonsOverlap(poly, o.polygon))) score -= 40;
+  // Landing on an obstacle: asteroids cost the action and maybe hull, debris a stress, gas clouds an ion token.
+  for (const o of s.obstacles) if (polygonsOverlap(poly, o.polygon)) score -= OBSTACLE_AVOID[o.kind];
   if (s.devices.some((d) => d.kind === 'mine' && polygonsOverlap(poly, devicePolygon(d)))) score -= 45;
   const edge = Math.min(pose.x, pose.y, BOARD_SIZE - pose.x, BOARD_SIZE - pose.y);
   if (edge < 80) score -= (80 - edge) * 0.5;
@@ -85,6 +86,9 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   if (m.difficulty === 'blue' && sh.stress > 0) score += 10;
   return score + jitter() * 6;
 }
+
+/** How much the AI dislikes ending a maneuver on each kind of obstacle. */
+export const OBSTACLE_AVOID: Record<ObstacleKind, number> = { asteroid: 40, debris: 30, gas: 22 };
 
 /** How good a shot is (as the attack decision weighs it): expected damage, plus kills and ion tokens. */
 const shotWorth = (s: GameState, a: ShipState, d: ShipState, t: TargetInfo) => {

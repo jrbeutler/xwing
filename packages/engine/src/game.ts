@@ -1,13 +1,13 @@
 import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
-import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
+import { OBSTACLE_RULES, PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { gainToken, recoverRecurringCharges, runTriggers, statBonus } from './effects';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
 import type {
-  ActionChoice, ActionType, Command, Decision, Device, DropChoice, GameState, GreenToken, Obstacle, Player, PlayerId, ShipState,
+  ActionChoice, ActionType, Command, Decision, Device, DropChoice, GameState, GreenToken, Obstacle, ObstacleKind, Player, PlayerId, ShipState,
 } from './types';
 
 /** A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. */
@@ -60,7 +60,45 @@ export function createGame(setup: GameSetup): GameState {
   return state;
 }
 
-/** Random convex asteroids in the middle of the board, kept apart from each other. */
+/** How many obstacles of each kind a random board gets (generateObstacles). */
+export const DEFAULT_OBSTACLE_MIX: Record<ObstacleKind, number> = { asteroid: 3, debris: 2, gas: 1 };
+
+/**
+ * A random board: `mix` obstacles of each kind in the middle of the table, kept apart from each other.
+ * Asteroids are rocky blobs, debris fields long and thin, gas clouds big and round. Same seed, same board.
+ */
+export function generateObstacles(seedState: { rng: number }, mix: Partial<Record<ObstacleKind, number>> = DEFAULT_OBSTACLE_MIX): Obstacle[] {
+  const shape: Record<ObstacleKind, { r: [number, number]; stretch: [number, number]; points: number; jag: number }> = {
+    asteroid: { r: [28, 50], stretch: [1, 1], points: 8, jag: 0.35 },
+    debris: { r: [45, 65], stretch: [0.35, 0.5], points: 10, jag: 0.25 },
+    gas: { r: [50, 70], stretch: [0.8, 1], points: 12, jag: 0.15 },
+  };
+  const order = (Object.keys(mix) as ObstacleKind[]).flatMap((k) => Array<ObstacleKind>(mix[k] ?? 0).fill(k));
+  const out: (Obstacle & { c: { x: number; y: number }; r: number })[] = [];
+  for (const kind of order) {
+    const sh = shape[kind];
+    for (let tries = 0; tries < 300; tries++) {
+      const r = sh.r[0] + nextFloat(seedState) * (sh.r[1] - sh.r[0]);
+      const cx = 160 + nextFloat(seedState) * (BOARD_SIZE - 320);
+      const cy = 230 + nextFloat(seedState) * (BOARD_SIZE - 460);
+      const stretch = sh.stretch[0] + nextFloat(seedState) * (sh.stretch[1] - sh.stretch[0]);
+      const turn = nextFloat(seedState) * Math.PI;
+      const pts = Array.from({ length: sh.points }, (_, i) => {
+        const a = (i / sh.points) * Math.PI * 2 + nextFloat(seedState) * 0.4;
+        const rr = r * (1 - sh.jag / 2 + nextFloat(seedState) * sh.jag);
+        const lx = Math.cos(a) * rr, ly = Math.sin(a) * rr * stretch;
+        return vec(cx + lx * Math.cos(turn) - ly * Math.sin(turn), cy + lx * Math.sin(turn) + ly * Math.cos(turn));
+      });
+      // Keep a ship's width (and then some) between obstacles so there is always a way through.
+      if (out.some((o) => Math.hypot(o.c.x - cx, o.c.y - cy) < o.r + r + 70)) continue;
+      out.push({ id: `${kind}-${out.length}`, kind, polygon: convexHull(pts), c: { x: cx, y: cy }, r });
+      break;
+    }
+  }
+  return out.map(({ id, kind, polygon }) => ({ id, kind, polygon }));
+}
+
+/** Random convex asteroids in the middle of the board, kept apart from each other (the original asteroid-only board). */
 export function generateAsteroids(seedState: { rng: number }, count = 5): Obstacle[] {
   const out: Obstacle[] = [];
   let tries = 0;
@@ -499,17 +537,13 @@ function continueActivation(s: GameState) {
       s.queueIndex++;
       continue;
     }
-    for (const oid of mv.obstacles) {
-      const [face] = rollAttack(s, 1);
-      s.log.push({ type: 'obstacleHit', shipId: sh.id, obstacleId: oid, result: face });
-      if (face === 'hit') sufferDamage(s, sh, 1, 0);
-      if (face === 'crit') sufferDamage(s, sh, 0, 1);
-    }
+    for (const oid of mv.obstacles) obstacleContact(s, sh, s.obstacles.find((o) => o.id === oid)!);
     afterManeuver(s, sh, m, mv.obstacles.length > 0, ionized);
     triggerMines(s, sh, [...mv.path, mv.final]);
     if (sh.hull <= 0 || sh.destroyed) { destroy(s, sh); s.queueIndex++; continue; }
 
-    const canAct = !mv.partial && mv.obstacles.length === 0 && sh.stress === 0;
+    const skip = mv.obstacles.some((oid) => OBSTACLE_RULES[s.obstacles.find((o) => o.id === oid)!.kind].skipAction);
+    const canAct = !mv.partial && !skip && sh.stress === 0;
     if (canAct) {
       const options = actionOptions(s, sh, ionized);
       if (options.length > 1) {
@@ -522,6 +556,24 @@ function continueActivation(s: GameState) {
   // End of the Activation phase: every bomb on the table goes off.
   for (const d of s.devices.filter((x) => x.kind === 'bomb')) detonate(s, d, inBlast(s, d));
   beginEngagement(s);
+}
+
+/**
+ * A ship moved through or onto an obstacle: stress first, then 1 attack die and what it deals (OBSTACLE_RULES).
+ * Damage cards it deals are logged after the obstacle event.
+ */
+function obstacleContact(s: GameState, sh: ShipState, o: Obstacle) {
+  const rule = OBSTACLE_RULES[o.kind];
+  if (rule.stress) sh.stress += rule.stress;
+  const [face] = rollAttack(s, 1);
+  const ev: Extract<GameState['log'][number], { type: 'obstacleHit' }> = {
+    type: 'obstacleHit', shipId: sh.id, obstacleId: o.id, kind: o.kind, result: face, shieldDamage: 0, hullDamage: 0,
+    ...(rule.stress ? { stress: rule.stress } : {}),
+  };
+  s.log.push(ev);
+  const hit = rule.hitOn.includes(face) ? 1 : 0, crit = rule.critOn.includes(face) ? 1 : 0;
+  if (hit || crit) Object.assign(ev, sufferDamage(s, sh, hit, crit));
+  if (rule.ionOn.includes(face)) { sh.ion++; ev.ion = 1; }
 }
 
 /** Effects that reward fully executing a red maneuver (Elusive, Hotshot). */
