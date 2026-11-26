@@ -30,7 +30,7 @@ createGame(setup) -> GameState            // JSON-serialisable
 apply(state, command) -> GameState        // pure; throws on illegal commands
 state.pending: Decision                   // what input is needed, and from whom
 state.log: GameEvent[]                    // append-only; clients animate from this
-viewFor(state, playerId) -> GameState     // redacts hidden info (opponent dials, RNG)
+viewFor(state, playerId) -> GameState     // redacts hidden info (opponent dials in every phase, RNG, deck order)
 ```
 
 - The **state** is plain data. The RNG state is a single integer inside it.
@@ -190,7 +190,7 @@ The AI already decides from `viewFor` (the redacted view), the same view a netwo
 
 1. ✅ **Movement and combat vertical slice**: engine + tests + 3D web client vs AI.
 2. **Rules depth**: interactive dice mods, damage deck, more actions, more obstacle types, pilot abilities as data-driven effect hooks.
-3. **Multiplayer**: ✅ local pass-and-play (two players on one device, hand-over screens hide each player's planning). Next: `apps/server` (WebSocket, rooms, reconnection, server-authoritative state), lobby in the web client.
+3. **Multiplayer**: ✅ local pass-and-play (two players on one device, hand-over screens hide each player's planning). ✅ Online between friends with no server (`apps/web/src/online.ts`, `lobby.ts`): the host's browser runs the game and the guest connects to it over WebRTC (PeerJS; the public PeerJS service only brokers the connection). The guest sends commands, the host checks them with `apply` and sends back `viewFor(state, guest)` plus the new log events (`sync`); both deploy at once and press Ready; the host saves the game in localStorage after every change and can resume it after a reload, and the guest rejoins with a seat token (or reconnects by itself). Not cheat-proof: the host has the whole state. Next: `apps/server` (WebSocket rooms, server-authoritative state) so neither player holds the game; the lobby and protocol carry over, with the server taking the host's role.
 4. **Missions**: scenario files (deployment zones, objectives, reinforcements, turn limits), mission scripting hooks.
 5. **Campaign**: pilot XP and traits, injuries and permadeath, hangar and upgrades, carrier facilities, star map with rising threat, save/load.
 6. **Own universe**: replace the placeholder content, art direction, audio.

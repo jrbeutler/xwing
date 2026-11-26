@@ -9,7 +9,8 @@ import {
 import { onModelsReady, shipPreview } from './preview';
 
 /** Who flies the second squad: the AI, or a second person on the same device (pass and play). */
-export type Versus = 'ai' | 'human';
+/** Against the AI, two people on one device, or two people online (one hosts, the other joins with a code). */
+export type Versus = 'ai' | 'human' | 'online';
 /**
  * `hints`: whether each human player sees the AI's suggested maneuver while planning (a learning aid). `you`
  * is player 1; `them` is player 2 in a two-player game (ignored against the AI).
@@ -90,7 +91,8 @@ type Side = 'you' | 'them';
 export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup) {
   const last = load<{ budget?: number; squad?: Squad }>(LAST_KEY, {});
   let budget = keep?.budget ?? (BUDGETS.includes(last.budget ?? 0) ? last.budget! : DEFAULT_BUDGET);
-  let versus: Versus = keep?.versus ?? (load<string>(VERSUS_KEY, 'ai') === 'human' ? 'human' : 'ai');
+  const lastVersus = load<string>(VERSUS_KEY, 'ai');
+  let versus: Versus = keep?.versus ?? (lastVersus === 'human' || lastVersus === 'online' ? lastVersus : 'ai');
   const hints: Record<Side, boolean> = keep?.hints ? { ...keep.hints } : { you: false, them: false, ...load<Partial<Record<Side, boolean>>>(HINTS_KEY, {}) };
   let player: Squad = keep ? structuredClone(keep.player) : clean(last.squad ?? { ships: [] });
   let aiSeed = (Math.random() * 1e9) | 0;
@@ -160,8 +162,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           <h1>New battle</h1>
           <div class="head-opts">
             <div class="seg" role="radiogroup" aria-label="Opponent">
-              <button role="radio" aria-checked="${!two()}" class="${two() ? '' : 'on'}" data-versus="ai">vs AI</button>
-              <button role="radio" aria-checked="${two()}" class="${two() ? 'on' : ''}" data-versus="human">2 players</button>
+              ${(['ai', 'human', 'online'] as const).map((v) => `<button role="radio" aria-checked="${versus === v}" class="${versus === v ? 'on' : ''}" data-versus="${v}">${{ ai: 'vs AI', human: '2 players', online: 'Online' }[v]}</button>`).join('')}
             </div>
             <label>Points <select id="su-budget">${BUDGETS.map((b) => `<option ${b === budget ? 'selected' : ''}>${b}</option>`).join('')}</select></label>
           </div>
@@ -169,7 +170,13 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
         ${two() ? '<p class="hint versus-note">Two players, one device: take turns at the controls. Before each player plans their moves, a screen asks the other to look away.</p>' : ''}
         <div class="setup-cols ${two() ? 'two' : ''}">
           ${editableCol('you', two() ? '<span class="p1c">Player 1</span> · Coalition' : 'Your squad', saved)}
-          ${two() ? editableCol('them', '<span class="p2c">Player 2</span> · Syndicate', saved) : `
+          ${two() ? editableCol('them', '<span class="p2c">Player 2</span> · Syndicate', saved) : versus === 'online' ? `
+          <section class="setup-col them online-note">
+            <div class="col-head"><h2>Online opponent</h2></div>
+            <p>Play a friend on another device. On the next screen, <b>host</b> a game and send them its code, or <b>join</b> theirs.</p>
+            <p class="hint">The host's points limit applies to both squads. The two browsers connect directly: no account needed, but the host's
+              tab must stay open for the whole game (a reload resumes it). The host's browser runs the game, so this is for friends.</p>
+          </section>` : `
           <section class="setup-col them">
             <div class="col-head"><h2>Opponent (AI)</h2><div class="points"><b>${squadCost(ai)}</b> / ${budget}</div></div>
             <div class="ships">${ai.ships.map((s, i) => aiCard(s, i)).join('')}</div>
@@ -177,8 +184,8 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           </section>`}
         </div>
         <footer class="setup-foot">
-          <span class="hint">${problems.length ? esc(problems[0]) : two() ? 'Next: each player places their ships.' : 'Next: place your ships in your setup area.'}</span>
-          <button class="go" id="su-deploy" ${problems.length ? 'disabled' : ''}>Deploy →</button>
+          <span class="hint">${problems.length ? esc(problems[0]) : two() ? 'Next: each player places their ships.' : versus === 'online' ? 'Next: host a game or join one.' : 'Next: place your ships in your setup area.'}</span>
+          <button class="go" id="su-deploy" ${problems.length ? 'disabled' : ''}>${versus === 'online' ? 'Continue online →' : 'Deploy →'}</button>
         </footer>
       </div>`;
     wire();
@@ -308,7 +315,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     if (reroll) reroll.onclick = () => { aiSeed = (Math.random() * 1e9) | 0; refreshAi(true); render(); };
     $('su-deploy')!.onclick = () => {
       root.remove();
-      onDeploy({ budget, versus, player: structuredClone(player), opponent: structuredClone(two() ? second : ai), hints: { you: hints.you, them: two() && hints.them } });
+      onDeploy({ budget, versus, player: structuredClone(player), opponent: versus === 'online' ? { ships: [] } : structuredClone(two() ? second : ai), hints: { you: hints.you, them: two() && hints.them } });
     };
     each<HTMLInputElement>('[data-name]', (input) => { input.oninput = () => { saveName[input.dataset.name as Side] = input.value; }; });
     const reopenSaved = (side: Side) => { const d = root.querySelector<HTMLDetailsElement>(`[data-saved="${side}"]`); if (d) d.open = true; };

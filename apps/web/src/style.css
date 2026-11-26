@@ -167,12 +167,12 @@ html.compact .chips.special-row { display: flex; }
 #log b.crit, #recap b.crit { color: #ff8a65; }
 
 /* ---------- squad builder (before a battle) ---------- */
-#setup { position: fixed; inset: 0; z-index: 20; overflow: auto; background: rgba(3, 6, 12, .82); backdrop-filter: blur(3px);
+#setup, #lobby { position: fixed; inset: 0; z-index: 20; overflow: auto; background: rgba(3, 6, 12, .82); backdrop-filter: blur(3px);
   padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
 .setup-inner { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 .setup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .setup-head h1 { margin: 0; font-size: 22px; letter-spacing: .04em; }
-.setup-head select, #setup input { background: #0d1526; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.setup-head select, #setup input, #lobby input { background: #0d1526; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
 .setup-cols { display: grid; grid-template-columns: 3fr 2fr; gap: 14px; align-items: start; }
 .setup-col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .col-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -395,3 +395,20 @@ html.compact #log.open { cursor: pointer; }
 .card .suggest > span { color: #ffd166; }
 .card .suggest button { float: right; margin-top: -2px; }
 .card .suggest .hint { margin-top: 2px; }
+
+/* Online: the note in place of the opponent column, and the host/join lobby. */
+.online-note p { margin: 0 0 8px; font-size: 13px; }
+#lobby .setup-inner { max-width: 640px; }
+#lobby .lobby-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+#lobby .lobby-card h2 { margin: 0; }
+#lobby .code { font: 700 40px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .25em; color: var(--accent); text-align: center; padding: 6px 0; user-select: all; }
+#lobby .code-input { font: 700 24px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .2em; text-transform: uppercase; text-align: center; width: 9em; flex: none; }
+#lobby .status { font-size: 13px; color: var(--muted); }
+#lobby .status.err { color: #ff9a9a; }
+#lobby .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#lobby .or { text-align: center; color: var(--muted); font-size: 12px; }
+#lobby .spinner { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: lobby-pulse 1s ease-in-out infinite alternate; }
+@keyframes lobby-pulse { from { opacity: .25; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #lobby .spinner { animation: none; } }
+#netstatus { position: fixed; left: 50%; transform: translateX(-50%); top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 7; background: #280a10eb; border: 1px solid #a33a46; color: #ffd0d5; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+#netstatus[hidden] { display: none; }

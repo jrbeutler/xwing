@@ -98,6 +98,18 @@ describe('full game loop', () => {
     expect(v.rng).toBe(0);
   });
 
+  it('keeps opponent dials hidden during activation, before their ships reveal them', () => {
+    let g = quickSkirmish(5);
+    g = apply(g, aiDecide(g, 'p1')!);
+    g = apply(g, aiDecide(g, 'p2')!);
+    expect(g.phase).not.toBe('planning');
+    expect(g.ships.some((s) => s.owner === 'p2' && s.dial !== null)).toBe(true);
+    const v = viewFor(g, 'p1');
+    expect(v.ships.filter((s) => s.owner === 'p2').every((s) => s.dial === null)).toBe(true);
+    // Our own dials stay visible to us.
+    expect(v.ships.filter((s) => s.owner === 'p1' && !s.destroyed).every((s) => s.dial !== null)).toBe(true);
+  });
+
   it('rejects illegal commands', () => {
     const g = quickSkirmish(5);
     expect(() => apply(g, { type: 'attack', playerId: 'p1', targetId: null })).toThrow();
