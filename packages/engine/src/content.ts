@@ -79,51 +79,67 @@ export const PILOTS: Record<string, PilotDef> = {
   'scout-two': { id: 'scout-two', name: 'Scout Two', specialty: 'freighter', ship: 'wayfarer', initiative: 2, cost: 2, unique: false },
 };
 
-/** Power-ups: stat boosts (modifications) and pilot talents. Ordnance, turrets and bombs come next. */
+/**
+ * Power-ups: talents, ordnance, turrets, devices and modifications. `effects` is what each does in play,
+ * as data the engine interprets (effects.ts); `text` is the same in words for players.
+ */
 export const UPGRADES: Record<string, UpgradeDef> = {
   // Talents belong to pilots (1 slot at initiative 3-4, 2 at 5+), from their specialty's pool.
   // Fighter talents follow X-Wing 2nd edition talents.
   marksman: {
     id: 'marksman', name: 'Marksman', slot: 'talent', cost: 3, classes: ['fighter', 'bomber'],
     text: 'When attacking a ship in your bullseye, reroll 1 attack die.',
+    effects: [{ kind: 'rerollAttack', dice: 1, if: { primary: true, turret: false, bullseye: true } }],
   },
   'crack-shot': {
     id: 'crack-shot', name: 'Crack Shot', slot: 'talent', cost: 2, classes: ['fighter'], charges: 1,
     text: 'Once per battle, when attacking a ship in your bullseye, cancel 1 of its evade results.',
+    effects: [{ kind: 'cancelEvade', cost: 'charge', if: { primary: true, bullseye: true } }],
   },
   elusive: {
     id: 'elusive', name: 'Elusive', slot: 'talent', cost: 3, classes: ['fighter'], charges: 1,
     text: 'When defending, spend the charge to reroll 1 defense die. Recover it after you fully execute a red maneuver.',
+    effects: [
+      { kind: 'rerollDefense', dice: 1, cost: 'charge' },
+      { kind: 'trigger', on: 'redManeuverExecuted', if: { chargesBelowMax: true }, do: [{ op: 'recoverCharge' }], log: 'recovered' },
+    ],
   },
   outmaneuver: {
     id: 'outmaneuver', name: 'Outmaneuver', slot: 'talent', cost: 5, classes: ['fighter'],
     text: "Your front-arc attacks from outside the defender's firing arc make it roll 1 fewer defense die.",
+    effects: [{ kind: 'dice', when: 'attacking', dice: 'defense', delta: -1, if: { frontArc: true, outsideDefenderArcs: true } }],
   },
   hotshot: {
     id: 'hotshot', name: 'Hotshot', slot: 'talent', cost: 3, classes: ['fighter'],
     text: 'After you fully execute a red maneuver, gain 1 focus.',
+    effects: [{ kind: 'trigger', on: 'redManeuverExecuted', do: [{ op: 'gainFocus' }], log: 'used' }],
   },
   // Bomber talents.
   'ordnance-specialist': {
     id: 'ordnance-specialist', name: 'Ordnance Specialist', slot: 'talent', cost: 3, classes: ['bomber'],
     text: 'When attacking with a missile or torpedo, reroll 1 attack die.',
+    effects: [{ kind: 'rerollAttack', dice: 1, if: { primary: false, turret: false } }],
   },
   'payload-expert': {
     id: 'payload-expert', name: 'Payload Expert', slot: 'talent', cost: 3, classes: ['bomber'],
     text: 'Your bombs and mines each start with 1 extra charge.',
+    effects: [{ kind: 'stat', stat: 'deviceCharges', delta: 1 }],
   },
   // Freighter talents.
   'steady-gunner': {
     id: 'steady-gunner', name: 'Steady Gunner', slot: 'talent', cost: 3, classes: ['freighter'],
     text: 'When attacking through your turret arc, reroll 1 attack die.',
+    effects: [{ kind: 'rerollAttack', dice: 1, if: { turret: true } }],
   },
   'signal-jammer': {
     id: 'signal-jammer', name: 'Signal Jammer', slot: 'talent', cost: 2, classes: ['freighter'],
     text: 'Your Jam action reaches range 3 (on a ship that has Jam).',
+    effects: [{ kind: 'stat', stat: 'jamRange', delta: 1 }],
   },
   'damage-control': {
     id: 'damage-control', name: 'Damage Control', slot: 'talent', cost: 4, classes: ['freighter'], charges: 1,
     text: 'Once per battle, in the End phase, if your shields are below their maximum, recover 1 shield.',
+    effects: [{ kind: 'trigger', on: 'endPhase', cost: 'charge', if: { shieldsBelowMax: true }, do: [{ op: 'recoverShield' }], log: 'used' }],
   },
   // Ordnance: secondary weapons. No range bonuses (those are for primary attacks); one charge per shot.
   'proton-torpedoes': {
@@ -182,5 +198,9 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   'stealth-coating': {
     id: 'stealth-coating', name: 'Stealth Coating', slot: 'modification',
     text: 'Roll 1 extra defense die until you first take damage.', cost: { small: 4, medium: 6, large: 8 }, charges: 1,
+    effects: [
+      { kind: 'dice', when: 'defending', dice: 'defense', delta: 1, needsCharge: true },
+      { kind: 'trigger', on: 'damaged', needsCharge: true, do: [{ op: 'loseCharges' }], log: 'spent' },
+    ],
   },
 };

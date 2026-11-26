@@ -32,7 +32,58 @@ export interface UpgradeDef {
   device?: DeviceDef;
   /** Talents only: the pilot specialties that can learn it. */
   classes?: ShipClass[];
+  /** What it does in play, as data the engine interprets (see effects.ts). */
+  effects?: Effect[];
 }
+
+/**
+ * What an attack looks like, for effects that only apply to some attacks. Every listed field must match.
+ *   primary: a primary weapon (not a missile, torpedo or turret upgrade)
+ *   turret: fired through a turret arc (a turret primary or a turret upgrade)
+ *   bullseye: the defender is in the attacker's bullseye
+ *   frontArc: a front-arc attack (not through a turret arc)
+ *   outsideDefenderArcs: the attacker is outside every firing arc of the defender
+ */
+export interface AttackCondition { primary?: boolean; turret?: boolean; bullseye?: boolean; frontArc?: boolean; outsideDefenderArcs?: boolean }
+
+/** Moments in the round that trigger effects. */
+export type TriggerEvent =
+  /** After the ship fully executes a red maneuver. */
+  | 'redManeuverExecuted'
+  /** In the End phase, for each ship still in play. */
+  | 'endPhase'
+  /** After the ship loses shields or hull. */
+  | 'damaged';
+
+/** What a triggered effect does to its ship. */
+export type EffectOp =
+  | { op: 'gainFocus' }
+  | { op: 'recoverShield' }
+  /** Recover 1 charge on the effect's own upgrade. */
+  | { op: 'recoverCharge' }
+  /** Lose every charge on the effect's own upgrade. */
+  | { op: 'loseCharges' };
+
+/**
+ * An effect of an upgrade (later also of a pilot). `cost: 'charge'` spends one of the upgrade's charges each
+ * time it is used (and needs one left); `needsCharge` needs a charge but does not spend it.
+ */
+export type Effect =
+  /** Change how many dice are rolled while this ship attacks or defends: `dice` says which side's dice. */
+  | { kind: 'dice'; when: 'attacking' | 'defending'; dice: 'attack' | 'defense'; delta: number; if?: AttackCondition; needsCharge?: boolean }
+  /** While attacking: reroll up to `dice` attack dice (blanks first, then focus results). */
+  | { kind: 'rerollAttack'; dice: number; if?: AttackCondition; cost?: 'charge' }
+  /** While defending: reroll up to `dice` defense dice (blanks first, then focus results if it has no focus token). */
+  | { kind: 'rerollDefense'; dice: number; if?: AttackCondition; cost?: 'charge' }
+  /** While attacking: cancel 1 of the defender's evade results (only when it still leaves damage to stop). */
+  | { kind: 'cancelEvade'; if?: AttackCondition; cost?: 'charge' }
+  /** On `on`, if the conditions hold, log the upgrade as `log` and apply `do` in order. */
+  | {
+      kind: 'trigger'; on: TriggerEvent; do: EffectOp[]; log: 'used' | 'recovered' | 'spent';
+      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean }; cost?: 'charge'; needsCharge?: boolean;
+    }
+  /** A flat bonus to a number the rules look up. */
+  | { kind: 'stat'; stat: 'jamRange' | 'deviceCharges'; delta: number };
 
 export interface DeviceDef {
   /** Bombs detonate at the end of the Activation phase; mines when a ship moves through or onto them. */
@@ -191,7 +242,8 @@ export type GameEvent =
       /** Damage, stress and ions this step caused, for the UI to animate. */
       shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
     }
-  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered' }
+  /** An upgrade was used, spent or recovered; `focus` / `shields` say what it gave the ship (a jam may still cancel the focus). */
+  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered'; focus?: number; shields?: number }
   /** A jam landed: what the target lost (a token, its lock), or 'jammed' when it had nothing and took a jam token. */
   | { type: 'jam'; shipId: string; targetId: string; effect: 'focus' | 'evade' | 'lock' | 'jammed' }
   /** A jammed ship's jam token cancelled a token it was about to gain. */

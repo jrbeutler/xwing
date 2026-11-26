@@ -465,9 +465,12 @@ async function animate(e: GameEvent) {
       if (e.what === 'spent') { if (u) u.charges = 0; await scene.floatText(e.shipId, `${name} SPENT`, 'p2c'); }
       if (e.what === 'recovered') { if (u) u.charges++; await scene.floatText(e.shipId, `${name} READY`, 'talent-float'); }
       if (e.what === 'used') {
-        if (d && e.upgrade === 'hotshot') { d.focus++; relabel(e.shipId); }
-        if (d && e.upgrade === 'damage-control') { d.shields++; if (u) u.charges--; relabel(e.shipId); }
-        const extra = e.upgrade === 'hotshot' ? ' +FOCUS' : e.upgrade === 'damage-control' ? ' +SHIELD' : '';
+        // What the effect gave the ship comes with the event; a charge is spent if the effect costs one.
+        if (u && UPGRADES[e.upgrade].effects?.some((fx) => fx.kind === 'trigger' && fx.log === 'used' && fx.cost === 'charge')) u.charges--;
+        if (d && e.focus) d.focus += e.focus;
+        if (d && e.shields) d.shields += e.shields;
+        if (d) relabel(e.shipId);
+        const extra = (e.focus ? ' +FOCUS' : '') + (e.shields ? ' +SHIELD' : '');
         await scene.floatText(e.shipId, name + extra, 'talent-float');
       }
       return;
@@ -587,21 +590,24 @@ async function showAttack(e: AttackEvent) {
 
   // Spent tokens leave the labels
   const ad = dispShip(a.id);
-  // Talents the dice policy used: spend their charges on the board and say so over the ship.
-  const TALENT_USED: Record<string, [ShipState | undefined, string, string]> = {
-    'attacker:marksman': [ad, a.id, 'marksman'], 'attacker:ordnance-specialist': [ad, a.id, 'ordnance-specialist'],
-    'attacker:steady-gunner': [ad, a.id, 'steady-gunner'], 'attacker:crack-shot': [ad, a.id, 'crack-shot'], 'defender:elusive': [target, d.id, 'elusive'],
+  // Upgrades the dice policy used ('attacker:<id>' / 'defender:<id>'): spend their charges on the board and say so over the ship.
+  const upgradeUsed = (t: string): [ShipState | undefined, string, string] | undefined => {
+    const [side, id] = t.split(':');
+    if (!UPGRADES[id]) return undefined;
+    return side === 'attacker' ? [ad, a.id, id] : [target, d.id, id];
   };
   for (const t of e.spent) {
     if (t === 'attacker:focus' && ad) ad.focus--;
     if (t === 'attacker:lock' && ad) ad.lock = null;
     if (t === 'defender:focus' && target) target.focus--;
     if (t === 'defender:evade' && target) target.evade--;
-    const used = TALENT_USED[t];
+    const used = upgradeUsed(t);
     if (used) {
       const [ship, id, upgrade] = used;
       const u = ship?.upgrades.find((x) => x.id === upgrade);
-      if (u && UPGRADES[upgrade].charges) u.charges--;
+      // Only effects that cost a charge spend one (the same dice effects the engine applied).
+      const costs = UPGRADES[upgrade].effects?.some((fx) => (fx.kind === 'rerollAttack' || fx.kind === 'rerollDefense' || fx.kind === 'cancelEvade') && fx.cost === 'charge');
+      if (u && costs) u.charges--;
       void scene.floatText(id, UPGRADES[upgrade].name.toUpperCase(), 'talent-float');
     }
   }
@@ -695,8 +701,10 @@ function describe(e: GameEvent): string | null {
     case 'upgrade': {
       const n = UPGRADES[e.upgrade].name;
       if (e.what === 'recovered') return `${nameHtml(e.shipId)}'s ${n} is ready again`;
-      if (e.what === 'used' && e.upgrade === 'hotshot') return `${nameHtml(e.shipId)}: ${n} (gains focus)`;
-      if (e.what === 'used' && e.upgrade === 'damage-control') return `${nameHtml(e.shipId)}: ${n} (recovers 1 shield)`;
+      if (e.what === 'used' && (e.focus || e.shields)) {
+        const gains = [e.focus ? 'gains focus' : '', e.shields ? `recovers ${e.shields} shield${e.shields > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
+        return `${nameHtml(e.shipId)}: ${n} (${gains})`;
+      }
       if (e.what === 'used') return `${nameHtml(e.shipId)} uses ${n}`;
       return `${nameHtml(e.shipId)}'s ${n} is spent`;
     }
@@ -1546,7 +1554,7 @@ type Target = TargetInfo;
 const weaponName = (t: Pick<Target, 'weapon'>) => (isPrimary(t) ? 'Primary' : UPGRADES[t.weapon!].name);
 const targetText = (t: Target, attacker?: ShipState) =>
   `${shipById(t.targetId).name}: ${isPrimary(t) ? '' : `${weaponName(t)}, `}range ${t.range}, ` +
-  `${attacker ? attackDiceFor(attacker, t) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
+  `${attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
 
 /** An upgrade with its charges, e.g. "Proton Torpedoes 1/2", or "(spent)" for one-shot talents. */
 function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
@@ -1747,7 +1755,7 @@ function renderAttack(shipId: string, targets: Target[]) {
         <div class="gs-name"><span class="p2c">${e.name}</span>${isBest ? '<span class="gs-best">Best shot</span>' : ''}<span class="gs-count">${i + 1} / ${n}</span></div>
         <div class="gs-odds"><span class="gs-pct ${cls}">${pct(o.hit)}</span><span>hit chance</span></div>
         <div class="gs-stats">${o.expected.toFixed(1)} dmg${o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : ''}${o.ion >= 0.05 ? ` · <span class="ion">${o.ion.toFixed(1)} ion</span>` : ''}</div>
-        <div class="gs-meta">${wname} · range ${c.range} · ${attackDiceFor(s, c)} dice${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
+        <div class="gs-meta">${wname} · range ${c.range} · ${attackDiceFor(s, c, e)} dice${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
           · hull ${e.hull} · shields ${e.shields}</div>
       </div>${nav('next', 'Next target', '&#8250;')}</div>
       ${altHtml ? `<div class="gs-alts"><span>Also on this ship:</span>${altHtml}</div>` : ''}
@@ -1836,7 +1844,7 @@ function renderAttack(shipId: string, targets: Target[]) {
     const b = document.createElement('button');
     b.className = 'opt';
     b.innerHTML = `<b>${e.name}</b> · ${weaponName(t)}${isPrimary(t) ? '' : ` (${charges} left)`}: range ${t.range}, ${t.arc} arc, ` +
-      `${attackDiceFor(s, t)} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
+      `${attackDiceFor(s, t, e)} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
       `<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
     // While aiming, hovering a line swings the sights to it.
     b.onmouseenter = () => { if (weapon) { weapon = t.weapon ?? 'primary'; candId = t.targetId; show(); } };

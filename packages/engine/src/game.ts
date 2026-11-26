@@ -2,6 +2,7 @@ import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygon
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { gainToken, runTriggers, statBonus } from './effects';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
@@ -41,7 +42,7 @@ export function createGame(setup: GameSetup): GameState {
       const t = SHIP_TYPES[hullOf(e)];
       // Signature talents come with the pilot; they take talent slots ahead of bought upgrades.
       const ups = allUpgrades({ ...e, upgrades: e.upgrades ?? [] }).map((id) => UPGRADES[id]);
-      const payload = ups.some((u) => u.id === 'payload-expert') ? 1 : 0;
+      const payload = statBonus(ups.map((u) => u.id), 'deviceCharges');
       const hull = t.hull + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
       const shields = t.shields + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
       const n = (fielded.get(pilot.id) ?? 0) + 1;
@@ -455,17 +456,9 @@ function continueActivation(s: GameState) {
   beginEngagement(s);
 }
 
-/** Talents that reward fully executing a red maneuver. */
+/** Effects that reward fully executing a red maneuver (Elusive, Hotshot). */
 function afterRedManeuver(s: GameState, sh: ShipState) {
-  const elusive = upgradeOf(sh, 'elusive');
-  if (elusive && elusive.charges < (UPGRADES.elusive.charges ?? 1)) {
-    elusive.charges++;
-    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'elusive', what: 'recovered' });
-  }
-  if (upgradeOf(sh, 'hotshot')) {
-    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'hotshot', what: 'used' });
-    gainToken(s, sh, 'focus');
-  }
+  runTriggers(s, sh, 'redManeuverExecuted');
 }
 
 /** Damage cards that react to the maneuver a ship just flew. */
@@ -493,7 +486,7 @@ export const BUMP_STRESS = 1;
 
 /** Range limit of the Jam action (inside one of the jammer's firing arcs). Signal Jammer adds 1. */
 export const JAM_RANGE = 2;
-export const jamRange = (sh: ShipState) => JAM_RANGE + (upgradeOf(sh, 'signal-jammer') ? 1 : 0);
+export const jamRange = (sh: ShipState) => JAM_RANGE + statBonus(sh, 'jamRange');
 
 /** Enemies this ship could jam: at range 1-2 (1-3 with Signal Jammer) inside any of its firing arcs, turret included. */
 export function jamTargets(s: GameState, sh: ShipState): ShipState[] {
@@ -501,16 +494,6 @@ export function jamTargets(s: GameState, sh: ShipState): ShipState[] {
     const m = measureArc(s, sh, t, w.arc === 'turret' ? sh.turretArc : w.arc);
     return m !== null && m.range <= jamRange(sh);
   }));
-}
-
-/** Give a ship a Focus or Evade token, unless a jam token cancels it. */
-function gainToken(s: GameState, sh: ShipState, kind: 'focus' | 'evade') {
-  if (sh.jam > 0) {
-    sh.jam--;
-    s.log.push({ type: 'jamSpent', shipId: sh.id, lost: kind });
-    return;
-  }
-  sh[kind]++;
 }
 
 /**
@@ -599,12 +582,7 @@ function endPhase(s: GameState) {
   s.log.push({ type: 'phase', phase: 'end' });
   for (const sh of s.ships) {
     if (sh.destroyed) sh.removed = true;
-    const dc = !sh.destroyed && sh.shields < sh.maxShields ? upgradeOf(sh, 'damage-control', true) : undefined;
-    if (dc) {
-      dc.charges--;
-      sh.shields++;
-      s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'damage-control', what: 'used' });
-    }
+    if (!sh.destroyed) runTriggers(s, sh, 'endPhase');
     sh.focus = 0;
     sh.evade = 0;
     sh.jam = 0;

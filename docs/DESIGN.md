@@ -46,6 +46,28 @@ Unreal does not run TypeScript, so the engine is designed so that moving to Unre
 2. **Unreal client.** Unreal connects to the same protocol (WebSocket plugin + JSON). It renders poses from events exactly like the web client does, because the coordinate system and units (mm, radians, +y up on the board) are specified here.
 3. **Offline/single-player in Unreal.** Either bundle the Node server as a local sidecar, or port the engine to C++. The engine is small (geometry, templates, phase machine, combat), and the test suite plus recorded game logs (seed + commands → expected events) become the acceptance tests for the port.
 
+### Effects (what upgrades do)
+
+Upgrades describe what they do as data: `UpgradeDef.effects` in `content.ts`, interpreted by `effects.ts`.
+The rules code asks "which effects apply now?" and never checks for an upgrade by id, so a new talent or
+upgrade (and later a pilot ability) is a content change. Effect kinds:
+
+| Kind | What it does | Used by |
+|---|---|---|
+| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating |
+| `rerollAttack` | Reroll up to N attack dice (blanks first, then focus results) | Marksman, Steady Gunner, Ordnance Specialist |
+| `rerollDefense` | Reroll up to N defense dice | Elusive |
+| `cancelEvade` | Cancel 1 of the defender's evade results | Crack Shot |
+| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`), if conditions hold, run ops (`gainFocus`, `recoverShield`, `recoverCharge`, `loseCharges`) | Hotshot, Elusive, Damage Control, Stealth Coating |
+| `stat` | Flat bonus to a looked-up number (`jamRange`, `deviceCharges`) | Signal Jammer, Payload Expert |
+
+Attack effects can be limited with an `AttackCondition` (primary, turret, bullseye, front arc, attacker
+outside the defender's arcs). `cost: 'charge'` spends one of the upgrade's charges per use; `needsCharge`
+only requires one. Dice effects are read by both `resolveAttack` and `attackOdds` through the same helpers,
+and `test/effects.test.ts` checks the two against each other for effects the shipped content doesn't use yet
+(multi-die rerolls, attack-dice changes, stacking). Triggers log an `upgrade` event that says what they gave
+(`focus`, `shields`), so clients don't need to know any upgrade by name.
+
 Keep these rules so this stays cheap:
 - No rendering, timing or platform calls in `packages/engine`.
 - No hidden state outside `GameState`.
@@ -68,14 +90,14 @@ Keep these rules so this stays cheap:
 | Range | ✅ | Closest base-to-base distance *within the arc*; four bands with edges at 60/160/260/360 mm (house rule; the board game uses three 100 mm bands); range 0 allowed |
 | Attack | ✅ | **House rule, four bands** (`RANGE_RULES` in `combat.ts`): range 1 (0–6 cm) −1 attack die, range 2 (6–16 cm) +1 attack die, range 3 (16–26 cm) none, range 4 (26–36 cm) +1 defense die; primary weapons only. The board game has three 10 cm bands with +1 attack die at range 0–1 and +1 defense die at range 3. Obstructed: +1 defense die |
 | Dice | ✅ | Attack 3 hit / 1 crit / 2 focus / 2 blank. Defense 3 evade / 2 focus / 3 blank |
-| Damage | ✅ (simplified) | Shields absorb first. **Crits are 1 damage; no damage deck yet** |
+| Damage | ✅ | Shields absorb first. Crits that reach the hull deal a face-up damage card (2nd edition deck, `damage.ts`) |
 | Simultaneous fire | ✅ | Ships destroyed during an initiative step still attack in that step |
 | Win condition | ✅ | Last player with ships; at the round cap (12), most hull+shields left wins |
 
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
-- No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
+- Not yet: pilot abilities (beyond signature talents), recurring charges and force, tractor, strain/deplete/disarm, reinforce, coordinate, calculate, reload, SLAM, cloak, linked actions, crew/astromech/sensor upgrade slots, obstacles other than asteroids, and obstacle placement by the players.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.
