@@ -10,7 +10,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
 import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
-import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState } from '@xw/engine';
+import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState, RANGE_RULES } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
 const FLY_HEIGHT = 18;
@@ -295,7 +295,10 @@ export class BattleScene {
     const turretPrimary = t.primaries.some((p) => p.arc === 'turret');
     if (turretPrimary || s.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret')) {
       const holder = new THREE.Group();
-      const fan = buildArcs(size, ['front'], TURRET_COLOR, turretPrimary ? 300 : 200); // a turret primary reaches range 3
+      // A turret primary reaches as far as any primary; a turret upgrade to the edge of its own last band.
+      const turretWeapon = s.upgrades.map((u) => UPGRADES[u.id].weapon).find((w) => w?.arc === 'turret');
+      const reach = RANGE_RULES.edges[(turretPrimary ? RANGE_RULES.edges.length : turretWeapon?.maxRange ?? 2) - 1];
+      const fan = buildArcs(size, ['front'], TURRET_COLOR, reach);
       fan.visible = false;
       holder.add(fan, buildTurretPointer(size));
       holder.rotation.y = TURRET_ANGLE[s.turretArc];

@@ -1,6 +1,6 @@
 // Procedural art: ship models, asteroids, the table surface and the sky. No rules, no game state.
 import * as THREE from 'three';
-import { BOARD_SIZE } from '@xw/engine';
+import { BOARD_SIZE, RANGE_RULES } from '@xw/engine';
 import { EXHAUST, shipTemplate, type Skin } from './shipAsset';
 
 // ---------------- noise ----------------
@@ -384,8 +384,8 @@ export function buildSky(): THREE.Group {
 // ---------------- firing arcs ----------------
 /** Shared clock for the arc sweep pulse; BattleScene advances it every frame. */
 export const arcTime = { value: 0 };
-const ARC_RANGE = 300; // range 3, measured from the base edge (engine RANGE_BAND × 3)
-const ARC_BAND = 100;
+/** Reach of a primary weapon (the far edge of the last range band), measured from the base edge. */
+const ARC_RANGE = RANGE_RULES.edges[RANGE_RULES.edges.length - 1];
 /** Keep arcs on the table (needs renderer.localClippingEnabled). */
 const BOARD_CLIP = [
   new THREE.Plane(new THREE.Vector3(1, 0, 0), BOARD_SIZE / 2), new THREE.Plane(new THREE.Vector3(-1, 0, 0), BOARD_SIZE / 2),
@@ -413,7 +413,7 @@ function arcOutline(size: number, r: number, closed: boolean): THREE.Vector2[] {
 }
 
 /**
- * Translucent fans showing a ship's firing arcs (any of front/left/rear/right) out to `range` (default range 3), with faint range-1/2 lines and a
+ * Translucent fans showing a ship's firing arcs (any of front/left/rear/right) out to `range` (default: the last range band), with faint lines at each band's edge and a
  * sweep pulse. Board-local (x forward, y left) maps to three's (x, -z). Not clickable.
  */
 const arcCache = new Map<string, THREE.Group>();
@@ -446,7 +446,7 @@ function makeArcs(size: number, arcs: string[], color: number, range: number): T
       uniform vec3 uColor; uniform float uTime, uHalf, uRange; varying vec2 vP;
       void main() {
         #include <clipping_planes_fragment>
-        // distance from the base's front edge (approx.), 0..1 across range 3
+        // distance from the base's front edge (approx.), 0..1 across the fan's reach
         float d = clamp((abs(vP.x) - uHalf) / uRange, 0.0, 1.0);
         float a = mix(0.26, 0.06, d);
         float sweep = fract(uTime * 0.35);
@@ -463,7 +463,7 @@ function makeArcs(size: number, arcs: string[], color: number, range: number): T
     fan.scale.z = -1; // rotateX(+90°) sends shape y to +z; board-left is three's -z
     a.add(fan);
     a.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(arcOutline(size, range, true).map(to3)), edge));
-    for (let r = ARC_BAND; r < range; r += ARC_BAND) {
+    for (const r of RANGE_RULES.edges.filter((e) => e < range)) { // a faint line at each range band's edge
       a.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(arcOutline(size, r, false).map(to3)), band));
     }
     a.rotation.y = ({ front: 0, left: Math.PI / 2, rear: Math.PI, right: -Math.PI / 2 } as Record<string, number>)[arc] ?? 0;

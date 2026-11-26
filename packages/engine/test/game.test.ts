@@ -43,8 +43,8 @@ describe('arcs and range', () => {
     expect(measureArc(g, b, a, 'front')).toBeNull();
     expect(legalTargets(g, b)).toHaveLength(0);
   });
-  it('out of range beyond 300mm', () => {
-    const g = duel({ x: 100, y: 400, h: 0 }, { x: 450, y: 400, h: 0 });
+  it('out of range beyond 36 cm (the far edge of range 4)', () => {
+    const g = duel({ x: 100, y: 400, h: 0 }, { x: 520, y: 400, h: 0 });
     expect(legalTargets(g, g.ships[0])).toHaveLength(0);
   });
 });
@@ -60,7 +60,7 @@ describe('attacks', () => {
     };
     const x = run(), y = run();
     expect(x).toEqual(y);
-    expect(x.r.attackRoll).toHaveLength(3); // range 1: no bonus (the sweet spot is range 2)
+    expect(x.r.attackRoll).toHaveLength(2); // range 1: attack 3, minus 1 for being too close
     if (x.r.hits + x.r.crits > 0) expect(x.b.shields).toBeLessThan(2);
   });
 });
@@ -106,12 +106,15 @@ describe('full game loop', () => {
 });
 
 describe('house rules that keep fights at a distance', () => {
-  it('primary weapons get their extra die at range 2, not range 1', async () => {
-    const { attackDiceFor, SWEET_SPOT_RANGE } = await import('../src/combat');
+  it('four range bands: -1 attack die at range 0-1, +1 at range 2, nothing at 3, +1 defense die at 4', async () => {
+    const { attackDiceFor, defenseDiceFor, rangeBand, SWEET_SPOT_RANGE } = await import('../src/combat');
     const g = duel({ x: 100, y: 400, h: 0 }, { x: 160, y: 400, h: Math.PI });
     const t = (range: number) => ({ targetId: 'b-0', arc: 'front' as const, attack: 3, range, obstructed: false, bullseye: false });
     expect(SWEET_SPOT_RANGE).toBe(2);
-    expect([0, 1, 2, 3].map((r) => attackDiceFor(g.ships[0], t(r)))).toEqual([3, 3, 4, 3]);
+    expect([0, 1, 2, 3, 4].map((r) => attackDiceFor(g.ships[0], t(r)))).toEqual([2, 2, 4, 3, 3]);
+    const base = defenseDiceFor(g.ships[1], t(3));
+    expect(defenseDiceFor(g.ships[1], t(4))).toBe(base + 1);
+    expect([0, 30, 60, 61, 160, 161, 260, 261, 360, 361].map(rangeBand)).toEqual([0, 1, 1, 2, 2, 3, 3, 4, 4, null]);
   });
 
   it('a maneuver that ends in a bump costs 1 stress', async () => {

@@ -135,11 +135,11 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   // Devices: dropped behind the ship in the System phase (one charge each). Bombs hit everything nearby.
   'proton-bomb': {
     id: 'proton-bomb', name: 'Proton Bomb', slot: 'device', cost: 5, charges: 2, device: { kind: 'bomb', effect: 'proton' },
-    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship at range 0-1 (yours too) takes 1 crit.',
+    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship within 10 cm (yours too) takes 1 crit.',
   },
   'ion-bomb': {
     id: 'ion-bomb', name: 'Ion Bomb', slot: 'device', cost: 4, charges: 2, device: { kind: 'bomb', effect: 'ion' },
-    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship at range 0-1 (yours too) gains 3 ion tokens.',
+    text: 'Drop behind you in the System phase. At the end of the Activation phase it detonates: each ship within 10 cm (yours too) gains 3 ion tokens.',
   },
   'proximity-mine': {
     id: 'proximity-mine', name: 'Proximity Mine', slot: 'device', cost: 6, charges: 2, device: { kind: 'mine', effect: 'proximity' },
