@@ -167,18 +167,22 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
         <i>Talent</i> ${esc(UPGRADES[u].name)} <em>★</em></span>`);
     const lost = (p.talents ?? []).filter((u) => !signatureTalents(s).includes(u))
       .map((u) => `<span class="slot soon" title="No talent slot for it at this initiative"><i>Talent</i> <s>${esc(UPGRADES[u].name)}</s></span>`);
-    const filled = s.upgrades.map((u, ui) => `<span class="slot full" title="${esc(UPGRADES[u].text)}">
+    const filled = s.upgrades.map((u, ui) => [UPGRADES[u].slot, `<span class="slot full" title="${esc(UPGRADES[u].text)}">
         <i>${SLOT_LABEL[UPGRADES[u].slot]}</i> ${esc(UPGRADES[u].name)} <em>${upgradeCost(u, s)}</em>
-        <button data-unfit="${i}:${ui}" aria-label="Remove ${esc(UPGRADES[u].name)}">✕</button></span>`);
+        <button data-unfit="${i}:${ui}" aria-label="Remove ${esc(UPGRADES[u].name)}">✕</button></span>`] as const);
     const opts = upgradeOptions(s);
-    const empty = freeSlots(s).map((slot) => {
+    const empty = freeSlots(s).map((slot) => [slot, emptySlot(slot)] as const);
+    const of = (xs: readonly (readonly [SlotType, string])[], talent: boolean) => xs.filter(([k]) => (k === 'talent') === talent).map(([, h]) => h);
+    const pilotRow = [...sig, ...lost, ...of(filled, true), ...of(empty, true)];
+    const shipRow = [...of(filled, false), ...of(empty, false)];
+    function emptySlot(slot: SlotType) {
       if (!OPEN_SLOTS.has(slot)) return `<span class="slot soon" title="Power-ups for this slot are coming in a later update"><i>${SLOT_LABEL[slot]}</i> soon</span>`;
       const fit = opts.filter((u) => UPGRADES[u].slot === slot);
       return `<select class="slot pick" data-fit="${i}" aria-label="Add a ${SLOT_LABEL[slot]}">
           <option value="">+ ${slot === 'talent' ? `${CLASS_LABEL[p.specialty]} talent` : SLOT_LABEL[slot]}</option>
           ${fit.map((u) => `<option value="${u}" ${upgradeCost(u, s) > room ? 'class="dear"' : ''}>${esc(UPGRADES[u].name)} (${upgradeCost(u, s)}) — ${esc(UPGRADES[u].text)}</option>`).join('')}
         </select>`;
-    });
+    }
     return `<div class="sq-ship ${isSel('you', i) ? 'selected' : ''}" data-sel="you:${i}">
         ${isSel('you', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}
         <div class="sq-top"><span class="who"><b>${esc(p.name)}</b> ${initBadge(s)}
@@ -186,7 +190,8 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           <span class="cost">${shipCost(s)}</span><button class="rm" data-rm="${i}" aria-label="Remove ${esc(p.name)}">✕</button></div>
         <div class="hull-row">${hullPicker(s, i)}${isOffClass(s) ? '<span class="hint off-class">outside specialty: -1 initiative</span>' : ''}</div>
         <div class="stats">${statLine(s)}</div>
-        <div class="slots">${[...sig, ...lost, ...filled, ...empty].join('')}</div>
+        <div class="slots"><span class="slot-group">Pilot</span>${pilotRow.join('') || '<span class="hint">no talent slots below initiative 3</span>'}</div>
+        <div class="slots"><span class="slot-group">Ship</span>${shipRow.join('')}</div>
       </div>`;
   };
 

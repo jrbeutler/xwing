@@ -226,6 +226,7 @@ option.dear { color: #ff9a9a; }
 .hull-pick { font-size: 12px; background: #0d1526; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; max-width: 100%; }
 .init.off { background: #3a1414; color: #ff8a7a; padding: 0 4px; } .init.off s { opacity: .6; }
 .off-class { color: #ff8a7a; }
+.slot-group { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); align-self: center; min-width: 34px; }
 .slot.sig { border-color: #6b5a1f; } .slot.sig em { color: #ffd166; }
 .picker > p.hint { margin: 0 0 8px; }
 @media (max-width: 760px) {
