@@ -753,6 +753,60 @@ export class BattleScene {
     });
   }
 
+  private aimFrom: ShipView | null = null;
+  private savedView: { target: THREE.Vector3; position: THREE.Vector3; minDistance: number; maxPolarAngle: number; enabled: boolean } | null = null;
+
+  /**
+   * Gunner's-eye view: drop in just behind and above the attacker, looking down its line of fire at the
+   * defender. The orbit limits that keep the normal view overhead are lifted until restoreView().
+   */
+  attackView(attackerId: string, defenderId: string, ms = 600) {
+    const a = this.ships.get(attackerId), d = this.ships.get(defenderId);
+    if (!a || !d) return;
+    if (!this.savedView) {
+      this.savedView = {
+        target: this.controls.target.clone(), position: this.camera.position.clone(),
+        minDistance: this.controls.minDistance, maxPolarAngle: this.controls.maxPolarAngle, enabled: this.controls.enabled,
+      };
+    }
+    this.controls.minDistance = 0;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.enabled = false;
+    const from = a.root.position.clone().setY(FLY_HEIGHT);
+    const to = d.root.position.clone().setY(FLY_HEIGHT);
+    const dist = to.distanceTo(from);
+    const dir = to.clone().sub(from).setY(0).normalize();
+    // Low and close behind, so the attacker fills the lower third of the frame with the target ahead.
+    // A close target would hide behind the attacker's own hull, so rise above it the closer the target is.
+    const back = a.reach * 1.5 + 25;
+    const lift = Math.max(0, 220 - dist) * 0.4;
+    const pos = from.clone().addScaledVector(dir, -back).setY(Math.max(a.top, FLY_HEIGHT) + 14 + lift);
+    this.flyTo(to, pos, ms);
+    // The attacker's own label would float up into the middle of the view.
+    if (this.aimFrom && this.aimFrom !== a) this.aimFrom.label.visible = true;
+    this.aimFrom = a;
+    a.label.visible = false;
+  }
+
+  /** True while the camera is in attackView(), so the normal framing leaves it alone. */
+  get inAttackView() { return this.savedView !== null; }
+
+  /** Return from attackView() to wherever the camera was before. */
+  restoreView(ms = 600) {
+    const v = this.savedView;
+    if (!v) return;
+    this.savedView = null;
+    if (this.aimFrom) { this.aimFrom.label.visible = true; this.aimFrom = null; }
+    this.flyTo(v.target, v.position, ms);
+    this.controls.enabled = v.enabled;
+    // Put the orbit limits back once the camera is up again, so they don't yank it mid-flight.
+    void this.wait(ms).then(() => {
+      if (this.savedView) return; // the next shot's view has already taken over
+      this.controls.minDistance = v.minDistance;
+      this.controls.maxPolarAngle = v.maxPolarAngle;
+    });
+  }
+
   /** The original desktop view of the whole table. */
   resetView(ms = 500) {
     this.flyTo(new THREE.Vector3(0, 0, 60), new THREE.Vector3(0, 1080, 640), ms);
@@ -833,7 +887,14 @@ export class BattleScene {
       const dur = ms / this.speed;
       const step = () => {
         const t = this.skipping ? 1 : Math.min(1, (performance.now() - t0) / dur);
-        fn(t);
+        try {
+          fn(t);
+        } catch (err) {
+          // Never leave the caller awaiting forever: a broken frame would freeze the game loop.
+          console.error('tween frame failed', err);
+          resolve();
+          return;
+        }
         if (t < 1) requestAnimationFrame(step); else resolve();
       };
       requestAnimationFrame(step);
@@ -1046,7 +1107,9 @@ export class BattleScene {
 
   async animatePath(shipId: string, path: Pose[], final: Pose, ms = 900) {
     const v = this.ships.get(shipId);
-    if (!v || !path.length) return;
+    if (!v) return;
+    // A ship bumped at the very start of its move gets a one-pose path: nothing to animate.
+    if (path.length < 2) { placeObject(v.root, final); return; }
     await this.tween(ms, (t) => {
       v.thrust = 1 + Math.sin(t * Math.PI) * 1.4;
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
