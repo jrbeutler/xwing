@@ -345,3 +345,28 @@ html.compact #log.open { cursor: pointer; }
   .finale-rays { animation: none; }
   #finale h1 span { animation: none; opacity: 1; transform: none; }
 }
+
+/* ---------- Two players on one device ---------- */
+.head-opts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { background: #0d1526; color: var(--muted); border: 0; padding: 6px 12px; font: inherit; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--p1); color: #04101f; font-weight: 600; }
+.versus-note { margin: 0; }
+.setup-cols.two { grid-template-columns: 1fr 1fr; }
+#hud #seat.p1 { color: var(--p1); border-color: var(--p1); }
+#hud #seat.p2 { color: var(--p2); border-color: var(--p2); }
+#hud #seat span { all: unset; color: var(--muted); }
+#banner.turn.p1 b { color: var(--p1); }
+#banner.turn.p2 b { color: var(--p2); }
+#handoff { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 16px;
+  background: radial-gradient(circle at 50% 40%, #101b30, #03060c 70%); }
+#handoff[hidden] { display: none; }
+.handoff-card { max-width: 420px; width: 100%; text-align: center; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 28px 22px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.handoff-kicker { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+#handoff h1 { margin: 0; font-size: 26px; letter-spacing: .04em; }
+#handoff.p1 h1 { color: var(--p1); } #handoff.p2 h1 { color: var(--p2); }
+#handoff.p1 .handoff-card { border-color: var(--p1); } #handoff.p2 .handoff-card { border-color: var(--p2); }
+#handoff p { margin: 0; color: var(--muted); line-height: 1.45; }
+@media (max-width: 760px) { .setup-cols.two { grid-template-columns: 1fr; } }

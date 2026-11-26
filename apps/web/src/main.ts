@@ -1,15 +1,24 @@
 import {
-  BASE_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
+  BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, type ActionChoice, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
+import { handoff, hideHandoff } from './handoff';
 import { ICONS } from './icons';
 import type { RadialItem } from './scene';
 
-const HUMAN = 'p1';
-const AI = 'p2';
+const P1 = 'p1';
+const P2 = 'p2';
+const other = (id: string) => (id === P1 ? P2 : P1);
+/** Against the AI, or two people taking turns on one device. */
+let versus: 'ai' | 'human' = 'ai';
+/** The player at the controls (and whose point of view the board shows). Always P1 against the AI. */
+let me = P1;
+const isHuman = (id: string) => id === P1 || versus === 'human';
+const seatName = (id: string) => (versus === 'human' ? `Player ${id === P1 ? 1 : 2}` : id === P1 ? 'You' : 'AI');
+const factionName = (id: string) => (id === P1 ? 'Coalition' : 'Syndicate');
 
 const scene = new BattleScene(document.getElementById('viewport')!);
 const panel = document.getElementById('panel')!;
@@ -46,6 +55,12 @@ const setSpeed = (v: number) => {
 speedBtn.onclick = () => setSpeed(scene.speed === 1 ? 2 : 1);
 try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setSpeed(1); }
 
+/** Whose turn it is, when two people share the device. */
+const seatEl = document.createElement('span');
+seatEl.id = 'seat';
+seatEl.hidden = true;
+document.getElementById('hud')!.appendChild(seatEl);
+
 let state: GameState;
 /** Where we are: building squads, placing ships, or fighting. */
 let stage: 'setup' | 'deploy' | 'battle' = 'setup';
@@ -67,7 +82,9 @@ const nameHtml = (id: string) => { const s = shipById(id); return `<span class="
 /** Open the squad builder (keeping the last opponent when coming back from deployment). */
 function newGame(keep?: BattleSetup) {
   hideFinale();
+  hideHandoff();
   stage = 'setup';
+  seatEl.hidden = true;
   mode = null;
   scene.setDeployZone(null);
   hideRecap();
@@ -80,15 +97,16 @@ function newGame(keep?: BattleSetup) {
 // ---------------------------------------------------------------------------
 function startDeployment(setup: BattleSetup) {
   lastSetup = setup;
+  versus = setup.versus;
   stage = 'deploy';
   const seed = (Math.random() * 1e9) | 0;
-  const near = autoDeploy(setup.player, 'near'), far = autoDeploy(setup.ai, 'far');
+  const near = autoDeploy(setup.player, 'near'), far = autoDeploy(setup.opponent, 'far');
   state = createGame({
     seed,
-    players: [{ id: HUMAN, name: 'Coalition', faction: 'coalition' }, { id: AI, name: 'Syndicate', faction: 'syndicate' }],
+    players: [{ id: P1, name: 'Coalition', faction: 'coalition' }, { id: P2, name: 'Syndicate', faction: 'syndicate' }],
     squads: {
-      [HUMAN]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: near[i] })),
-      [AI]: setup.ai.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: far[i] })),
+      [P1]: setup.player.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: near[i] })),
+      [P2]: setup.opponent.ships.map((s, i) => ({ pilotId: s.pilotId, shipType: s.shipType, upgrades: s.upgrades, pose: far[i] })),
     },
     obstacles: generateAsteroids({ rng: seed ^ 0x5eed }, 5),
   });
@@ -100,15 +118,27 @@ function startDeployment(setup: BattleSetup) {
   scene.clearShips();
   scene.setObstacles(state.obstacles);
   scene.syncShips(state.ships);
-  scene.setDeployZone('near');
   scene.setDevices([]);
   roundEl.textContent = 'Setup';
   phaseEl.textContent = 'deployment';
-  carrying = null;
-  mode = deployMode;
-  renderDeployment();
-  applyCamera();
+  startDeploying(P1);
 }
+
+/** Hand deployment to `who` (both players deploy in turn when two are playing). */
+function startDeploying(who: string) {
+  carrying = null;
+  mode = null;
+  const go = () => {
+    setSeat(who, true);
+    scene.setDeployZone(deploySide());
+    mode = deployMode;
+    renderDeployment();
+    applyCamera();
+  };
+  if (versus === 'human') handoff({ cls: who, title: `${seatName(who)} · ${factionName(who)}`, text: 'Place your ships in your setup area.', button: 'Deploy', onReady: go });
+  else go();
+}
+const deploySide = () => (me === P1 ? 'near' : 'far') as 'near' | 'far';
 
 /** The ship being moved during deployment, the last legal spot it had, and whether where it is now is legal. */
 let carrying: string | null = null;
@@ -118,23 +148,29 @@ const deployedOthers = (id: string) => state.ships.filter((x) => x.id !== id).ma
 
 function renderDeployment() {
   const hint = compact ? 'Drag your ships along your edge.' : 'Click one of your ships to pick it up, move it, and click to put it down.';
-  detail.innerHTML = `<h2>Deployment</h2><p class="hint">${hint} Ships must sit inside your setup area (the lit strip) and not overlap.
-    The opponent has deployed along the far edge.</p>
+  // With two players, Player 1 deploys first and hands over; Player 2's "done" starts the battle.
+  const handsOver = versus === 'human' && me === P1;
+  const goLabel = handsOver ? 'Done: Player 2 deploys' : 'Begin battle';
+  const who = versus === 'human' ? `<span class="${me}c">${seatName(me)}</span>: ` : '';
+  const them = versus === 'human' && me === P1 ? 'Player 2 deploys along the far edge next.' : 'The opponent has deployed along the far edge.';
+  detail.innerHTML = `<h2>${who}Deployment</h2><p class="hint">${hint} Ships must sit inside your setup area (the lit strip) and not overlap.
+    ${them}</p>
     <div class="row"><button class="opt mini" id="dp-auto">Auto-arrange</button><button class="opt mini" id="dp-back">Back to squad</button></div>
-    <button class="go" id="dp-go">Begin battle</button>`;
+    <button class="go" id="dp-go">${goLabel}</button>`;
   document.getElementById('dp-auto')!.onclick = autoArrange;
   document.getElementById('dp-back')!.onclick = () => newGame(lastSetup ?? undefined);
   document.getElementById('dp-go')!.onclick = beginBattle;
-  setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : 'Deploy: drag your ships, then begin', buttons: [
+  setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : `${who}Deploy: drag your ships, then ${handsOver ? 'hand over' : 'begin'}`, buttons: [
     { label: 'Auto', onClick: autoArrange },
-    { label: 'Begin battle', cls: 'primary', onClick: beginBattle },
+    { label: handsOver ? 'Done' : 'Begin battle', cls: 'primary', onClick: beginBattle },
   ] });
 }
 
 function autoArrange() {
   if (!lastSetup) return;
-  const near = autoDeploy(lastSetup.player, 'near');
-  state.ships.filter((x) => x.owner === HUMAN).forEach((x, i) => { x.pose = near[i]; });
+  const side = deploySide();
+  const poses = autoDeploy(side === 'near' ? lastSetup.player : lastSetup.opponent, side);
+  state.ships.filter((x) => x.owner === me).forEach((x, i) => { x.pose = poses[i]; });
   carrying = null;
   scene.setRings({});
   scene.syncShips(state.ships);
@@ -143,6 +179,7 @@ function autoArrange() {
 function beginBattle() {
   if (stage !== 'deploy') return;
   if (carrying) dropCarried();
+  if (versus === 'human' && me === P1) return startDeploying(P2);
   stage = 'battle';
   mode = null;
   scene.setDeployZone(null);
@@ -158,8 +195,9 @@ function moveCarried(p: P) {
   if (!pt) return;
   const half = sizeOf(s) / 2;
   // Keep the base on the board and in the setup area; it may still overlap another ship (shown red).
-  const pose = { x: Math.min(914 - half, Math.max(half, pt.x)), y: Math.min(100 - half, Math.max(half, pt.y)), h: s.pose.h };
-  carryValid = canDeployAt(pose, sizeOf(s), 'near', deployedOthers(s.id));
+  const [lo, hi] = deploySide() === 'near' ? [0, DEPLOY_DEPTH] : [914 - DEPLOY_DEPTH, 914];
+  const pose = { x: Math.min(914 - half, Math.max(half, pt.x)), y: Math.min(hi - half, Math.max(lo + half, pt.y)), h: s.pose.h };
+  carryValid = canDeployAt(pose, sizeOf(s), deploySide(), deployedOthers(s.id));
   s.pose = pose;
   scene.syncShips(state.ships);
   scene.setRings({ [s.id]: carryValid ? GREEN : RED });
@@ -217,16 +255,60 @@ async function pump() {
         disp = structuredClone(state.ships);
       }
       const d = state.pending;
-      if (!d) break;
-      const aiTurn = d.kind === 'planning' ? d.waitingOn.includes(AI) : d.playerId === AI;
+      if (!d || versus === 'human') break;
+      const aiTurn = d.kind === 'planning' ? d.waitingOn.includes(P2) : d.playerId === P2;
       if (!aiTurn) break;
       // The AI sees the same redacted view a network client would (RNG kept for its private jitter seed).
-      state = apply(state, aiDecide({ ...viewFor(state, AI), rng: state.rng }, AI)!);
+      state = apply(state, aiDecide({ ...viewFor(state, P2), rng: state.rng }, P2)!);
     }
   } finally {
     busy = false;
   }
+  const next = nextSeat();
+  // Planned moves are secret: before each player plans, the other is asked to look away.
+  if (versus === 'human' && next && state.pending?.kind === 'planning') {
+    scene.setPlanned([]);
+    scene.setMarkers([]);
+    scene.clearGhost();
+    scene.clearChips();
+    detail.innerHTML = '';
+    setBar({ status: '' });
+    handoff({
+      cls: next, title: `${seatName(next)} · ${factionName(next)}`, button: 'Plan my moves',
+      text: `Round ${state.round}: plan your maneuvers. ${seatName(other(next))}, look away until they are set.`,
+      onReady: () => { setSeat(next, true); render(); },
+    });
+    return;
+  }
+  if (next && next !== me) {
+    setSeat(next);
+    showBanner(`<span class="who">${factionName(next)}</span><b>${seatName(next).toUpperCase()}</b>`, `turn ${next}`, 1100);
+  }
   render();
+}
+
+/** The human who must act next, if any. */
+function nextSeat(): string | null {
+  const d = state.pending;
+  if (!d) return null;
+  const who = d.kind === 'planning' ? d.waitingOn.find(isHuman) : d.playerId;
+  return who && isHuman(who) ? who : null;
+}
+
+/**
+ * Give the controls to `who`. `turn`: also swing the camera round to look from their edge (done at the
+ * hand-over screens, not for every ship in the activation and engagement phases, where it would spin back and forth).
+ */
+function setSeat(who: string, turn = false) {
+  me = who;
+  seatEl.hidden = versus !== 'human';
+  seatEl.className = who;
+  seatEl.innerHTML = `${seatName(who)} <span>· ${factionName(who)}</span>`;
+  const facing = versus === 'human' && who === P2 ? -1 : 1;
+  if ((turn || versus === 'ai') && scene.facing !== facing) {
+    scene.facing = facing;
+    scene.resetView(0);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +445,7 @@ async function animate(e: GameEvent) {
       const ion = UPGRADES[e.device.upgrade].device?.effect === 'ion';
       showBanner(`<span class="who">${UPGRADES[e.device.upgrade].name}</span><b>${e.device.kind === 'mine' ? 'MINE!' : 'DETONATION'}</b>` +
         `<span class="detail">${e.ships.length ? e.ships.map((h) => shipById(h.shipId).name).join(', ') : 'nobody caught'}</span>`,
-        e.ships.some((h) => shipById(h.shipId).owner === HUMAN) ? 'crit incoming' : 'crit');
+        e.ships.some((h) => shipById(h.shipId).owner === me) ? 'crit incoming' : 'crit');
       await scene.detonate(e.device, ion);
       for (const h of e.ships) {
         const d = dispShip(h.shipId);
@@ -393,7 +475,7 @@ async function animate(e: GameEvent) {
     case 'destroyed': {
       const name = shipById(e.shipId).name;
       roundShots.push(`<b>${nameHtml(e.shipId)} destroyed</b>`);
-      showBanner(`<span class="who">${name}</span><b>DESTROYED</b>`, shipById(e.shipId).owner === HUMAN ? 'incoming big' : 'big');
+      showBanner(`<span class="who">${name}</span><b>DESTROYED</b>`, shipById(e.shipId).owner === me ? 'incoming big' : 'big');
       await scene.explode(e.shipId);
       await scene.wait(500);
       return;
@@ -407,7 +489,7 @@ type AttackEvent = Extract<GameEvent, { type: 'attack' }>;
 async function showDamageCard(e: Extract<GameEvent, { type: 'damageCard' }>) {
   const d = dispShip(e.shipId);
   const c = DAMAGE_CARDS[e.card];
-  const mine = shipById(e.shipId).owner === HUMAN;
+  const mine = shipById(e.shipId).owner === me;
   if (d) {
     if (e.what === 'dealt') d.crits.push(e.card);
     if (e.what === 'repaired' || e.what === 'discarded') {
@@ -448,14 +530,15 @@ function attackOutcome(e: AttackEvent) {
 
 async function showAttack(e: AttackEvent) {
   const a = shipById(e.attackerId), d = shipById(e.defenderId);
-  const incoming = d.owner === HUMAN;
-  const color = a.owner === HUMAN ? 0xff4d4d : 0x52ff7a;
+  const incoming = d.owner === me;
+  const color = a.owner === P1 ? 0xff4d4d : 0x52ff7a;
   const ordnance = !!e.weapon;
   const ionShot = !!e.weapon && UPGRADES[e.weapon].weapon?.effect === 'ion';
   const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
 
   // 1. Who shoots whom. The player's own shots are seen from behind the attacker, down its line of fire.
-  const gunCam = a.owner === HUMAN;
+  // With two players every shot is someone's own.
+  const gunCam = isHuman(a.owner);
   scene.setRings({ [a.id]: GREEN, [d.id]: RED });
   scene.setOdds({});
   if (gunCam) {
@@ -671,8 +754,7 @@ function renderDecision() {
   const d = state.pending;
   if (state.phase === 'over' || !d) {
     scene.highlight(null);
-    const won = state.winner === HUMAN;
-    const title = state.winner === 'draw' ? 'Draw' : won ? 'Victory' : 'Defeat';
+    const title = resultTitle();
     detail.innerHTML = `<h2>${title}</h2>
       <p class="hint">Battle ended in round ${state.round}.</p>
       <div class="row"><button class="go" id="again">New battle</button><button class="opt mini" id="results">Results</button></div>`;
@@ -727,14 +809,26 @@ function killsBy(): Map<string, number> {
   return kills;
 }
 
+/** Victory/Defeat against the AI; with two players, who won. */
+function resultTitle() {
+  if (state.winner === 'draw') return 'Draw';
+  if (versus === 'human') return `${seatName(state.winner!)} wins`;
+  return state.winner === P1 ? 'Victory' : 'Defeat';
+}
+
 function showFinale(first = false) {
-  const result = state.winner === 'draw' ? 'draw' : state.winner === HUMAN ? 'victory' : 'defeat';
-  const title = { victory: 'Victory', defeat: 'Defeat', draw: 'Draw' }[result];
-  const mine = state.ships.filter((s) => s.owner === HUMAN), theirs = state.ships.filter((s) => s.owner === AI);
+  const two = versus === 'human';
+  // Two players: told from the winner's side (it's their celebration), and named rather than "you".
+  const hero = two && state.winner && state.winner !== 'draw' ? state.winner : P1;
+  const result = state.winner === 'draw' ? 'draw' : two || state.winner === P1 ? 'victory' : 'defeat';
+  const title = resultTitle();
+  const mine = state.ships.filter((s) => s.owner === hero), theirs = state.ships.filter((s) => s.owner === other(hero));
   const down = (xs: ShipState[]) => xs.filter((s) => s.destroyed).length;
   const wiped = (xs: ShipState[]) => down(xs) === xs.length;
+  const loser = two ? `${seatName(other(hero))}'s ${factionName(other(hero))}` : 'Syndicate';
   const why = result === 'draw' ? (wiped(mine) && wiped(theirs) ? 'Both squadrons were wiped out.' : 'Time ran out with the squadrons dead even.')
-    : result === 'victory' ? (wiped(theirs) ? 'The Syndicate squadron has been wiped out.' : `Time ran out after round ${state.round}, with your squadron ahead on hull and shields.`)
+    : result === 'victory' ? (wiped(theirs) ? `The ${loser} squadron has been wiped out.`
+      : `Time ran out after round ${state.round}, with ${two ? `${seatName(hero)}'s` : 'your'} squadron ahead on hull and shields.`)
     : (wiped(mine) ? 'Your squadron has been wiped out.' : `Time ran out after round ${state.round}, with the Syndicate ahead on hull and shields.`);
   const kills = killsBy();
   // The top ace: the winner's (or anyone's, in a draw) ship with the most kills.
@@ -750,8 +844,8 @@ function showFinale(first = false) {
       <h1 id="finale-title" aria-label="${title}">${letters}</h1>
       <p class="finale-why">${why}</p>
       <div class="finale-stats">
-        <div><b>${down(theirs)}<i>/${theirs.length}</i></b><span>enemy ships destroyed</span></div>
-        <div><b>${down(mine)}<i>/${mine.length}</i></b><span>of your ships lost</span></div>
+        <div><b>${down(theirs)}<i>/${theirs.length}</i></b><span>${two && result === 'draw' ? 'Player 2 ships lost' : 'enemy ships destroyed'}</span></div>
+        <div><b>${down(mine)}<i>/${mine.length}</i></b><span>${two && result !== 'draw' ? `of ${seatName(hero)}'s ships lost` : two ? 'Player 1 ships lost' : 'of your ships lost'}</span></div>
         <div><b>${state.round}</b><span>rounds</span></div>
       </div>
       ${ace ? `<div class="finale-ace"><span class="medal" aria-hidden="true">★</span><div><span class="hint">Top ace</span><br>
@@ -845,7 +939,7 @@ const ghostPoses = (s: ShipState, i: number) => {
   const m = maneuverOf(s, i);
   return [...maneuverPath(s.pose, sizeOf(s), m).path, maneuverFinalPose(s.pose, sizeOf(s), m)];
 };
-const myShips = () => state.ships.filter((s) => s.owner === HUMAN && !s.destroyed);
+const myShips = () => state.ships.filter((s) => s.owner === me && !s.destroyed);
 
 function updateControls() {
   // On touch, dragging steers the ship, so the camera must not rotate while one is selected.
@@ -960,7 +1054,7 @@ function executePlan() {
   scene.setPlanned([]);
   scene.setMarkers([]);
   updateControls();
-  send({ type: 'setDials', playerId: HUMAN, dials });
+  send({ type: 'setDials', playerId: me, dials });
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,12 +1131,12 @@ const planningMode: BoardMode = {
   press(p) {
     // Pressing on another of your ships selects it, so you can drag straight out of it.
     const picked = scene.pickShip(p.clientX, p.clientY);
-    if (picked && picked !== selected && shipById(picked).owner === HUMAN) selectShip(picked);
+    if (picked && picked !== selected && shipById(picked).owner === me) selectShip(picked);
   },
   hover(p) { if (selected) candidateAt(p); },
   click(p) {
     const picked = scene.pickShip(p.clientX, p.clientY);
-    const mine = picked && shipById(picked).owner === HUMAN ? picked : null;
+    const mine = picked && shipById(picked).owner === me ? picked : null;
     if (mine && mine !== selected) return selectShip(mine);
     if (selected) {
       candidateAt(p);
@@ -1060,13 +1154,13 @@ const planningMode: BoardMode = {
 const deployMode: BoardMode = {
   press(p) {
     const picked = scene.pickShip(p.clientX, p.clientY);
-    if (picked && shipById(picked).owner === HUMAN) pickUp(picked);
+    if (picked && shipById(picked).owner === me) pickUp(picked);
   },
   hover(p) { moveCarried(p); },
   click(p) {
     if (carrying) return dropCarried();
     const picked = scene.pickShip(p.clientX, p.clientY);
-    if (picked && shipById(picked).owner === HUMAN) pickUp(picked);
+    if (picked && shipById(picked).owner === me) pickUp(picked);
   },
   release() { dropCarried(); },
   key(e) {
@@ -1116,7 +1210,7 @@ function applyCamera(ms = 500) {
   // On an upright phone the board is wider than the screen: zoom in past its sides a little.
   const zoom = innerHeight > innerWidth ? 1.25 : 1;
   // The whole board, plus headroom past the far edge for the labels floating over the enemy's ships.
-  const board = (tilt: number) => scene.frameRect(457, 492, 457, 492, uiInsets(), tilt, ms, zoom);
+  const board = (tilt: number) => scene.frameRect(457, 457 + 35 * scene.facing, 457, 492, uiInsets(), tilt, ms, zoom);
   if (stage === 'deploy') { viewBtn.hidden = true; board(0.45); return; }
   if (stage !== 'battle') return;
   const d = state.pending;
@@ -1319,7 +1413,7 @@ function renderAction(shipId: string, options: ActionChoice[]) {
    * showing. Picking one hides the ring and shows only its targets; Esc or Back brings the ring back.
    */
   let only: 'lock' | 'jam' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
-  const choose = (c: ActionChoice) => send({ type: 'action', playerId: HUMAN, choice: c });
+  const choose = (c: ActionChoice) => send({ type: 'action', playerId: me, choice: c });
   const back = () => { only = null; cand = null; show(); };
   /** Enemies the picked targeted action (Lock or Jam) can reach: ringed on the board. */
   const shownLocks = (): (LockChoice | JamChoice)[] => (only === 'lock' ? locks : only === 'jam' ? jams : []);
@@ -1502,7 +1596,7 @@ function showOddsFrom(s: ShipState, pose: Pose = s.pose, preview = false) {
 function renderSystem(shipId: string, options: DropChoice[]) {
   const s = shipById(shipId);
   const drops = options.filter((o): o is Extract<DropChoice, { type: 'drop' }> => o.type === 'drop');
-  const choose = (c: DropChoice) => { scene.previewDevice(null); send({ type: 'drop', playerId: HUMAN, choice: c }); };
+  const choose = (c: DropChoice) => { scene.previewDevice(null); send({ type: 'drop', playerId: me, choice: c }); };
   const preview = (o: Extract<DropChoice, { type: 'drop' }> | null) =>
     scene.previewDevice(o ? { pose: o.pose, kind: UPGRADES[o.upgrade].device!.kind } : null);
   const short = (id: string) => ({ 'proton-bomb': 'Proton', 'ion-bomb': 'Ion bomb', 'proximity-mine': 'Mine' } as Record<string, string>)[id] ?? UPGRADES[id].name.split(' ')[0];
@@ -1596,7 +1690,7 @@ function renderAttack(shipId: string, targets: Target[]) {
   const fire = (t: Target | null) => {
     setGunsight(null);
     if (!t) scene.restoreView();
-    void send({ type: 'attack', playerId: HUMAN, targetId: t ? t.targetId : null, ...(t && !isPrimary(t) ? { weapon: t.weapon } : {}) });
+    void send({ type: 'attack', playerId: me, targetId: t ? t.targetId : null, ...(t && !isPrimary(t) ? { weapon: t.weapon } : {}) });
   };
   const current = () => (weapon ? targetsFor(weapon) : []);
   const shotAt = (id: string | null) => current().find((t) => t.targetId === id) ?? null;
