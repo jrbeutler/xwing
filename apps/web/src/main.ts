@@ -27,6 +27,8 @@ ticker.id = 'ticker';
 ticker.setAttribute('aria-label', 'Show battle log');
 document.body.appendChild(ticker);
 ticker.onclick = () => logEl.classList.toggle('open');
+// On phones the log is a sheet over the board: a tap on it (not a scroll) puts it away.
+logEl.addEventListener('click', () => { if (compact) logEl.classList.remove('open'); });
 const viewBtn = document.createElement('button');
 viewBtn.id = 'viewbtn';
 viewBtn.setAttribute('aria-label', 'Toggle overview');
@@ -186,7 +188,13 @@ async function send(cmd: Command) {
   scene.clearGhost();
   scene.clearOverlay();
   scene.setMarkers([]);
-  state = apply(state, cmd);
+  try {
+    state = apply(state, cmd);
+  } catch (err) {
+    console.error('Command refused', cmd, err);
+    render(); // put the controls back so the player can choose again
+    return;
+  }
   await pump();
 }
 
@@ -197,7 +205,16 @@ async function pump() {
   applyCamera();
   try {
     for (;;) {
-      await present();
+      try {
+        await present();
+      } catch (err) {
+        // Never let a presentation glitch freeze the game: jump the board to the real state and carry on.
+        console.error('Animation error; skipping to the current state', err);
+        shown = state.log.length;
+        scene.skipping = false;
+        scene.syncShips(state.ships);
+        disp = structuredClone(state.ships);
+      }
       const d = state.pending;
       if (!d) break;
       const aiTurn = d.kind === 'planning' ? d.waitingOn.includes(AI) : d.playerId === AI;
@@ -531,7 +548,10 @@ function showRecap(round: number, lines: string[]) {
     lines.map((l) => `<div>${l}</div>`).join('');
   recap.querySelector('.recap-close')!.addEventListener('click', hideRecap);
   recap.hidden = false;
+  clearTimeout(recapTimer);
+  recapTimer = window.setTimeout(hideRecap, 9000);
 }
+let recapTimer = 0;
 function hideRecap() { recap.hidden = true; }
 
 function describe(e: GameEvent): string | null {
@@ -859,7 +879,13 @@ const touches = new Set<number>();
 let multi = false; // a two-finger camera gesture is in progress
 canvas.addEventListener('pointerdown', (e) => {
   if (busy) scene.skipping = true; // tap the board to skip the current animation
+  // A primary pointer means no other finger is down: forget any lift we may have missed,
+  // so a lost pointerup can never leave every later touch treated as a two-finger gesture.
+  if (e.isPrimary) { touches.clear(); multi = false; }
   touches.add(e.pointerId);
+  // Touching the board puts away the round recap and the log sheet.
+  if (!recap.hidden) hideRecap();
+  if (compact) logEl.classList.remove('open');
   lastPointer = e.pointerType;
   updateControls();
   if (touches.size > 1) { multi = true; if (pointerDown) pointerDown.moved = true; return; }
