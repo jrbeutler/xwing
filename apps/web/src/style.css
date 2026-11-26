@@ -3,7 +3,9 @@
   --blue: #4aa3ff; --white: #f2f5fa; --red: #ff5a5a; --p1: #57c7ff; --p2: #ff9f43; --accent: #7cf0c5;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; overflow: hidden; overscroll-behavior: none; }
+/* Pin the page: nothing may scroll or shift it sideways (e.g. after a phone turns back from landscape). */
+body { position: fixed; inset: 0; width: 100%; }
 #viewport { position: fixed; inset: 0; }
 #hud { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: calc(16px + env(safe-area-inset-left, 0px)); display: flex; gap: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 #hud span { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; }

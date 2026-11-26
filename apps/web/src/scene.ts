@@ -139,8 +139,12 @@ export class BattleScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 0, 60);
     this.controls.enableDamping = true;
-    // Touch: one finger is reserved for playing (steering, tapping); two fingers pinch-zoom and pan.
+    // Touch: one finger is reserved for playing (steering, tapping; the game pans with it on empty board,
+    // see panBy); two fingers pinch-zoom and pan.
     this.controls.touches = { ONE: null as unknown as THREE.TOUCH, TWO: THREE.TOUCH.DOLLY_PAN };
+    // The player moving the camera themselves (any OrbitControls gesture) is reported, so the game stops
+    // re-framing the view under them until they ask it to.
+    this.controls.addEventListener('start', () => { this.camTween++; this.onUserCamera?.(); });
     this.controls.maxPolarAngle = 1.35;
     this.controls.minDistance = 200;
     this.controls.maxDistance = 2200;
@@ -183,7 +187,33 @@ export class BattleScene {
     loop();
   }
 
-  private resize() {
+  /** Called when the player moves the camera themselves (pinch, drag, or panBy). */
+  onUserCamera: (() => void) | null = null;
+
+  /**
+   * Slide the camera across the table by a finger movement of (dx, dy) screen pixels, as if dragging the
+   * table: what was under the finger stays under it. Keeps the view over the board.
+   */
+  panBy(dx: number, dy: number) {
+    this.camTween++; // stop any camera glide in progress
+    const cam = this.camera, target = this.controls.target;
+    const dist = cam.position.distanceTo(target);
+    const perPx = (2 * dist * Math.tan((cam.fov * Math.PI) / 360)) / Math.max(1, this.renderer.domElement.clientHeight);
+    const right = new THREE.Vector3().setFromMatrixColumn(cam.matrix, 0).setY(0).normalize();
+    const ahead = new THREE.Vector3().subVectors(target, cam.position).setY(0).normalize();
+    // Looking down at an angle, a pixel of screen height covers more table than a pixel of width.
+    const tilt = Math.max(0.35, Math.abs(new THREE.Vector3().subVectors(target, cam.position).normalize().y));
+    const move = right.multiplyScalar(-dx * perPx).add(ahead.multiplyScalar((dy * perPx) / tilt));
+    const lim = HALF + 120;
+    const clamped = new THREE.Vector3(
+      THREE.MathUtils.clamp(target.x + move.x, -lim, lim) - target.x, 0, THREE.MathUtils.clamp(target.z + move.z, -lim, lim) - target.z);
+    target.add(clamped);
+    cam.position.add(clamped);
+    this.onUserCamera?.();
+  }
+
+  /** Fit the renderer to its container (call after the screen changes shape, e.g. a phone rotating). */
+  resize() {
     const w = this.host.clientWidth, h = this.host.clientHeight;
     this.renderer.setSize(w, h);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
