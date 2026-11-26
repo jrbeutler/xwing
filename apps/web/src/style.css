@@ -414,3 +414,13 @@ html.compact #log.open { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { #lobby .spinner { animation: none; } }
 #netstatus { position: fixed; left: 50%; transform: translateX(-50%); top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 7; background: #280a10eb; border: 1px solid #a33a46; color: #ffd0d5; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
 #netstatus[hidden] { display: none; }
+
+/* Help popup for the action ring: hover (mouse) or hold (touch) a button. */
+#radtip { position: fixed; z-index: 30; background: #0a1120f5; border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px;
+  font-size: 13px; line-height: 1.4; color: var(--text); box-shadow: 0 6px 24px rgba(0, 0, 0, .55); pointer-events: none; }
+#radtip[hidden] { display: none; }
+#radtip b { display: block; color: var(--accent); margin-bottom: 2px; }
+#radtip .red { color: #ff7a7a; }
+/* No browser gestures on the ring's buttons: a held finger is asking for the help popup, not scrolling or a context menu. */
+.rad-item { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; touch-action: none; }
+.rad-help-hint { color: var(--muted); }

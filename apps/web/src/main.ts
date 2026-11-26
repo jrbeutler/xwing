@@ -1975,6 +1975,23 @@ const GREEN = 0x7cf0c5, RED = 0xff5a5a;
 const ACTION_SNAP = 45;
 
 /** `linked`: this is the linked action offered after another one (only its options, maybe red). */
+/** What each action does, for the action ring's help popup (hover with a mouse, hold with a finger). */
+const ACTION_HELP: Record<string, string> = {
+  focus: 'Gain a focus token. When you attack, every focus result becomes a hit; when you defend, every focus result becomes an evade. It is spent for you when it helps, and lasts until the end of the round.',
+  evade: 'Gain an evade token. When you defend, it adds an evade result, cancelling one hit. Lasts until the end of the round.',
+  calculate: 'Gain a calculate token. It changes <b>one</b> focus result: to a hit when you attack, or an evade when you defend. Weaker than Focus (one die instead of all of them), but cheap insurance. Lasts until the end of the round.',
+  lock: 'Lock onto an enemy (any range, no arc needed). Attacking that ship, you reroll your blanks (and focus results if you have no focus to spend). Most missiles and torpedoes can only fire at a locked ship. A lock lasts until you use it.',
+  jam: 'Jam an enemy at range 1-2 in your firing arc: it loses its focus, evade, calculate or reinforce token, or else its lock. If it has none, it gets a jam token that cancels the next token it gains.',
+  coordinate: 'Pick a friendly ship at range 0-2 that isn\'t stressed: it takes an action right now (and still gets its own later).',
+  barrelRoll: 'Slide sideways by one base width, forward, level or back, keeping your facing. A quick way into an enemy\'s path or out of its arc. Then pick a teal spot.',
+  boost: 'Fly a short extra move after your maneuver: 1 straight or a 1 bank. Close in, or slip out of an arc. Then pick a green spot.',
+  rotateArc: 'Turn your turret arc to face front, left, right or rear, so the turret can shoot that way.',
+  reinforce: 'Brace the front or rear half of your ship for the rest of the round: an attack from that side that lands 2 or more hits loses one.',
+  reload: 'Get back one charge on this missile, torpedo or bomb. You can\'t attack this round.',
+  none: 'Take no action this round.',
+};
+const RED_NOTE = '<br><span class="red">Red: it costs 1 stress. A stressed ship can\'t take actions or fly red maneuvers until a blue maneuver clears it.</span>';
+
 function renderAction(shipId: string, options: ActionChoice[], linked?: { from: ActionType; red: boolean }, coordinatedBy?: string) {
   const s = shipById(shipId);
   const by = coordinatedBy ? shipById(coordinatedBy).name : '';
@@ -2029,37 +2046,39 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
         { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
       return;
     }
+    const redOf = (t: ActionType) => !!SHIP_TYPES[s.typeId].actions.find((a) => a.type === t)?.red || !!linked?.red;
+    const helpOf = (t: ActionType) => ACTION_HELP[t] + (redOf(t) ? RED_NOTE : '');
     const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
-      ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
+      ({ icon, label, title: hint.split(':')[0], help: helpOf(t), onClick: () => { only = t; cand = null; show(); } });
     const items: RadialItem[] = [];
     const stress = linked?.red ? ' (red: +1 stress)' : '';
-    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: `Focus: turn focus results into hits or evades${stress}`, cls: red, onClick: () => choose({ type: 'focus' }) });
-    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: `Evade: add an evade result when defending${stress}`, cls: red, onClick: () => choose({ type: 'evade' }) });
-    if (has('calculate')) items.push({ icon: ICONS.calculate, label: 'Calc', title: `Calculate: change 1 focus result to a hit or evade, attacking or defending${stress}`, cls: red, onClick: () => choose({ type: 'calculate' }) });
+    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: `Focus${stress}`, help: helpOf('focus'), cls: red, onClick: () => choose({ type: 'focus' }) });
+    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: `Evade${stress}`, help: helpOf('evade'), cls: red, onClick: () => choose({ type: 'evade' }) });
+    if (has('calculate')) items.push({ icon: ICONS.calculate, label: 'Calc', title: `Calculate${stress}`, help: helpOf('calculate'), cls: red, onClick: () => choose({ type: 'calculate' }) });
     for (const o of options) {
       if (o.type !== 'reinforce') continue;
       items.push({
         icon: ICONS.reinforce, label: o.side === 'front' ? 'Reinf. fr.' : 'Reinf. rear',
-        title: `Reinforce ${o.side}: attacks from your ${o.side} half lose 1 of 2+ hits this round${stress}`, cls: red, onClick: () => choose(o),
+        title: `Reinforce ${o.side}${stress}`, help: helpOf('reinforce').replace('the front or rear half', `the <b>${o.side}</b> half`), cls: red, onClick: () => choose(o),
       });
     }
     for (const o of options) {
       if (o.type !== 'reload') continue;
       const u = UPGRADES[o.upgrade];
-      items.push({ icon: ICONS.reload, label: 'Reload', title: `Reload ${u.name}: recover 1 charge, but you cannot attack this round${stress}`, cls: red, onClick: () => choose(o) });
+      items.push({ icon: ICONS.reload, label: 'Reload', title: `Reload ${u.name}${stress}`, help: helpOf('reload').replace('this missile, torpedo or bomb', `your <b>${u.name}</b>`), cls: red, onClick: () => choose(o) });
     }
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
     if (jams.length) items.push(narrow('jam', ICONS.jam, 'Jam', 'Jam: strip an enemy\'s Focus, Evade or lock (range 1-2 in your arc); then click a ringed enemy'));
     if (coords.length) items.push(narrow('coordinate', ICONS.coordinate, 'Coord.', 'Coordinate: a friend at range 0-2 that is not stressed takes an action now; then click a ringed friend'));
     if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
     if (spots.some((o) => o.type === 'boost')) items.push(narrow('boost', ICONS.boost, 'Boost', 'Boost: then click a green dot'));
-    if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, onClick: () => { only = 'rotateArc'; cand = null; show(); } });
+    if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, help: helpOf('rotateArc'), onClick: () => { only = 'rotateArc'; cand = null; show(); } });
     for (const o of options) {
       if (o.type !== 'repair') continue;
       const c = DAMAGE_CARDS[o.card];
-      items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
+      items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}`, help: `Use your action to fix this damage card and discard it. While it stays: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
     }
-    items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+    items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', help: linked ? 'Don\'t take the linked action.' : ACTION_HELP.none, cls: 'quiet', onClick: () => choose({ type: 'none' }) });
     scene.showRadial(s.pose, items, {
       key: linked ? `linked|${linked.from}|${shipId}` : by ? `coord|${shipId}` : 'menu',
       caption: linked ? `${linkNote}: take it or skip` : by ? `Coordinated by ${by}: pick an action` : 'Pick an action',
@@ -2228,11 +2247,11 @@ function renderSystem(shipId: string, options: DropChoice[]) {
     icon: UPGRADES[o.upgrade].device!.kind === 'mine' ? ICONS.mine : ICONS.bomb,
     label: short(o.upgrade),
     badge: s.upgrades.find((u) => u.id === o.upgrade)?.charges,
-    title: `Drop ${UPGRADES[o.upgrade].name}: ${UPGRADES[o.upgrade].text}`,
+    title: `Drop ${UPGRADES[o.upgrade].name}`, help: UPGRADES[o.upgrade].text,
     onClick: () => choose(o),
     onHover: (on) => preview(on ? o : null),
   }));
-  items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+  items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', help: 'Keep your bombs and mines for later.', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
   scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
   mode = { click() {}, key(e) { if (e.key === 'Escape') choose({ type: 'none' }); } };
   setBar({
@@ -2400,10 +2419,12 @@ function renderAttack(shipId: string, targets: Target[]) {
         return {
           icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, disabled: !ok,
           title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
+          help: w === 'primary' ? 'Your main guns. Range 1 rolls a die fewer, range 2 one more (the sweet spot), range 4 gives the defender an extra die. Then pick a ringed enemy; each shows your odds.'
+            : `${UPGRADES[w].text}${ok ? ' Then pick a ringed enemy; each shows your odds.' : `<br><span class="red">${why(w)}</span>`}`,
           onClick: () => pickWeapon(w),
         };
       });
-      items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+      items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', help: 'Don\'t attack this round. Your tokens stay for defending.', cls: 'danger', onClick: () => fire(null) });
       scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
     }
     const btns: BarButton[] = weapon ? [{ label: 'Back', onClick: back }] : [];

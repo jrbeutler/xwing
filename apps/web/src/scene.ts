@@ -47,8 +47,10 @@ function clearGroup(g: THREE.Group) {
 export interface RadialItem {
   icon: string;
   label: string;
-  /** Tooltip / accessible name (defaults to the label). */
+  /** Short description: the accessible name and the help popup's heading (defaults to the label). */
   title?: string;
+  /** What the button does, in a sentence or two (HTML): shown in a popup on hover, or when a finger holds the button. */
+  help?: string;
   badge?: string | number;
   active?: boolean;
   disabled?: boolean;
@@ -182,9 +184,42 @@ export class BattleScene {
       this.placeLabels();
       this.composer.render();
       this.labels.render(this.scene, this.camera);
+      // The label renderer stacks everything by distance; the action ring and move buttons must sit above
+      // the ships' name plates, or a nearby plate covers a button.
+      for (const c of this.chips.children) (c as CSS2DObject).element.style.zIndex = '1000000';
       requestAnimationFrame(loop);
     };
     loop();
+  }
+
+  private tipEl: HTMLDivElement | null = null;
+  private tipTimer = 0;
+  /** A small popup over `anchor` explaining it (`help` is HTML). */
+  showTip(anchor: HTMLElement, title: string, help?: string) {
+    if (!help) return;
+    clearTimeout(this.tipTimer);
+    if (!this.tipEl) {
+      this.tipEl = document.createElement('div');
+      this.tipEl.id = 'radtip';
+      this.tipEl.setAttribute('role', 'tooltip');
+      document.body.appendChild(this.tipEl);
+    }
+    const t = this.tipEl;
+    t.innerHTML = `<b>${title}</b><div>${help}</div>`;
+    t.hidden = false;
+    // Above the button if there is room, else below; kept on screen.
+    const r = anchor.getBoundingClientRect(), w = Math.min(280, innerWidth - 24);
+    t.style.width = `${w}px`;
+    const left = Math.min(innerWidth - w - 12, Math.max(12, r.left + r.width / 2 - w / 2));
+    t.style.left = `${left}px`;
+    const h = t.offsetHeight;
+    t.style.top = `${r.top - h - 10 >= 8 ? r.top - h - 10 : Math.min(innerHeight - h - 8, r.bottom + 10)}px`;
+  }
+  /** Hide the help popup (after `delay` ms). */
+  hideTip(delay = 0) {
+    clearTimeout(this.tipTimer);
+    const go = () => { if (this.tipEl) this.tipEl.hidden = true; };
+    if (delay) this.tipTimer = window.setTimeout(go, delay); else go();
   }
 
   /** Called when the player moves the camera themselves (pinch, drag, or panBy). */
@@ -667,7 +702,7 @@ export class BattleScene {
     obj.center.set(0.5, -1.6); // sit well below the ship, clear of its label and preview labels
     this.chips.add(obj);
   }
-  clearChips() { clearGroup(this.chips); this.chipsKey = ''; }
+  clearChips() { clearGroup(this.chips); this.chipsKey = ''; this.hideTip(); }
 
   /**
    * A ring of icon buttons around a ship (the acting ship's menu). Items are spread around the ship,
@@ -696,10 +731,27 @@ export class BattleScene {
       b.style.setProperty('--x', `${Math.sin(rad).toFixed(3)}`);
       b.style.setProperty('--y', `${(-Math.cos(rad)).toFixed(3)}`);
       b.disabled = !!it.disabled;
-      b.title = it.title ?? it.label;
-      b.setAttribute('aria-label', it.title ?? it.label);
+      b.setAttribute('aria-label', it.help ? `${it.title ?? it.label}. ${it.help.replace(/<[^>]+>/g, '')}` : it.title ?? it.label);
       b.innerHTML = `${it.icon}<span class="rad-label">${it.label}</span>${it.badge !== undefined ? `<span class="rad-badge">${it.badge}</span>` : ''}`;
-      b.addEventListener('click', (e) => { e.stopPropagation(); if (!b.disabled) it.onClick(); });
+      // Help: a held finger (or a resting mouse) shows what the button does. A hold doesn't press it.
+      let held = false, timer = 0;
+      const tip = () => this.showTip(b, it.title ?? it.label, it.help);
+      b.addEventListener('pointerdown', (e) => {
+        held = false;
+        clearTimeout(timer);
+        if (e.pointerType !== 'mouse') timer = window.setTimeout(() => { held = true; tip(); }, 450);
+      });
+      b.addEventListener('pointerup', () => { clearTimeout(timer); if (held) this.hideTip(2500); });
+      b.addEventListener('pointercancel', () => { clearTimeout(timer); this.hideTip(held ? 2500 : 0); });
+      b.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') { clearTimeout(timer); timer = window.setTimeout(tip, 350); } });
+      b.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { clearTimeout(timer); this.hideTip(); } });
+      b.addEventListener('contextmenu', (e) => e.preventDefault()); // a long press must not open the browser's menu
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (held) { held = false; return; } // the finger was reading the help
+        this.hideTip();
+        if (!b.disabled) it.onClick();
+      });
       if (it.onHover) {
         b.addEventListener('pointerenter', () => it.onHover!(true));
         b.addEventListener('pointerleave', () => it.onHover!(false));
@@ -709,7 +761,9 @@ export class BattleScene {
     if (opts.caption) {
       const c = document.createElement('div');
       c.className = 'rad-caption';
-      c.innerHTML = opts.caption;
+      // Phones can't hover: say how to get the help.
+      const touchHelp = n > 1 && items.some((it) => it.help) && matchMedia('(hover: none)').matches;
+      c.innerHTML = opts.caption + (touchHelp ? ' <span class="rad-help-hint">· hold a button for help</span>' : '');
       el.appendChild(c);
     }
     const obj = new CSS2DObject(el);
