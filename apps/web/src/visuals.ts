@@ -189,32 +189,17 @@ export function buildShip(typeId: string, color: number, skin: Skin): ShipModel 
 }
 
 /** Square base plate with arc lines and a nose notch, in the owner's colour. */
-export function buildBase(size: number, color: number, arcs: string[]): THREE.Group {
+/**
+ * What sits on the table under a ship. The base itself is not drawn (it distracted from the ships): it
+ * stays as an invisible hit area so ships are easy to click or tap, plus a soft pool of light in the team
+ * colour that marks where the ship is and whose it is. The rules measure from the base footprint either way.
+ */
+export function buildBase(size: number, color: number, _arcs: string[] = []): THREE.Group {
   const g = new THREE.Group();
-  const plateMat = new THREE.MeshStandardMaterial({ color: 0x0c1220, metalness: 0.7, roughness: 0.35, transparent: true, opacity: 0.92 });
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(size, 2, size), plateMat);
-  plate.position.y = 1;
-  plate.receiveShadow = true;
-  g.add(plate);
-  const s = size / 2;
-  const pts: number[] = [];
-  const line = (a: [number, number], b: [number, number]) => pts.push(a[0], 2.2, -a[1], b[0], 2.2, -b[1]);
-  line([s, s], [-s, s]); line([-s, s], [-s, -s]); line([-s, -s], [s, -s]); line([s, -s], [s, s]);
-  if (arcs.includes('front')) { line([0, 0], [s, s]); line([0, 0], [s, -s]); }
-  if (arcs.includes('rear')) { line([0, 0], [-s, s]); line([0, 0], [-s, -s]); }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: hot(color, 1.6) })));
-  // A solid frame in the team colour around the base, so ownership reads at a glance even in a crowd.
-  const frame = new THREE.Shape([new THREE.Vector2(-s, -s), new THREE.Vector2(s, -s), new THREE.Vector2(s, s), new THREE.Vector2(-s, s)]);
-  const t = 2.6;
-  frame.holes.push(new THREE.Path([new THREE.Vector2(-s + t, -s + t), new THREE.Vector2(-s + t, s - t), new THREE.Vector2(s - t, s - t), new THREE.Vector2(s - t, -s + t)]));
-  const border = new THREE.Mesh(new THREE.ShapeGeometry(frame), new THREE.MeshBasicMaterial({ color: hot(color, 1.25) }));
-  border.rotation.x = -Math.PI / 2;
-  border.position.y = 2.15;
-  border.raycast = () => {};
-  g.add(border);
-  // soft coloured light pool on the table under the ship
+  // Invisible, but still picked by the raycaster: the whole footprint is a click/tap target.
+  const hit = new THREE.Mesh(new THREE.BoxGeometry(size, 2, size), new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+  hit.position.y = 1;
+  g.add(hit);
   const pool = new THREE.Mesh(new THREE.PlaneGeometry(size * 2.2, size * 2.2), new THREE.MeshBasicMaterial({
     map: glowTexture(), color: new THREE.Color(color).multiplyScalar(0.35), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
   }));
@@ -222,10 +207,6 @@ export function buildBase(size: number, color: number, arcs: string[]): THREE.Gr
   pool.position.y = 0.3;
   pool.raycast = () => {};
   g.add(pool);
-  const notch = new THREE.Mesh(new THREE.ConeGeometry(3, 6, 3), new THREE.MeshBasicMaterial({ color: hot(color, 1.3) }));
-  notch.rotation.z = -Math.PI / 2;
-  notch.position.set(s - 4, 2.5, 0);
-  g.add(notch);
   return g;
 }
 

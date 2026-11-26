@@ -267,10 +267,6 @@ export class BattleScene {
     const color = COLORS[s.owner] ?? 0xffffff;
     const root = new THREE.Group();
     root.add(buildBase(size, color, t.primaries.map((p) => p.arc)));
-    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.4, FLY_HEIGHT, 8),
-      new THREE.MeshStandardMaterial({ color: 0x5a6b85, metalness: 0.2, roughness: 0.1, transparent: true, opacity: 0.55 }));
-    stand.position.y = FLY_HEIGHT / 2;
-    root.add(stand);
     const { model, body, engines } = buildShip(s.typeId, color, skinOf(s.owner));
     model.position.y = FLY_HEIGHT + 4;
     model.scale.setScalar(MODEL_SCALE); // models are enlarged for readability; bases stay true to scale
