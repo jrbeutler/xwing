@@ -348,7 +348,7 @@ export class BattleScene {
   }
 
   updateLabel(v: ShipView, s: ShipState) {
-    const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : ''].join('');
+    const tokens = [s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '', s.lock ? '⌖' : '', s.jam ? '<span class="jm" title="Jammed">⌁</span>' : ''].join('');
     v.label.element.querySelector('.info')!.innerHTML =
       `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +

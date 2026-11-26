@@ -121,7 +121,16 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     // Fix what hurts most right now: cards that cost hull first, then ones that blunt this turn's shot.
     const urgent = repair(['consoleFire', 'hullBreach', 'fuelLeak']);
     const blunted = hasShot ? repair(['blindedPilot', 'weaponsFailure']) : undefined;
-    const choice = urgent ?? blunted
+    // Jam an enemy that is holding tokens: strip its Focus/Evade (best of all, one we're about to shoot).
+    const shootable = new Set(legalTargets(s, sh).map((t) => t.targetId));
+    const jamWorth = (o: ActionChoice) => {
+      if (o.type !== 'jam') return 0;
+      const t = s.ships.find((x) => x.id === o.targetId)!;
+      const tokens = t.focus + t.evade;
+      return tokens ? tokens * 2 + t.evade + (shootable.has(t.id) ? 3 : 0) : 0;
+    };
+    const jam = [...d.options].sort((a, b) => jamWorth(b) - jamWorth(a)).find((o) => jamWorth(o) > 0);
+    const choice = urgent ?? blunted ?? jam
       ?? (hasShot ? pick('focus') ?? pick('lock') : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot'])
         ?? turretTurn(s, sh, d.options) ?? pick('evade') ?? pick('focus') ?? pick('lock'));
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };

@@ -75,7 +75,7 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (lock reroll → focus → defender focus → evade). Next: interactive modify steps for humans.
-- No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, jam, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
+- No damage deck, ship/pilot abilities, upgrades, charges/force, ion, tractor, reinforce, coordinate, calculate, linked actions, obstacles other than asteroids, or a points/loadout system.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.

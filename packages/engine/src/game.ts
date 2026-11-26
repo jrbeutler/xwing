@@ -1,7 +1,7 @@
 import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
-import { cardDamage, upgradeOf, legalTargets, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { cardDamage, upgradeOf, legalTargets, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import type {
@@ -46,7 +46,7 @@ export function createGame(setup: GameSetup): GameState {
         id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
         initiative: pilot.initiative, pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: u.charges ?? 0 })),
-        stress: 0, focus: 0, evade: 0, lock: null, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
+        stress: 0, focus: 0, evade: 0, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
   }
@@ -187,6 +187,10 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
         }
       }
     }
+  }
+  // Jam: an enemy at range 1-2 inside one of this ship's firing arcs (a turret's included).
+  if (!ionized && shipType(sh).actions.some((a) => a.type === 'jam') && actionAllowed(sh, 'jam')) {
+    for (const t of jamTargets(s, sh)) opts.push({ type: 'jam', targetId: t.id });
   }
   // A turret upgrade adds the Rotate action: turn the turret arc to face another way.
   if (!ionized && hasTurret(sh) && actionAllowed(sh, 'rotateArc')) {
@@ -453,8 +457,8 @@ function afterRedManeuver(s: GameState, sh: ShipState) {
     s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'elusive', what: 'recovered' });
   }
   if (upgradeOf(sh, 'hotshot')) {
-    sh.focus++;
     s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: 'hotshot', what: 'used' });
+    gainToken(s, sh, 'focus');
   }
 }
 
@@ -478,15 +482,49 @@ function afterManeuver(s: GameState, sh: ShipState, m: Maneuver, touchedObstacle
   }
 }
 
+/** Range limit of the Jam action (inside one of the jammer's firing arcs). */
+export const JAM_RANGE = 2;
+
+/** Enemies this ship could jam: at range 1-2 (or touching) inside any of its firing arcs, turret included. */
+export function jamTargets(s: GameState, sh: ShipState): ShipState[] {
+  return activeShips(s).filter((t) => t.owner !== sh.owner && shipType(sh).primaries.some((w) => {
+    const m = measureArc(s, sh, t, w.arc === 'turret' ? sh.turretArc : w.arc);
+    return m !== null && m.range <= JAM_RANGE;
+  }));
+}
+
+/** Give a ship a Focus or Evade token, unless a jam token cancels it. */
+function gainToken(s: GameState, sh: ShipState, kind: 'focus' | 'evade') {
+  if (sh.jam > 0) {
+    sh.jam--;
+    s.log.push({ type: 'jamSpent', shipId: sh.id, lost: kind });
+    return;
+  }
+  sh[kind]++;
+}
+
+/**
+ * Jam: the target loses its Focus token, else its Evade token, else the lock it holds. With none of
+ * those it takes a jam token instead (at most one), which cancels the next Focus or Evade it would gain.
+ */
+function jam(s: GameState, from: ShipState, t: ShipState) {
+  let effect: 'focus' | 'evade' | 'lock' | 'jammed';
+  if (t.focus > 0) { t.focus--; effect = 'focus'; }
+  else if (t.evade > 0) { t.evade--; effect = 'evade'; }
+  else if (t.lock) { t.lock = null; effect = 'lock'; }
+  else { t.jam = 1; effect = 'jammed'; }
+  s.log.push({ type: 'jam', shipId: from.id, targetId: t.id, effect });
+}
+
 function performAction(s: GameState, sh: ShipState, a: ActionChoice) {
   if (a.type === 'none') return;
   const def = shipType(sh).actions.find((x) => x.type === a.type);
-  if (a.type === 'focus') sh.focus++;
-  if (a.type === 'evade') sh.evade++;
   if (a.type === 'lock') sh.lock = a.targetId;
   if (a.type === 'barrelRoll' || a.type === 'boost') { const from = sh.pose; sh.pose = a.to; triggerMines(s, sh, [from, a.to]); }
   if (a.type === 'rotateArc') sh.turretArc = a.to;
   s.log.push({ type: 'action', shipId: sh.id, action: a });
+  if (a.type === 'focus' || a.type === 'evade') gainToken(s, sh, a.type);
+  if (a.type === 'jam') jam(s, sh, s.ships.find((x) => x.id === a.targetId)!);
   if (a.type === 'repair') {
     discardCard(s, sh, a.card);
     s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
@@ -553,6 +591,7 @@ function endPhase(s: GameState) {
     if (sh.destroyed) sh.removed = true;
     sh.focus = 0;
     sh.evade = 0;
+    sh.jam = 0;
   }
   s.engagementInitiative = null;
   const alive = s.players.filter((p) => activeShips(s).some((x) => x.owner === p.id));

@@ -36,12 +36,13 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     slots: ['talent', 'turret', 'torpedo', 'missile', 'device', 'device', 'modification'],
   },
   // Light freighter. Stats and dial follow the X-Wing 2nd edition HWK-290, but on a medium base like the
-  // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), and it carries
-  // missiles, torpedoes, a turret and devices. Jam and the linked focus/lock→rotate actions are left out.
+  // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), it can Jam an
+  // enemy at range 1-2 in that arc, and it carries missiles, torpedoes, a turret and devices. The linked
+  // focus/lock→rotate actions are left out.
   wayfarer: {
     id: 'wayfarer', name: 'Wayfarer Light Freighter', size: 'medium',
     primaries: [{ arc: 'turret', attack: 2 }], agility: 2, hull: 3, shields: 2,
-    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'boost', red: true }],
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'jam' }, { type: 'boost', red: true }],
     dial: parseDial('0X:r 1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:b 3BR:w 3TR:r 4S:w'),
     slots: ['talent', 'missile', 'torpedo', 'turret', 'device', 'device', 'modification', 'modification'],
   },

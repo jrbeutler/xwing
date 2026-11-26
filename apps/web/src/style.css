@@ -283,3 +283,7 @@ html.compact #gunsight kbd { display: none; }
 #recap { pointer-events: none; }
 #recap .recap-close { pointer-events: auto; }
 html.compact #log.open { cursor: pointer; }
+
+/* Jam: purple, like its ring */
+.jam-float { color: #c58bff; }
+.label .jm { color: #c58bff; }

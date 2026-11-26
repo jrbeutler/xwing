@@ -5,7 +5,7 @@ import type { DamageCardId } from './damage';
 export type PlayerId = string;
 /** Firing arcs by facing: primaries use front/rear; a turret's arc can face any of the four. */
 export type ArcName = 'front' | 'rear' | 'left' | 'right';
-export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc';
+export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam';
 
 export interface ActionDef { type: ActionType; red?: boolean }
 
@@ -103,6 +103,8 @@ export interface ShipState {
   evade: number;
   /** Id of the ship this ship has locked (one lock at a time). */
   lock: string | null;
+  /** Jam tokens: each cancels the next Focus or Evade token the ship would gain. Cleared in the End phase. */
+  jam: number;
   /** Ion tokens: an ionized ship flies a white 1-straight instead of its dial. */
   ion: number;
   /** Which way the ship's turret arc faces (ships with a turret upgrade). */
@@ -128,7 +130,8 @@ export type ActionChoice =
   | { type: 'barrelRoll'; dir: 'left' | 'right'; shift: -1 | 0 | 1; to: Pose }
   | { type: 'boost'; bearing: 'straight' | 'bankLeft' | 'bankRight'; to: Pose }
   | { type: 'repair'; card: DamageCardId }
-  | { type: 'rotateArc'; to: ArcName };
+  | { type: 'rotateArc'; to: ArcName }
+  | { type: 'jam'; targetId: string };
 
 export interface TargetInfo {
   targetId: string;
@@ -174,6 +177,10 @@ export type GameEvent =
       shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
     }
   | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered' }
+  /** A jam landed: what the target lost (a token, its lock), or 'jammed' when it had nothing and took a jam token. */
+  | { type: 'jam'; shipId: string; targetId: string; effect: 'focus' | 'evade' | 'lock' | 'jammed' }
+  /** A jammed ship's jam token cancelled a token it was about to gain. */
+  | { type: 'jamSpent'; shipId: string; lost: 'focus' | 'evade' }
   | { type: 'deviceDropped'; shipId: string; device: Device }
   | {
       type: 'deviceDetonated'; device: Device;
