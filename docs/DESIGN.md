@@ -46,27 +46,30 @@ Unreal does not run TypeScript, so the engine is designed so that moving to Unre
 2. **Unreal client.** Unreal connects to the same protocol (WebSocket plugin + JSON). It renders poses from events exactly like the web client does, because the coordinate system and units (mm, radians, +y up on the board) are specified here.
 3. **Offline/single-player in Unreal.** Either bundle the Node server as a local sidecar, or port the engine to C++. The engine is small (geometry, templates, phase machine, combat), and the test suite plus recorded game logs (seed + commands → expected events) become the acceptance tests for the port.
 
-### Effects (what upgrades do)
+### Effects (what upgrades and pilot abilities do)
 
-Upgrades describe what they do as data: `UpgradeDef.effects` in `content.ts`, interpreted by `effects.ts`.
-The rules code asks "which effects apply now?" and never checks for an upgrade by id, so a new talent or
-upgrade (and later a pilot ability) is a content change. Effect kinds:
+Upgrades and named pilots' abilities describe what they do as data: `UpgradeDef.effects` and
+`PilotDef.ability` in `content.ts`, interpreted by `effects.ts`. The rules code asks "which effects apply
+now?" and never checks for an upgrade or pilot by id, so a new talent, upgrade or pilot ability is a content
+change. In play, an ability is a source like an upgrade (`ShipState.ability`, id = the pilot's id, with its
+own charges), listed before the ship's upgrades; `effectSource(id)` names any source for clients. Effect kinds:
 
 | Kind | What it does | Used by |
 |---|---|---|
-| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating |
+| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating; Mara Venn, Tobin Reyes, Kira Solace, Bram Holloway |
 | `rerollAttack` | Reroll up to N attack dice (blanks first, then focus results) | Marksman, Steady Gunner, Ordnance Specialist |
 | `rerollDefense` | Reroll up to N defense dice | Elusive |
 | `cancelEvade` | Cancel 1 of the defender's evade results | Crack Shot |
-| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`), if conditions hold, run ops (`gainFocus`, `recoverShield`, `recoverCharge`, `loseCharges`) | Hotshot, Elusive, Damage Control, Stealth Coating |
+| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`, `actionPerformed`, `attackHit`), if conditions hold (shields/charges below max, which action, an `AttackCondition`), run ops (`gainFocus`, `gainCalculate`, `stressDefender`, `recoverShield`, `recoverCharge`, `loseCharges`) | Hotshot, Elusive, Damage Control, Stealth Coating; Syl Ketch, Ilse Kord, Wren Tal, Drav Okono, Tessa Varn, Corin Hale |
 | `stat` | Flat bonus to a looked-up number (`jamRange`, `deviceCharges`) | Signal Jammer, Payload Expert |
 
 Attack effects can be limited with an `AttackCondition` (primary, turret, bullseye, front arc, attacker
-outside the defender's arcs). `cost: 'charge'` spends one of the upgrade's charges per use; `needsCharge`
-only requires one. Dice effects are read by both `resolveAttack` and `attackOdds` through the same helpers,
+outside the defender's arcs, defender stressed, a range of bands). `cost: 'charge'` spends one of the
+source's charges per use; `needsCharge` only requires one; `recurring` sources get 1 charge back in each
+End phase ("once per round"). Attack events list the sources whose dice effects changed the dice (`diceBy`). Dice effects are read by both `resolveAttack` and `attackOdds` through the same helpers,
 and `test/effects.test.ts` checks the two against each other for effects the shipped content doesn't use yet
 (multi-die rerolls, attack-dice changes, stacking). Triggers log an `upgrade` event that says what they gave
-(`focus`, `shields`), so clients don't need to know any upgrade by name.
+(`focus`, `calculate`, `shields`), so clients don't need to know any upgrade or pilot by name.
 
 Keep these rules so this stays cheap:
 - No rendering, timing or platform calls in `packages/engine`.
@@ -102,7 +105,7 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
-- Not yet: pilot abilities (beyond signature talents), recurring charges and force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, obstacles other than asteroids, and obstacle placement by the players.
+- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, obstacles other than asteroids, and obstacle placement by the players.
 - Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
 - The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`), and never barrel rolls or boosts yet, so it never uses the Wasp/Javelin links.
 - Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
@@ -132,6 +135,25 @@ attacks, and partial-maneuver details.
 | Wayfarer Light Freighter | medium | 2 turret | 2 | 3 | 2 | Focus → Rotate, Lock → Rotate, Calculate, Jam, red Boost |
 
 Factions: Coalition (player) vs Syndicate (AI). Pilots and dials are in `content.ts`.
+
+Named pilots' abilities (each costs 2 points in the pilot's price, 3 for the extra-die ones):
+
+| Pilot | Ship | Ability |
+|---|---|---|
+| Mara Venn | Wasp | Long-Range Dodger: +1 defense die at range 3-4 |
+| Syl Ketch | Wasp | Slipstream: after a Barrel Roll or Boost, gain 1 calculate |
+| Tobin Reyes | Kestrel | Press the Attack: +1 attack die on primary attacks against a stressed ship |
+| Ilse Kord | Kestrel | Steady Nerves: once per round, after losing shields or hull, gain 1 focus |
+| Kira Solace | Javelin | Ambush: +1 attack die on primary front-arc attacks from outside the defender's arcs |
+| Wren Tal | Javelin | Rattle: once per round, after a damaging attack on a ship in the bullseye, it gains 1 stress |
+| Bram Holloway | Anvil | Torpedo Run: +1 attack die with missiles or torpedoes at range 3 |
+| Drav Okono | Bulwark | Command Presence: after a Coordinate, gain 1 focus |
+| Tessa Varn | Wayfarer | Signal Analysis: after a Jam, gain 1 calculate |
+| Corin Hale | Wayfarer | Fire Control: after a Rotate, gain 1 calculate |
+
+Over 300 AI-vs-AI games, named pilots' sides won 44-55% of the games they were in (noise at this sample
+size). The AI values the tokens these abilities give after Jam and Coordinate (`actionBonus` in `ai.ts`);
+it never barrel rolls or boosts yet, so Slipstream never fires for it.
 
 ## AI
 

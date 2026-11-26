@@ -2,7 +2,7 @@ import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygon
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
-import { gainToken, runTriggers, statBonus } from './effects';
+import { gainToken, recoverRecurringCharges, runTriggers, statBonus } from './effects';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
@@ -51,6 +51,7 @@ export function createGame(setup: GameSetup): GameState {
         id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
+        ability: pilot.ability ? { id: pilot.id, charges: pilot.ability.charges ?? 0 } : null,
         stress: 0, focus: 0, evade: 0, calculate: 0, reinforce: null, disarmed: false, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
@@ -594,6 +595,7 @@ function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolea
     s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
   }
   if (red) { sh.stress++; s.log.push({ type: 'stress', shipId: sh.id, delta: 1 }); }
+  runTriggers(s, sh, 'actionPerformed', { action: a.type });
   if (hasCard(sh, 'woundedPilot')) {
     const [roll] = rollAttack(s, 1);
     const hurt = roll === 'hit' || roll === 'crit';
@@ -653,7 +655,7 @@ function endPhase(s: GameState) {
   s.log.push({ type: 'phase', phase: 'end' });
   for (const sh of s.ships) {
     if (sh.destroyed) sh.removed = true;
-    if (!sh.destroyed) runTriggers(s, sh, 'endPhase');
+    if (!sh.destroyed) { runTriggers(s, sh, 'endPhase'); recoverRecurringCharges(s, sh); }
     sh.focus = 0;
     sh.evade = 0;
     sh.calculate = 0;

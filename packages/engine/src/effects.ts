@@ -1,23 +1,34 @@
-// Effect hooks: what upgrades do in play, described as data (UpgradeDef.effects) and interpreted here.
-// The rules code asks "which effects apply now?" instead of checking for upgrades by id, so new talents,
-// upgrades and (later) pilot abilities are content, not engine changes.
+// Effect hooks: what upgrades and pilot abilities do in play, described as data (UpgradeDef.effects,
+// PilotDef.ability) and interpreted here. The rules code asks "which effects apply now?" instead of checking
+// for upgrades or pilots by id, so new talents, upgrades and pilot abilities are content, not engine changes.
 //
 // Dice effects (dice counts, rerolls, cancelling evades) are interpreted twice, by resolveAttack and by
 // attackOdds in combat.ts; both read them through the helpers below so they cannot drift apart.
-import { UPGRADES } from './content';
-import type { AttackCondition, Effect, GameState, GreenToken, ShipState, TriggerEvent, UpgradeState } from './types';
+import { PILOTS, UPGRADES } from './content';
+import type { ActionType, AttackCondition, Effect, GameState, GreenToken, ShipState, TriggerEvent, UpgradeState } from './types';
 
-/** An effect in play, with the upgrade it comes from (whose charges it uses). */
+/**
+ * What an effect source is, by its id in play: an upgrade, or a pilot ability (whose id is the pilot's).
+ * Clients use it to name sources in logs and to know their charges.
+ */
+export function effectSource(id: string): { name: string; text: string; charges?: number; recurring?: boolean; effects?: Effect[]; ability: boolean } | undefined {
+  const u = UPGRADES[id];
+  if (u) return { ...u, ability: false };
+  const a = PILOTS[id]?.ability;
+  return a ? { ...a, ability: true } : undefined;
+}
+
+/** An effect in play, with the upgrade or ability it comes from (whose charges it uses). */
 export interface ActiveEffect<E extends Effect = Effect> { source: UpgradeState; effect: E }
 
 type Kind = Effect['kind'];
 type OfKind<K extends Kind> = Extract<Effect, { kind: K }>;
 
-/** Every effect of a given kind on a ship, in the order its upgrades are fitted. */
-export function effectsOf<K extends Kind>(sh: Pick<ShipState, 'upgrades'>, kind: K): ActiveEffect<OfKind<K>>[] {
+/** Every effect of a given kind on a ship: its pilot's ability first, then its upgrades in fitted order. */
+export function effectsOf<K extends Kind>(sh: Pick<ShipState, 'upgrades'> & { ability?: UpgradeState | null }, kind: K): ActiveEffect<OfKind<K>>[] {
   const out: ActiveEffect<OfKind<K>>[] = [];
-  for (const source of sh.upgrades) {
-    for (const effect of UPGRADES[source.id]?.effects ?? []) {
+  for (const source of sh.ability ? [sh.ability, ...sh.upgrades] : sh.upgrades) {
+    for (const effect of effectSource(source.id)?.effects ?? []) {
       if (effect.kind === kind) out.push({ source, effect: effect as OfKind<K> });
     }
   }
@@ -25,7 +36,7 @@ export function effectsOf<K extends Kind>(sh: Pick<ShipState, 'upgrades'>, kind:
 }
 
 /** Most charges the effect's upgrade can hold. */
-export const maxCharges = (source: UpgradeState) => UPGRADES[source.id]?.charges ?? 0;
+export const maxCharges = (source: UpgradeState) => effectSource(source.id)?.charges ?? 0;
 
 /** Whether the effect's charge requirement is met (a charge to spend, or one it needs to be active). */
 export const charged = (a: ActiveEffect) => {
@@ -39,16 +50,17 @@ export const payFor = (a: ActiveEffect) => {
 };
 
 /** Sum of a stat bonus over a ship's upgrades (or a list of upgrade ids, before the ship exists). */
-export function statBonus(upgrades: Pick<ShipState, 'upgrades'> | string[], stat: OfKind<'stat'>['stat']): number {
+export function statBonus(upgrades: Pick<ShipState, 'upgrades' | 'ability'> | string[], stat: OfKind<'stat'>['stat']): number {
   const sh = Array.isArray(upgrades) ? { upgrades: upgrades.map((id) => ({ id, charges: 0 })) } : upgrades;
   return effectsOf(sh, 'stat').reduce((a, x) => a + (x.effect.stat === stat ? x.effect.delta : 0), 0);
 }
 
 /** The facts about one attack that AttackCondition tests (combat.ts builds it). */
-export type AttackFacts = Required<AttackCondition>;
+export type AttackFacts = Required<Omit<AttackCondition, 'range'>> & { range: number };
 
 export const matches = (cond: AttackCondition | undefined, facts: AttackFacts) =>
-  !cond || (Object.keys(cond) as (keyof AttackCondition)[]).every((k) => cond[k] === facts[k]);
+  !cond || (Object.keys(cond) as (keyof AttackCondition)[]).every((k) =>
+    k === 'range' ? facts.range >= cond.range![0] && facts.range <= cond.range![1] : cond[k] === facts[k]);
 
 /** Effects of `kind` on `sh` that apply to this attack: condition met and charge available. */
 export function attackEffects<K extends 'rerollAttack' | 'rerollDefense' | 'cancelEvade'>(sh: ShipState, kind: K, facts: AttackFacts) {
@@ -70,6 +82,18 @@ export function diceDelta(dice: 'attack' | 'defense', facts: AttackFacts, attack
   return d;
 }
 
+/** Ids of the sources whose `dice` effects change this attack (both ships), for logs. */
+export function diceSources(facts: AttackFacts, attacker?: ShipState, defender?: ShipState): string[] {
+  const out: string[] = [];
+  for (const [sh, when] of [[attacker, 'attacking'], [defender, 'defending']] as const) {
+    if (!sh) continue;
+    for (const a of effectsOf(sh, 'dice')) {
+      if (a.effect.when === when && matches(a.effect.if, facts) && charged(a) && !out.includes(a.source.id)) out.push(a.source.id);
+    }
+  }
+  return out;
+}
+
 /** Give a ship a token (Reinforce: covering `side`), unless a jam token cancels it. */
 export function gainToken(s: GameState, sh: ShipState, kind: GreenToken, side: 'front' | 'rear' = 'front') {
   if (sh.jam > 0) {
@@ -81,21 +105,39 @@ export function gainToken(s: GameState, sh: ShipState, kind: GreenToken, side: '
   else sh[kind]++;
 }
 
-/** Fire every effect on `sh` triggered by `on`, in upgrade order. */
-export function runTriggers(s: GameState, sh: ShipState, on: TriggerEvent) {
+/** What a trigger may need to know about the event: the action performed, or the attack and its defender. */
+export interface TriggerContext { action?: ActionType; facts?: AttackFacts; defender?: ShipState }
+
+/** Fire every effect on `sh` triggered by `on`, ability first, then upgrades in order. */
+export function runTriggers(s: GameState, sh: ShipState, on: TriggerEvent, ctx: TriggerContext = {}) {
   for (const a of effectsOf(sh, 'trigger')) {
     const e = a.effect;
     if (e.on !== on || !charged(a)) continue;
     if (e.if?.shieldsBelowMax && !(sh.shields < sh.maxShields)) continue;
     if (e.if?.chargesBelowMax && !(a.source.charges < maxCharges(a.source))) continue;
+    if (e.if?.actions && !(ctx.action && e.if.actions.includes(ctx.action))) continue;
+    if (e.if?.attack && !(ctx.facts && matches(e.if.attack, ctx.facts))) continue;
+    if (e.do.some((op) => op.op === 'stressDefender') && !(ctx.defender && ctx.defender.hull > 0)) continue;
     payFor(a);
     const ev: Extract<GameState['log'][number], { type: 'upgrade' }> = { type: 'upgrade', shipId: sh.id, upgrade: a.source.id, what: e.log };
     s.log.push(ev);
     for (const op of e.do) {
       if (op.op === 'gainFocus') { ev.focus = (ev.focus ?? 0) + 1; gainToken(s, sh, 'focus'); }
+      if (op.op === 'gainCalculate') { ev.calculate = (ev.calculate ?? 0) + 1; gainToken(s, sh, 'calculate'); }
+      if (op.op === 'stressDefender') { ctx.defender!.stress++; s.log.push({ type: 'stress', shipId: ctx.defender!.id, delta: 1 }); }
       if (op.op === 'recoverShield' && sh.shields < sh.maxShields) { ev.shields = (ev.shields ?? 0) + 1; sh.shields++; }
       if (op.op === 'recoverCharge' && a.source.charges < maxCharges(a.source)) a.source.charges++;
       if (op.op === 'loseCharges') a.source.charges = 0;
     }
+  }
+}
+
+/** End phase: recurring charges come back, 1 per round, on upgrades and abilities alike. */
+export function recoverRecurringCharges(s: GameState, sh: ShipState) {
+  for (const source of sh.ability ? [sh.ability, ...sh.upgrades] : sh.upgrades) {
+    const def = effectSource(source.id);
+    if (!def?.recurring || source.charges >= maxCharges(source)) continue;
+    source.charges++;
+    s.log.push({ type: 'upgrade', shipId: sh.id, upgrade: source.id, what: 'recovered' });
   }
 }

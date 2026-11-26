@@ -66,23 +66,85 @@ export const SHIP_TYPES: Record<string, ShipType> = {
 
 // Pilots specialise in a ship class and can fly any hull of it (another class: -1 initiative, which
 // can cost a talent slot). A ship's cost is the hull's plus the pilot's. Pilot cost: 2 per initiative
-// above 1, plus their signature talents. Named pilots are unique; call-sign pilots are generic.
+// above 1, plus their signature talents, plus their ability (2 points; 3 for the extra-die abilities). Named
+// pilots are unique and each has an ability (effects like an upgrade's, flown on any hull); call-sign
+// pilots are generic.
 export const PILOTS: Record<string, PilotDef> = {
-  'mara-venn': { id: 'mara-venn', name: 'Mara Venn', specialty: 'fighter', ship: 'wasp', initiative: 5, cost: 11, unique: true, talents: ['elusive'] },
-  'syl-ketch': { id: 'syl-ketch', name: 'Syl Ketch', specialty: 'fighter', ship: 'wasp', initiative: 3, cost: 7, unique: true, talents: ['hotshot'] },
+  'mara-venn': {
+    id: 'mara-venn', name: 'Mara Venn', specialty: 'fighter', ship: 'wasp', initiative: 5, cost: 14, unique: true, talents: ['elusive'],
+    ability: {
+      name: 'Long-Range Dodger', text: 'While you defend at range 3-4, roll 1 extra defense die.',
+      effects: [{ kind: 'dice', when: 'defending', dice: 'defense', delta: 1, if: { range: [3, 4] } }],
+    },
+  },
+  'syl-ketch': {
+    id: 'syl-ketch', name: 'Syl Ketch', specialty: 'fighter', ship: 'wasp', initiative: 3, cost: 9, unique: true, talents: ['hotshot'],
+    ability: {
+      name: 'Slipstream', text: 'After you perform a Barrel Roll or Boost action, gain 1 calculate.',
+      effects: [{ kind: 'trigger', on: 'actionPerformed', if: { actions: ['barrelRoll', 'boost'] }, do: [{ op: 'gainCalculate' }], log: 'used' }],
+    },
+  },
   'grunt-seven': { id: 'grunt-seven', name: 'Grunt Seven', specialty: 'fighter', ship: 'wasp', initiative: 1, cost: 0, unique: false },
-  'tobin-reyes': { id: 'tobin-reyes', name: 'Tobin Reyes', specialty: 'fighter', ship: 'kestrel', initiative: 4, cost: 9, unique: true, talents: ['marksman'] },
-  'ilse-kord': { id: 'ilse-kord', name: 'Ilse Kord', specialty: 'fighter', ship: 'kestrel', initiative: 2, cost: 2, unique: true },
+  'tobin-reyes': {
+    id: 'tobin-reyes', name: 'Tobin Reyes', specialty: 'fighter', ship: 'kestrel', initiative: 4, cost: 12, unique: true, talents: ['marksman'],
+    ability: {
+      name: 'Press the Attack', text: 'While you perform a primary attack against a stressed ship, roll 1 extra attack die.',
+      effects: [{ kind: 'dice', when: 'attacking', dice: 'attack', delta: 1, if: { primary: true, defenderStressed: true } }],
+    },
+  },
+  'ilse-kord': {
+    id: 'ilse-kord', name: 'Ilse Kord', specialty: 'fighter', ship: 'kestrel', initiative: 2, cost: 4, unique: true,
+    ability: {
+      name: 'Steady Nerves', text: 'Once per round, after you lose shields or hull, gain 1 focus.', charges: 1, recurring: true,
+      effects: [{ kind: 'trigger', on: 'damaged', cost: 'charge', do: [{ op: 'gainFocus' }], log: 'used' }],
+    },
+  },
   'vale-nine': { id: 'vale-nine', name: 'Vale Nine', specialty: 'fighter', ship: 'kestrel', initiative: 1, cost: 0, unique: false },
-  'kira-solace': { id: 'kira-solace', name: 'Kira Solace', specialty: 'fighter', ship: 'javelin', initiative: 5, cost: 13, unique: true, talents: ['outmaneuver'] },
-  'wren-tal': { id: 'wren-tal', name: 'Wren Tal', specialty: 'fighter', ship: 'javelin', initiative: 3, cost: 6, unique: true, talents: ['crack-shot'] },
+  'kira-solace': {
+    id: 'kira-solace', name: 'Kira Solace', specialty: 'fighter', ship: 'javelin', initiative: 5, cost: 16, unique: true, talents: ['outmaneuver'],
+    ability: {
+      name: 'Ambush', text: "While you perform a primary front-arc attack from outside the defender's firing arcs, roll 1 extra attack die.",
+      effects: [{ kind: 'dice', when: 'attacking', dice: 'attack', delta: 1, if: { primary: true, frontArc: true, outsideDefenderArcs: true } }],
+    },
+  },
+  'wren-tal': {
+    id: 'wren-tal', name: 'Wren Tal', specialty: 'fighter', ship: 'javelin', initiative: 3, cost: 8, unique: true, talents: ['crack-shot'],
+    ability: {
+      name: 'Rattle', text: 'Once per round, after your attack damages a ship in your bullseye, it gains 1 stress.', charges: 1, recurring: true,
+      effects: [{ kind: 'trigger', on: 'attackHit', cost: 'charge', if: { attack: { bullseye: true } }, do: [{ op: 'stressDefender' }], log: 'used' }],
+    },
+  },
   'lance-four': { id: 'lance-four', name: 'Lance Four', specialty: 'fighter', ship: 'javelin', initiative: 1, cost: 0, unique: false },
-  'bram-holloway': { id: 'bram-holloway', name: 'Bram Holloway', specialty: 'bomber', ship: 'anvil', initiative: 4, cost: 9, unique: true, talents: ['payload-expert'] },
+  'bram-holloway': {
+    id: 'bram-holloway', name: 'Bram Holloway', specialty: 'bomber', ship: 'anvil', initiative: 4, cost: 11, unique: true, talents: ['payload-expert'],
+    ability: {
+      name: 'Torpedo Run', text: 'While you attack with a missile or torpedo at range 3, roll 1 extra attack die.',
+      effects: [{ kind: 'dice', when: 'attacking', dice: 'attack', delta: 1, if: { primary: false, turret: false, range: [3, 3] } }],
+    },
+  },
   'rook-twelve': { id: 'rook-twelve', name: 'Rook Twelve', specialty: 'bomber', ship: 'anvil', initiative: 2, cost: 2, unique: false },
-  'drav-okono': { id: 'drav-okono', name: 'Drav Okono', specialty: 'freighter', ship: 'bulwark', initiative: 4, cost: 10, unique: true, talents: ['damage-control'] },
+  'drav-okono': {
+    id: 'drav-okono', name: 'Drav Okono', specialty: 'freighter', ship: 'bulwark', initiative: 4, cost: 12, unique: true, talents: ['damage-control'],
+    ability: {
+      name: 'Command Presence', text: 'After you perform a Coordinate action, gain 1 focus.',
+      effects: [{ kind: 'trigger', on: 'actionPerformed', if: { actions: ['coordinate'] }, do: [{ op: 'gainFocus' }], log: 'used' }],
+    },
+  },
   'hauler-three': { id: 'hauler-three', name: 'Hauler Three', specialty: 'freighter', ship: 'bulwark', initiative: 2, cost: 2, unique: false },
-  'tessa-varn': { id: 'tessa-varn', name: 'Tessa Varn', specialty: 'freighter', ship: 'wayfarer', initiative: 5, cost: 10, unique: true, talents: ['signal-jammer'] },
-  'corin-hale': { id: 'corin-hale', name: 'Corin Hale', specialty: 'freighter', ship: 'wayfarer', initiative: 3, cost: 7, unique: true, talents: ['steady-gunner'] },
+  'tessa-varn': {
+    id: 'tessa-varn', name: 'Tessa Varn', specialty: 'freighter', ship: 'wayfarer', initiative: 5, cost: 12, unique: true, talents: ['signal-jammer'],
+    ability: {
+      name: 'Signal Analysis', text: 'After you perform a Jam action, gain 1 calculate.',
+      effects: [{ kind: 'trigger', on: 'actionPerformed', if: { actions: ['jam'] }, do: [{ op: 'gainCalculate' }], log: 'used' }],
+    },
+  },
+  'corin-hale': {
+    id: 'corin-hale', name: 'Corin Hale', specialty: 'freighter', ship: 'wayfarer', initiative: 3, cost: 9, unique: true, talents: ['steady-gunner'],
+    ability: {
+      name: 'Fire Control', text: 'After you perform a Rotate action, gain 1 calculate.',
+      effects: [{ kind: 'trigger', on: 'actionPerformed', if: { actions: ['rotateArc'] }, do: [{ op: 'gainCalculate' }], log: 'used' }],
+    },
+  },
   'scout-two': { id: 'scout-two', name: 'Scout Two', specialty: 'freighter', ship: 'wayfarer', initiative: 2, cost: 2, unique: false },
 };
 

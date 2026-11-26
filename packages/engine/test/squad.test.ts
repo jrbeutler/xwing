@@ -15,8 +15,8 @@ describe('points and slots', () => {
     expect(upgradeCost('shield-booster', ship('tobin-reyes'))).toBe(5);
     expect(upgradeCost('shield-booster', ship('drav-okono'))).toBe(7);
     expect(upgradeCost('shield-booster', ship('tobin-reyes', [], 'bulwark'))).toBe(7); // the hull sets the size
-    expect(squadCost({ ships: [ship('tobin-reyes', ['shield-booster']), ship('drav-okono')] })).toBe(19 + 9 + 5 + 28 + 10);
-    expect(squadCost({ ships: [ship('tobin-reyes', [], 'wasp')] })).toBe(17 + 9);
+    expect(squadCost({ ships: [ship('tobin-reyes', ['shield-booster']), ship('drav-okono')] })).toBe(19 + 12 + 5 + 28 + 12);
+    expect(squadCost({ ships: [ship('tobin-reyes', [], 'wasp')] })).toBe(17 + 12);
   });
 
   it('gives pilots talent slots by initiative: none below 3, one at 3-4, two at 5+', () => {

@@ -231,6 +231,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
         <div class="hull-row">${hullPicker(side, s, i)}${isOffClass(s) ? '<span class="hint off-class">outside specialty: -1 initiative</span>' : ''}</div>
         <div class="stats">${statLine(s)}</div>
         <div class="stats acts">${actionLine(s)}</div>
+        ${p.ability ? `<div class="ability"><b>${esc(p.ability.name)}</b> ${esc(p.ability.text)}</div>` : ''}
         <div class="slots"><span class="slot-group">Pilot</span>${pilotRow.join('') || '<span class="hint">no talent slots below initiative 3</span>'}</div>
         <div class="slots"><span class="slot-group">Ship</span>${shipRow.join('')}</div>
       </div>`;
@@ -238,7 +239,10 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
 
   const aiCard = (s: SquadShip, i: number) => {
     const p = PILOTS[s.pilotId];
-    const ups = [...signatureTalents(s).map((u) => `${esc(UPGRADES[u].name)} ★`), ...s.upgrades.map((u) => esc(UPGRADES[u].name))];
+    const ups = [
+      ...(p.ability ? [`<span class="ab" title="${esc(p.ability.text)}">${esc(p.ability.name)}</span>`] : []),
+      ...signatureTalents(s).map((u) => `${esc(UPGRADES[u].name)} ★`), ...s.upgrades.map((u) => esc(UPGRADES[u].name)),
+    ];
     return `<div class="sq-ship compact ${isSel('them', i) ? 'selected' : ''}" data-sel="them:${i}">
       ${isSel('them', i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}<div class="sq-top"><span class="who"><b>${esc(p.name)}</b> ${initBadge(s)}
       <span class="hint">${esc(SHIP_TYPES[hullOf(s)].name)}</span></span><span class="cost">${shipCost(s)}</span></div>
@@ -257,13 +261,13 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
         ${pilots.map((p) => {
           const off = p.unique && taken.has(p.id);
           const cost = shipCost({ pilotId: p.id, upgrades: [] });
-          const extra = talentSummary(p);
-          return `<button class="opt pick-pilot ${cost > room ? 'dear' : ''}" data-add="${side}:${p.id}" ${off ? 'disabled' : ''}>
+          const extra = [p.ability?.name ?? '', talentSummary(p)].filter(Boolean).join(' · ');
+          return `<button class="opt pick-pilot ${cost > room ? 'dear' : ''}" data-add="${side}:${p.id}" ${off ? 'disabled' : ''}${p.ability ? ` title="${esc(p.ability.name)}: ${esc(p.ability.text)}"` : ''}>
             <b>${esc(p.name)}</b> <span class="init">${p.initiative}</span> <span class="hint">${p.unique ? 'named' : 'generic'} · ${esc(SHIP_TYPES[p.ship].name)}${extra ? ` · ${esc(extra)}` : ''}</span>
             <span class="cost">${cost}</span></button>`;
         }).join('')}</div>`;
     });
-    return `<div class="picker"><p class="hint">Pilots fly any ship of their class; another class costs them 1 initiative (and maybe a talent slot). Talents belong to the pilot: 1 slot at initiative 3-4, 2 at 5+. ★ marks a signature talent, which comes with the pilot and fills a slot.</p>${groups.join('')}</div>`;
+    return `<div class="picker"><p class="hint">Pilots fly any ship of their class; another class costs them 1 initiative (and maybe a talent slot). Talents belong to the pilot: 1 slot at initiative 3-4, 2 at 5+. ★ marks a signature talent, which comes with the pilot and fills a slot. Named pilots also have an ability of their own (hover to read it).</p>${groups.join('')}</div>`;
   };
 
   /** Split a `side:rest` data attribute. */

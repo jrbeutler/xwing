@@ -7,7 +7,7 @@ import {
   attackDicePenalty, canModifyAttack, defenseDicePenalty, discardCard, drawDamageCard, hasCard,
 } from './damage';
 import { SHIP_TYPES, UPGRADES } from './content';
-import { AttackFacts, attackEffects, diceDelta, payFor, runTriggers } from './effects';
+import { AttackFacts, attackEffects, diceDelta, diceSources, payFor, runTriggers } from './effects';
 import type { ArcName, AttackFace, DefenseFace, GameState, Obstacle, ShipState, TargetInfo } from './types';
 
 /**
@@ -156,6 +156,7 @@ export function attackFacts(t: ShotInfo, defender: ShipState, attacker?: ShipSta
   let outside: boolean | undefined;
   return {
     primary: isPrimary(t), turret, bullseye: !!t.bullseye, frontArc: (t.arc ?? 'front') === 'front' && !turret,
+    range: t.range, defenderStressed: defender.stress > 0,
     get outsideDefenderArcs() { return (outside ??= !!attacker && !inFiringArc(defender, attacker)); },
   };
 }
@@ -260,6 +261,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const mods = canModifyAttack(attacker);
   const primary = isPrimary(t), weapon = weaponOf(t);
   const facts = attackFacts(t, defender, attacker);
+  const diceBy = diceSources(facts, attacker, defender); // before the roll: damage can switch effects off (Stealth Coating)
   if (!primary) { const u = upgradeOf(attacker, t.weapon!); if (u && UPGRADES[u.id].charges !== undefined) u.charges--; }
 
   const attackRoll = rollAttack(state, attackDice);
@@ -359,7 +361,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   // Reinforce: against an attacker in the covered half, 2+ uncancelled results lose one (a hit first).
   const reinforced = finalHits + finalCrits >= 2 && reinforceCovers(defender, attacker);
   if (reinforced) { if (finalHits > 0) finalHits--; else finalCrits--; }
-  let ion = 0, dmg;
+  let ion = 0, dmg: { shieldDamage: number; hullDamage: number };
   if (weapon?.effect === 'ion' && finalHits + finalCrits > 0) {
     // Ion: one hit's worth of damage; everything else that got through becomes ion tokens.
     ion = finalHits + finalCrits - 1;
@@ -368,8 +370,11 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   } else {
     dmg = sufferDamage(state, defender, finalHits, finalCrits);
   }
+  // Effects that follow a hit (e.g. a pilot ability that stresses the defender).
+  if (dmg.shieldDamage + dmg.hullDamage > 0) runTriggers(state, attacker, 'attackHit', { facts, defender });
   return {
     attackRoll, attackFinal: atk, defenseRoll, defenseFinal: def, spent, ...(kept.length ? { kept } : {}), ...(reinforced ? { reinforced } : {}),
+    ...(diceBy.length ? { diceBy } : {}),
     hits: finalHits, crits: finalCrits, ...dmg,
     ...(primary ? {} : { weapon: t.weapon, ion }),
   };

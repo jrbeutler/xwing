@@ -30,6 +30,8 @@ export interface UpgradeDef {
   stats?: { hull?: number; shields?: number };
   /** Starting charges, for upgrades that run out. */
   charges?: number;
+  /** Charges come back: 1 per round in the End phase, up to the starting number. */
+  recurring?: boolean;
   /** Secondary weapons (missiles, torpedoes): fired instead of the primary, one charge per shot. */
   weapon?: WeaponDef;
   /** Devices (bombs, mines): dropped behind the ship in the System phase, one charge each. */
@@ -47,8 +49,13 @@ export interface UpgradeDef {
  *   bullseye: the defender is in the attacker's bullseye
  *   frontArc: a front-arc attack (not through a turret arc)
  *   outsideDefenderArcs: the attacker is outside every firing arc of the defender
+ *   defenderStressed: the defender has at least 1 stress
+ *   range: [min, max] range bands the attack's range must fall in
  */
-export interface AttackCondition { primary?: boolean; turret?: boolean; bullseye?: boolean; frontArc?: boolean; outsideDefenderArcs?: boolean }
+export interface AttackCondition {
+  primary?: boolean; turret?: boolean; bullseye?: boolean; frontArc?: boolean; outsideDefenderArcs?: boolean; defenderStressed?: boolean;
+  range?: [number, number];
+}
 
 /** Moments in the round that trigger effects. */
 export type TriggerEvent =
@@ -57,11 +64,18 @@ export type TriggerEvent =
   /** In the End phase, for each ship still in play. */
   | 'endPhase'
   /** After the ship loses shields or hull. */
-  | 'damaged';
+  | 'damaged'
+  /** After the ship performs an action (the trigger's `actions` lists which). */
+  | 'actionPerformed'
+  /** After the ship's attack deals damage (the trigger's `attack` condition can narrow it). */
+  | 'attackHit';
 
 /** What a triggered effect does to its ship. */
 export type EffectOp =
   | { op: 'gainFocus' }
+  | { op: 'gainCalculate' }
+  /** The defender of the attack that triggered this ('attackHit') gains 1 stress. */
+  | { op: 'stressDefender' }
   | { op: 'recoverShield' }
   /** Recover 1 charge on the effect's own upgrade. */
   | { op: 'recoverCharge' }
@@ -84,7 +98,8 @@ export type Effect =
   /** On `on`, if the conditions hold, log the upgrade as `log` and apply `do` in order. */
   | {
       kind: 'trigger'; on: TriggerEvent; do: EffectOp[]; log: 'used' | 'recovered' | 'spent';
-      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean }; cost?: 'charge'; needsCharge?: boolean;
+      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean; actions?: ActionType[]; attack?: AttackCondition };
+      cost?: 'charge'; needsCharge?: boolean;
     }
   /** A flat bonus to a number the rules look up. */
   | { kind: 'stat'; stat: 'jamRange' | 'deviceCharges'; delta: number };
@@ -149,7 +164,12 @@ export interface PilotDef {
   talents?: string[];
   /** Named pilots: at most one per battle. Generic pilots can be fielded several times. */
   unique: boolean;
+  /** Named pilots' own ability, flown on any hull. Its id in play (logs, charges) is the pilot's id. */
+  ability?: AbilityDef;
 }
+
+/** A pilot ability: effects like an upgrade's, with its own charges. */
+export interface AbilityDef { name: string; text: string; charges?: number; recurring?: boolean; effects: Effect[] }
 
 export interface ShipState {
   id: string;
@@ -166,6 +186,8 @@ export interface ShipState {
   maxShields: number;
   /** Fitted upgrades (power-ups) and their charges. */
   upgrades: UpgradeState[];
+  /** The pilot's ability and its charges (id = pilot id), or null for pilots without one. */
+  ability: UpgradeState | null;
   stress: number;
   focus: number;
   evade: number;
@@ -264,6 +286,8 @@ export type GameEvent =
       weapon?: string; ion?: number;
       /** The defender's reinforce token cancelled 1 hit or crit. */
       reinforced?: boolean;
+      /** Upgrades and pilot abilities (ids) that changed how many dice were rolled. */
+      diceBy?: string[];
     }
   | {
       /** A face-up damage card was dealt, triggered, or left the ship (repaired / discarded). */
@@ -271,8 +295,11 @@ export type GameEvent =
       /** Damage, stress and ions this step caused, for the UI to animate. */
       shieldDamage?: number; hullDamage?: number; stress?: number; ion?: number; roll?: AttackFace;
     }
-  /** An upgrade was used, spent or recovered; `focus` / `shields` say what it gave the ship (a jam may still cancel the focus). */
-  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered'; focus?: number; shields?: number }
+  /**
+   * An upgrade or pilot ability (`upgrade` is its id: an upgrade id or the pilot's id) was used, spent or
+   * recovered; `focus` / `calculate` / `shields` say what it gave the ship (a jam may still cancel a token).
+   */
+  | { type: 'upgrade'; shipId: string; upgrade: string; what: 'spent' | 'used' | 'recovered'; focus?: number; calculate?: number; shields?: number }
   /** A jam landed: what the target lost (a token, its lock), or 'jammed' when it had nothing and took a jam token. */
   | { type: 'jam'; shipId: string; targetId: string; effect: GreenToken | 'lock' | 'jammed' }
   /** A jammed ship's jam token cancelled a token it was about to gain. */

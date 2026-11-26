@@ -9,7 +9,8 @@ import { activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, ma
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
-import type { ActionChoice, ArcName, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
+import { charged, effectsOf } from './effects';
+import type { ActionChoice, ActionType, ArcName, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
 
 /**
  * How much a ship likes having a target at each range band (0 = out of range). Most ships want range 2
@@ -99,9 +100,17 @@ const bestShot = (s: GameState, a: ShipState) =>
  * lockBase: rough value of a lock reroll on a typical shot, for an enemy the ship cannot shoot yet.
  * defense: weight of damage prevented against damage dealt. reload: value of a recovered ordnance or bomb
  * charge (paid for by not attacking this round). stress: cost of the stress a red linked action brings.
+ * abilityToken: rough value of a token an ability gives after an action (e.g. calculate after a Jam).
  * Mutable for experiments.
  */
-export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5 };
+export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1, reload: 1.2, stress: 0.5, abilityToken: 0.4 };
+
+/** What the ship's own triggered effects (pilot abilities, talents) add to performing `action`: tokens they give. */
+export function actionBonus(sh: ShipState, action: ActionChoice['type']): number {
+  return effectsOf(sh, 'trigger')
+    .filter((a) => a.effect.on === 'actionPerformed' && a.effect.if?.actions?.includes(action as ActionType) && charged(a))
+    .reduce((v, a) => v + a.effect.do.filter((op) => op.op === 'gainFocus' || op.op === 'gainCalculate').length * TOKEN_WEIGHTS.abilityToken, 0);
+}
 
 /**
  * Focus, Evade, Calculate, Reinforce, a Lock or a Reload, chosen by what each is worth, measured with the exact odds:
@@ -154,7 +163,7 @@ export function tokenChoice(s: GameState, sh: ShipState, options: ActionChoice[]
     let v = bestShot(s, me) - shotNow + TOKEN_WEIGHTS.defense * (hitNow - incoming(me));
     if (o.type === 'lock') v += TOKEN_WEIGHTS.lockCarry * (lockGain(o.targetId) - (oldLock ? lockGain(oldLock) : 0));
     if (o.type === 'reload') v += TOKEN_WEIGHTS.reload;
-    return v;
+    return v + actionBonus(sh, o.type);
   };
   return tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
 }
@@ -175,7 +184,7 @@ function coordinateChoice(s: GameState, sh: ShipState, options: ActionChoice[]):
     return best.v - (red ? TOKEN_WEIGHTS.stress : 0);
   };
   const best = coords.map((o) => ({ o, v: worth(o) })).sort((a, b) => b.v - a.v)[0];
-  return best.v > Math.max(0, own) ? best.o : undefined;
+  return best.v + actionBonus(sh, 'coordinate') > Math.max(0, own) ? best.o : undefined;
 }
 
 /** Rotate the turret toward the closest enemy it could then shoot, if the current arc has none. */
@@ -261,7 +270,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
       if (o.type !== 'jam') return 0;
       const t = s.ships.find((x) => x.id === o.targetId)!;
       const tokens = t.focus + t.evade + t.calculate + (t.reinforce ? 1 : 0);
-      return tokens ? tokens * 2 + t.evade + (shootable.has(t.id) ? 3 : 0) : 0;
+      return tokens ? tokens * 2 + t.evade + (shootable.has(t.id) ? 3 : 0) + actionBonus(sh, 'jam') : 0;
     };
     const jam = [...d.options].sort((a, b) => jamWorth(b) - jamWorth(a)).find((o) => jamWorth(o) > 0);
     const choice = urgent ?? blunted ?? jam

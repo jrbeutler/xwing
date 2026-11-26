@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateAsteroids,
   legalTargets, maneuverFor, legalDial, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene } from './scene';
 import { openSetup, type BattleSetup } from './setup';
@@ -318,6 +318,8 @@ function setSeat(who: string, turn = false) {
 // so health markers drop the moment a shot lands, not when the whole round is done.
 let disp: ShipState[] = [];
 const dispShip = (id: string) => disp.find((x) => x.id === id);
+/** The charges of an upgrade or the pilot's ability on a displayed ship, by source id. */
+const sourceState = (d: ShipState | undefined, id: string) => (d?.ability?.id === id ? d.ability : d?.upgrades.find((x) => x.id === id));
 const relabel = (id: string) => { const d = dispShip(id); if (d) scene.refreshLabel(d); };
 
 /** One-line summaries of this round's shots, shown as a recap when the next round starts. */
@@ -484,17 +486,19 @@ async function animate(e: GameEvent) {
     }
     case 'upgrade': {
       const d = dispShip(e.shipId);
-      const u = d?.upgrades.find((x) => x.id === e.upgrade);
-      const name = UPGRADES[e.upgrade].name.toUpperCase();
+      const u = sourceState(d, e.upgrade);
+      const src = effectSource(e.upgrade);
+      const name = (src?.name ?? e.upgrade).toUpperCase();
       if (e.what === 'spent') { if (u) u.charges = 0; await scene.floatText(e.shipId, `${name} SPENT`, 'p2c'); }
       if (e.what === 'recovered') { if (u) u.charges++; await scene.floatText(e.shipId, `${name} READY`, 'talent-float'); }
       if (e.what === 'used') {
         // What the effect gave the ship comes with the event; a charge is spent if the effect costs one.
-        if (u && UPGRADES[e.upgrade].effects?.some((fx) => fx.kind === 'trigger' && fx.log === 'used' && fx.cost === 'charge')) u.charges--;
+        if (u && src?.effects?.some((fx) => fx.kind === 'trigger' && fx.log === 'used' && fx.cost === 'charge')) u.charges--;
         if (d && e.focus) d.focus += e.focus;
+        if (d && e.calculate) d.calculate += e.calculate;
         if (d && e.shields) d.shields += e.shields;
         if (d) relabel(e.shipId);
-        const extra = (e.focus ? ' +FOCUS' : '') + (e.shields ? ' +SHIELD' : '');
+        const extra = (e.focus ? ' +FOCUS' : '') + (e.calculate ? ' +CALCULATE' : '') + (e.shields ? ' +SHIELD' : '');
         await scene.floatText(e.shipId, name + extra, 'talent-float');
       }
       return;
@@ -617,7 +621,7 @@ async function showAttack(e: AttackEvent) {
   // Upgrades the dice policy used ('attacker:<id>' / 'defender:<id>'): spend their charges on the board and say so over the ship.
   const upgradeUsed = (t: string): [ShipState | undefined, string, string] | undefined => {
     const [side, id] = t.split(':');
-    if (!UPGRADES[id]) return undefined;
+    if (!effectSource(id)) return undefined;
     return side === 'attacker' ? [ad, a.id, id] : [target, d.id, id];
   };
   for (const t of e.spent) {
@@ -630,11 +634,11 @@ async function showAttack(e: AttackEvent) {
     const used = upgradeUsed(t);
     if (used) {
       const [ship, id, upgrade] = used;
-      const u = ship?.upgrades.find((x) => x.id === upgrade);
+      const u = sourceState(ship, upgrade);
       // Only effects that cost a charge spend one (the same dice effects the engine applied).
-      const costs = UPGRADES[upgrade].effects?.some((fx) => (fx.kind === 'rerollAttack' || fx.kind === 'rerollDefense' || fx.kind === 'cancelEvade') && fx.cost === 'charge');
+      const costs = effectSource(upgrade)?.effects?.some((fx) => (fx.kind === 'rerollAttack' || fx.kind === 'rerollDefense' || fx.kind === 'cancelEvade') && fx.cost === 'charge');
       if (u && costs) u.charges--;
-      void scene.floatText(id, UPGRADES[upgrade].name.toUpperCase(), 'talent-float');
+      void scene.floatText(id, effectSource(upgrade)!.name.toUpperCase(), 'talent-float');
     }
   }
   relabel(a.id);
@@ -709,7 +713,7 @@ function describe(e: GameEvent): string | null {
     case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
     case 'attack': {
       const o = attackOutcome(e);
-      const talents = e.spent.map((t) => t.split(':')[1]).filter((t) => UPGRADES[t]).map((t) => UPGRADES[t].name);
+      const talents = [...(e.diceBy ?? []), ...e.spent.map((t) => t.split(':')[1])].filter((t) => effectSource(t)).map((t) => effectSource(t)!.name);
       if (e.spent.some((t) => t.endsWith(':calculate'))) talents.push('calculate');
       if (e.reinforced) talents.push('reinforced: 1 result cancelled');
       // Tokens the dice policy kept on purpose: focus held for defense, a lock saved for later.
@@ -729,10 +733,10 @@ function describe(e: GameEvent): string | null {
       return null;
     }
     case 'upgrade': {
-      const n = UPGRADES[e.upgrade].name;
+      const n = effectSource(e.upgrade)?.name ?? e.upgrade;
       if (e.what === 'recovered') return `${nameHtml(e.shipId)}'s ${n} is ready again`;
-      if (e.what === 'used' && (e.focus || e.shields)) {
-        const gains = [e.focus ? 'gains focus' : '', e.shields ? `recovers ${e.shields} shield${e.shields > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
+      if (e.what === 'used' && (e.focus || e.calculate || e.shields)) {
+        const gains = [e.focus ? 'gains focus' : '', e.calculate ? 'gains calculate' : '', e.shields ? `recovers ${e.shields} shield${e.shields > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
         return `${nameHtml(e.shipId)}: ${n} (${gains})`;
       }
       if (e.what === 'used') return `${nameHtml(e.shipId)} uses ${n}`;
@@ -1374,6 +1378,7 @@ function renderPlanning() {
     card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
       <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${s.maxHull} · shields ${s.shields}/${s.maxShields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      ${abilityLine(s)}
       ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
       <div class="planned">${isIonized(s) ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
@@ -1625,6 +1630,14 @@ const weaponName = (t: Pick<Target, 'weapon'>) => (isPrimary(t) ? 'Primary' : UP
 const targetText = (t: Target, attacker?: ShipState) =>
   `${shipById(t.targetId).name}: ${isPrimary(t) ? '' : `${weaponName(t)}, `}range ${t.range}, ` +
   `${attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
+
+/** The pilot's ability, with its charges if it has any, e.g. "Steady Nerves 0/1" (hover for the text). */
+function abilityLine(s: ShipState): string {
+  const a = s.ability && effectSource(s.ability.id);
+  if (!s.ability || !a) return '';
+  const charges = a.charges ? ` ${s.ability.charges}/${a.charges}` : '';
+  return `<div class="hint ability" title="${a.text}"><b>${a.name}</b>${charges}: ${a.text}</div>`;
+}
 
 /** An upgrade with its charges, e.g. "Proton Torpedoes 1/2", or "(spent)" for one-shot talents. */
 function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
