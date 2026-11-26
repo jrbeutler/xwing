@@ -5,7 +5,7 @@ import type { DamageCardId } from './damage';
 export type PlayerId = string;
 /** Firing arcs by facing: primaries use front/rear; a turret's arc can face any of the four. */
 export type ArcName = 'front' | 'rear' | 'left' | 'right';
-export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam' | 'calculate' | 'reinforce' | 'reload';
+export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam' | 'calculate' | 'reinforce' | 'reload' | 'coordinate';
 
 /**
  * An action on a ship's action bar. `linked`: after performing it, the ship may perform this second action
@@ -209,7 +209,9 @@ export type ActionChoice =
   | { type: 'calculate' }
   | { type: 'reinforce'; side: 'front' | 'rear' }
   /** Recover 1 charge on a missile, torpedo or device upgrade; the ship is disarmed for the round. */
-  | { type: 'reload'; upgrade: string };
+  | { type: 'reload'; upgrade: string }
+  /** A friendly ship at range 0-2 (not stressed) immediately performs an action. */
+  | { type: 'coordinate'; targetId: string };
 
 export interface TargetInfo {
   targetId: string;
@@ -232,6 +234,8 @@ export type Decision =
       linked?: { from: ActionType; red: boolean };
       /** The ship flew an ion maneuver: Focus only, and no linked action. */
       ionized?: boolean;
+      /** This ship is acting because the ship `by` coordinated it (not its own activation). */
+      coordinated?: { by: string };
     }
   | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[] }
   | { kind: 'system'; playerId: PlayerId; shipId: string; options: DropChoice[] };
@@ -248,7 +252,7 @@ export type GameEvent =
   | { type: 'dialRevealed'; shipId: string; maneuver: Maneuver }
   | { type: 'moved'; shipId: string; path: Pose[]; final: Pose; partial: boolean; bumped: string[]; obstacles: string[]; fled: boolean }
   | { type: 'stress'; shipId: string; delta: number }
-  | { type: 'action'; shipId: string; action: ActionChoice; linked?: boolean }
+  | { type: 'action'; shipId: string; action: ActionChoice; linked?: boolean; coordinatedBy?: string }
   | { type: 'obstacleHit'; shipId: string; obstacleId: string; result: AttackFace }
   | {
       type: 'attack'; attackerId: string; defenderId: string; arc: ArcName; range: number; obstructed: boolean;

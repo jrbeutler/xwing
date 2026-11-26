@@ -405,6 +405,12 @@ async function animate(e: GameEvent) {
         }
         relabel(e.shipId);
       }
+      if (e.action.type === 'coordinate') {
+        const from = d?.pose ?? shipById(e.shipId).pose, to = dispShip(e.action.targetId)?.pose ?? shipById(e.action.targetId).pose;
+        scene.showLine(from, to, ACTION_COLOR.coordinate, `${shipById(e.shipId).name} coordinates ${shipById(e.action.targetId).name}`);
+        await scene.floatText(e.action.targetId, 'COORDINATED', 'talent-float');
+        scene.clearOverlay();
+      }
       if (e.action.type === 'reinforce') await scene.floatText(e.shipId, `REINFORCE ${e.action.side.toUpperCase()}`, 'talent-float');
       if (e.action.type === 'reload') await scene.floatText(e.shipId, `RELOAD ${UPGRADES[e.action.upgrade].name.toUpperCase()}`, 'talent-float');
       return;
@@ -698,7 +704,8 @@ function describe(e: GameEvent): string | null {
       if (e.partial) return `${nameHtml(e.shipId)} bumped ${e.bumped.map(nameHtml).join(', ')}`;
       return null;
     case 'stress': return e.delta > 0 ? `${nameHtml(e.shipId)} gains stress` : `${nameHtml(e.shipId)} clears stress`;
-    case 'action': return e.action.type === 'none' || e.action.type === 'jam' ? null : `${nameHtml(e.shipId)} performs ${actionText(e.action)}${e.linked ? ' (linked)' : ''}`;
+    case 'action': return e.action.type === 'none' || e.action.type === 'jam' ? null
+      : `${nameHtml(e.shipId)} performs ${actionText(e.action)}${e.linked ? ' (linked)' : ''}${e.coordinatedBy ? ` (coordinated by ${nameHtml(e.coordinatedBy)})` : ''}`;
     case 'obstacleHit': return `${nameHtml(e.shipId)} clips an asteroid${e.result === 'hit' || e.result === 'crit' ? ': 1 damage' : ''}`;
     case 'attack': {
       const o = attackOutcome(e);
@@ -752,7 +759,7 @@ function describe(e: GameEvent): string | null {
 }
 
 const actionTypeName = (t: ActionType) =>
-  ({ barrelRoll: 'Barrel roll', rotateArc: 'Rotate', boost: 'Boost', focus: 'Focus', evade: 'Evade', lock: 'Lock', repair: 'Repair', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload' })[t];
+  ({ barrelRoll: 'Barrel roll', rotateArc: 'Rotate', boost: 'Boost', focus: 'Focus', evade: 'Evade', lock: 'Lock', repair: 'Repair', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload', coordinate: 'Coordinate' })[t];
 
 function actionText(a: ActionChoice): string {
   switch (a.type) {
@@ -768,6 +775,7 @@ function actionText(a: ActionChoice): string {
     case 'calculate': return 'Calculate';
     case 'reinforce': return `Reinforce ${a.side}`;
     case 'reload': return `Reload ${UPGRADES[a.upgrade].name}`;
+    case 'coordinate': return `Coordinate ${shipById(a.targetId).name}`;
   }
 }
 
@@ -815,7 +823,7 @@ function renderDecision() {
   }
   scene.setPlanned([]);
   scene.setMarkers([]);
-  if (d.kind === 'action') return renderAction(d.shipId, d.options, d.linked);
+  if (d.kind === 'action') return renderAction(d.shipId, d.options, d.linked, d.coordinated?.by);
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
@@ -1265,7 +1273,7 @@ function applyCamera(ms = 500) {
     }
     if (d.kind === 'action') {
       const s = shipById(d.shipId);
-      pts = [s.pose, ...d.options.flatMap((o) => (o.type === 'lock' ? [shipById(o.targetId).pose] : []))];
+      pts = [s.pose, ...d.options.flatMap((o) => (o.type === 'lock' || o.type === 'coordinate' ? [shipById(o.targetId).pose] : []))];
       minHalf = 130;
     }
     if (d.kind === 'attack') pts = [shipById(d.shipId).pose, ...d.targets.map((t) => shipById(t.targetId).pose)];
@@ -1435,19 +1443,24 @@ function dialFallback(s: ShipState): HTMLElement {
 type Spot = Extract<ActionChoice, { type: 'barrelRoll' | 'boost' }>;
 type LockChoice = Extract<ActionChoice, { type: 'lock' }>;
 type JamChoice = Extract<ActionChoice, { type: 'jam' }>;
-const ACTION_COLOR = { barrelRoll: 0x7cf0c5, boost: 0x9be37c, lock: 0xffd166, jam: 0xc58bff } as const;
+type CoordChoice = Extract<ActionChoice, { type: 'coordinate' }>;
+/** Actions aimed at another ship: picked by clicking a ringed ship. */
+type ShipTargeted = LockChoice | JamChoice | CoordChoice;
+const ACTION_COLOR = { barrelRoll: 0x7cf0c5, boost: 0x9be37c, lock: 0xffd166, jam: 0xc58bff, coordinate: 0x8fd3ff } as const;
 const GREEN = 0x7cf0c5, RED = 0xff5a5a;
 /** How far (mm) the pointer may be from a barrel roll / boost spot and still snap. */
 const ACTION_SNAP = 45;
 
 /** `linked`: this is the linked action offered after another one (only its options, maybe red). */
-function renderAction(shipId: string, options: ActionChoice[], linked?: { from: ActionType; red: boolean }) {
+function renderAction(shipId: string, options: ActionChoice[], linked?: { from: ActionType; red: boolean }, coordinatedBy?: string) {
   const s = shipById(shipId);
-  const linkNote = linked ? `Linked after ${actionTypeName(linked.from)}${linked.red ? ' (red: +1 stress)' : ''}` : '';
+  const by = coordinatedBy ? shipById(coordinatedBy).name : '';
+  const linkNote = [linked ? `Linked after ${actionTypeName(linked.from)}${linked.red ? ' (red: +1 stress)' : ''}` : '', by ? `Coordinated by ${by}` : ''].filter(Boolean).join(' · ');
   const red = linked?.red ? 'red' : undefined;
   const spots = options.filter((o): o is Spot => o.type === 'barrelRoll' || o.type === 'boost');
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
   const jams = options.filter((o): o is JamChoice => o.type === 'jam');
+  const coords = options.filter((o): o is CoordChoice => o.type === 'coordinate');
   const instant = (o: ActionChoice) => ['focus', 'evade', 'calculate', 'reinforce', 'reload', 'repair'].includes(o.type);
   const simple = [...options.filter(instant), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
@@ -1455,11 +1468,11 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
    * The targeted action picked from the ring (lock / barrel roll / boost), or null while the ring is
    * showing. Picking one hides the ring and shows only its targets; Esc or Back brings the ring back.
    */
-  let only: 'lock' | 'jam' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
+  let only: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: me, choice: c });
   const back = () => { only = null; cand = null; show(); };
-  /** Enemies the picked targeted action (Lock or Jam) can reach: ringed on the board. */
-  const shownLocks = (): (LockChoice | JamChoice)[] => (only === 'lock' ? locks : only === 'jam' ? jams : []);
+  /** Ships the picked targeted action (Lock, Jam: enemies; Coordinate: friends) can reach: ringed on the board. */
+  const shownLocks = (): ShipTargeted[] => (only === 'lock' ? locks : only === 'jam' ? jams : only === 'coordinate' ? coords : []);
   const shownSpots = () => spots.filter((o) => only === o.type);
 
   /** The ring: instant actions do it now; Lock / Barrel roll / Boost narrow the board to their targets. */
@@ -1487,12 +1500,13 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     }
     if (only) {
       // Targeting: the ring makes way for the targets; a lone Back button returns to it.
-      const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'jam' ? 'Click a ringed enemy to jam it' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
+      const what = only === 'lock' ? 'Click a ringed enemy to lock it' : only === 'jam' ? 'Click a ringed enemy to jam it'
+        : only === 'coordinate' ? 'Click a ringed friend: it takes an action now' : only === 'barrelRoll' ? 'Click a teal spot to barrel roll' : 'Click a green spot to boost';
       scene.showRadial(s.pose, [{ icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: back }],
         { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
       return;
     }
-    const narrow = (t: 'lock' | 'jam' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
+    const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
       ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
     const items: RadialItem[] = [];
     const stress = linked?.red ? ' (red: +1 stress)' : '';
@@ -1513,6 +1527,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     }
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
     if (jams.length) items.push(narrow('jam', ICONS.jam, 'Jam', 'Jam: strip an enemy\'s Focus, Evade or lock (range 1-2 in your arc); then click a ringed enemy'));
+    if (coords.length) items.push(narrow('coordinate', ICONS.coordinate, 'Coord.', 'Coordinate: a friend at range 0-2 that is not stressed takes an action now; then click a ringed friend'));
     if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
     if (spots.some((o) => o.type === 'boost')) items.push(narrow('boost', ICONS.boost, 'Boost', 'Boost: then click a green dot'));
     if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, onClick: () => { only = 'rotateArc'; cand = null; show(); } });
@@ -1522,7 +1537,10 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
       items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
     }
     items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
-    scene.showRadial(s.pose, items, { key: linked ? `linked|${linked.from}` : 'menu', caption: linked ? `${linkNote}: take it or skip` : 'Pick an action' });
+    scene.showRadial(s.pose, items, {
+      key: linked ? `linked|${linked.from}|${shipId}` : by ? `coord|${shipId}` : 'menu',
+      caption: linked ? `${linkNote}: take it or skip` : by ? `Coordinated by ${by}: pick an action` : 'Pick an action',
+    });
   };
 
   const show = () => {
@@ -1535,19 +1553,20 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     if (cand && (cand.type === 'barrelRoll' || cand.type === 'boost')) {
       scene.showGhost(sizeOf(s), [s.pose, cand.to], ACTION_COLOR[cand.type], actionText(cand), s.id);
     } else scene.clearGhost();
-    if (cand?.type === 'lock' || cand?.type === 'jam') {
+    if (cand?.type === 'lock' || cand?.type === 'jam' || cand?.type === 'coordinate') {
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR[cand.type], actionText(cand));
     } else scene.clearOverlay();
     const who = `<b>${s.name.split(' ')[0]}</b>`;
     const boardHint = only === 'barrelRoll' ? 'tap a teal dot to roll' : only === 'boost' ? 'tap a green dot to boost'
-      : only === 'lock' ? 'tap a ringed enemy to lock it' : only === 'jam' ? 'tap a ringed enemy to jam it' : 'pick from the ring around your ship';
+      : only === 'lock' ? 'tap a ringed enemy to lock it' : only === 'jam' ? 'tap a ringed enemy to jam it'
+      : only === 'coordinate' ? 'tap a ringed friend to coordinate it' : 'pick from the ring around your ship';
     const btns: BarButton[] = only ? [{ label: 'Back', onClick: back }]
       : simple.map((o) => ({ label: o.type === 'none' ? 'Skip' : actionText(o), onClick: () => choose(o) }));
     if (cand && cand.type !== 'none' && !instant(cand)) {
       const c = cand;
       btns.unshift({ label: 'Do it', cls: 'primary', onClick: () => choose(c) });
     }
-    setBar({ status: cand ? `${who}: ${actionText(cand)}` : `${who}: ${linked ? `${linkNote}, ` : ''}${boardHint}`, buttons: btns });
+    setBar({ status: cand ? `${who}: ${actionText(cand)}` : `${who}: ${linkNote ? `${linkNote}, ` : ''}${boardHint}`, buttons: btns });
   };
   const pick = (p: P): ActionChoice | null => {
     const picked = scene.pickShip(p.clientX, p.clientY);
@@ -1578,11 +1597,13 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     `Pick from the ring around your ship: ${['Focus', 'Evade', 'Calculate', 'Reinforce', 'Reload'].filter((n) => options.some((o) => o.type === n.toLowerCase())).join(', ') || 'instant actions'} act at once`,
     locks.length ? '<b style="color:#ffd166">Lock</b> then click a ringed enemy' : '',
     jams.length ? '<b style="color:#c58bff">Jam</b> then click a ringed enemy to strip its Focus, Evade or lock' : '',
+    coords.length ? '<b style="color:#8fd3ff">Coordinate</b> then click a ringed friend: it takes an action now' : '',
     spots.some((o) => o.type === 'barrelRoll') ? '<b style="color:#7cf0c5">Roll</b> shows the barrel-roll spots' : '',
     spots.some((o) => o.type === 'boost') ? '<b style="color:#9be37c">Boost</b> shows the boost spots' : '',
   ].filter(Boolean);
   detail.innerHTML = linked
     ? `<h2>Linked action: ${s.name}</h2><p class="hint">${linkNote}. Take it from the ring, or skip.</p>${critList(s)}`
+    : by ? `<h2>Coordinated: ${s.name}</h2><p class="hint">${by} lets ${s.name} take an action now, outside its own turn. ${ring.join('; ')}.</p>${critList(s)}`
     : `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
   for (const o of options) {
     const b = document.createElement('button');

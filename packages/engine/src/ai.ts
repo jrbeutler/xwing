@@ -5,7 +5,7 @@ import { Pose, dist, fwd } from './geometry';
 import { BOARD_SIZE, maneuverFinalPose } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { activeShips, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { activeShips, coordinatedOptions, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
@@ -113,6 +113,12 @@ export const TOKEN_WEIGHTS = { lockCarry: 0.3, lockBase: 0.4, defense: 1, reload
  * Returns the best option worth more than `minValue` (a red linked action must pay for its stress).
  */
 export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[], minValue = 0): ActionChoice | undefined {
+  const best = tokenChoice(s, sh, options);
+  return best && best.v > minValue ? best.o : undefined;
+}
+
+/** The most valuable token-like option and its value (see bestToken), or undefined if there is none. */
+export function tokenChoice(s: GameState, sh: ShipState, options: ActionChoice[]): { o: ActionChoice; v: number } | undefined {
   const kinds = ['focus', 'evade', 'lock', 'calculate', 'reinforce', 'reload'];
   const tokens = options.filter((o) => kinds.includes(o.type));
   if (!tokens.length) return undefined;
@@ -150,8 +156,26 @@ export function bestToken(s: GameState, sh: ShipState, options: ActionChoice[], 
     if (o.type === 'reload') v += TOKEN_WEIGHTS.reload;
     return v;
   };
-  const best = tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
-  return best.v > minValue ? best.o : undefined;
+  return tokens.map((o) => ({ o, v: value(o) })).sort((a, b) => b.v - a.v)[0];
+}
+
+/**
+ * Coordinate a friend when the best action it could take is worth more than this ship's own best
+ * (both valued like bestToken, red actions paying for their stress).
+ */
+function coordinateChoice(s: GameState, sh: ShipState, options: ActionChoice[]): ActionChoice | undefined {
+  const coords = options.filter((o): o is Extract<ActionChoice, { type: 'coordinate' }> => o.type === 'coordinate');
+  if (!coords.length) return undefined;
+  const own = tokenChoice(s, sh, options)?.v ?? 0;
+  const worth = (o: Extract<ActionChoice, { type: 'coordinate' }>) => {
+    const t = s.ships.find((x) => x.id === o.targetId)!;
+    const best = tokenChoice(s, t, coordinatedOptions(s, t));
+    if (!best) return 0;
+    const red = shipType(t).actions.find((a) => a.type === best.o.type)?.red;
+    return best.v - (red ? TOKEN_WEIGHTS.stress : 0);
+  };
+  const best = coords.map((o) => ({ o, v: worth(o) })).sort((a, b) => b.v - a.v)[0];
+  return best.v > Math.max(0, own) ? best.o : undefined;
 }
 
 /** Rotate the turret toward the closest enemy it could then shoot, if the current arc has none. */
@@ -242,7 +266,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
     const jam = [...d.options].sort((a, b) => jamWorth(b) - jamWorth(a)).find((o) => jamWorth(o) > 0);
     const choice = urgent ?? blunted ?? jam
       ?? (hasShot ? undefined : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot']) ?? turretTurn(s, sh, d.options))
-      ?? bestToken(s, sh, d.options) ?? pick('focus');
+      ?? coordinateChoice(s, sh, d.options) ?? bestToken(s, sh, d.options) ?? pick('focus');
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };
   }
 

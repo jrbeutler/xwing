@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { attackOdds, legalTargets, reinforceCovers, resolveAttack } from '../src/combat';
 import { SHIP_TYPES } from '../src/content';
 import { aiDecide } from '../src/index';
-import { actionOptions, apply, createGame, reloadable, startingCharges } from '../src/game';
+import { actionOptions, apply, coordinateTargets, createGame, reloadable, startingCharges } from '../src/game';
 import type { ActionChoice, Command, GameState, ShipState, TargetInfo } from '../src/types';
 
 const straight = (typeId: string) => SHIP_TYPES[typeId].dial.findIndex((m) => m.bearing === 'straight');
@@ -212,5 +212,92 @@ describe('Calculate and Reinforce dice: attackOdds matches resolveAttack', () =>
     expect(r.reinforced).toBe(0);
     const r2 = simulate(ship(baseA, { focus: 1 }), ship(baseD, { reinforce: 'front' }), target(2, 4), 4000);
     expect(r2.reinforced).toBeGreaterThan(1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinate
+// ---------------------------------------------------------------------------
+
+
+/**
+ * A Bulwark (a-0, initiative 2) with friends nearby: a Wasp (a-1, initiative 3) beside it, a Wayfarer
+ * (a-2) far away. The enemy is far off. Returns the game at the Bulwark's action.
+ */
+function coordinateGame(wasp: Partial<{ x: number; stress: number }> = {}) {
+  let g = createGame({
+    seed: 5,
+    players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],
+    squads: {
+      a: [
+        { pilotId: 'hauler-three', pose: { x: 300, y: 150, h: Math.PI / 2 } },
+        { pilotId: 'syl-ketch', pose: { x: wasp.x ?? 380, y: 150, h: Math.PI / 2 } },
+        { pilotId: 'scout-two', pose: { x: 800, y: 150, h: Math.PI / 2 } },
+      ],
+      b: [{ pilotId: 'kira-solace', pose: { x: 600, y: 850, h: -Math.PI / 2 } }],
+    },
+  });
+  if (wasp.stress) g.ships[1].stress = wasp.stress;
+  g = apply(g, { type: 'setDials', playerId: 'a', dials: { 'a-0': straight('bulwark'), 'a-1': straight('wasp'), 'a-2': straight('wayfarer') } });
+  g = apply(g, { type: 'setDials', playerId: 'b', dials: { 'b-0': straight('javelin') } });
+  // Scout Two (initiative 2, id a-2) may activate around the Bulwark; skip anything that is not the Bulwark.
+  for (let k = 0; g.pending?.kind === 'action' && g.pending.shipId !== 'a-0' && k < 5; k++) g = act(g, { type: 'none' });
+  expect(g.pending).toMatchObject({ kind: 'action', shipId: 'a-0' });
+  return g;
+}
+
+describe('Coordinate', () => {
+  it('offers friends at range 0-2 only', () => {
+    const g = coordinateGame();
+    const coords = (g.pending as { options: ActionChoice[] }).options.filter((o) => o.type === 'coordinate');
+    expect(coords).toEqual([{ type: 'coordinate', targetId: 'a-1' }]); // not the far Wayfarer, not an enemy
+  });
+
+  it('the coordinated ship acts at once, then the activation goes on', () => {
+    let g = coordinateGame();
+    g = act(g, { type: 'coordinate', targetId: 'a-1' });
+    expect(g.pending).toMatchObject({ kind: 'action', shipId: 'a-1', coordinated: { by: 'a-0' } });
+    const opts = (g.pending as { options: ActionChoice[] }).options;
+    expect(opts.some((o) => o.type === 'coordinate')).toBe(false);
+    g = act(g, { type: 'focus' });
+    expect(g.ships[1].focus).toBe(1);
+    expect(g.log.filter((e) => e.type === 'action').at(-1)).toMatchObject({ shipId: 'a-1', action: { type: 'focus' }, coordinatedBy: 'a-0' });
+    // The Wasp still gets its own activation and action later.
+    expect(g.pending).not.toMatchObject({ shipId: 'a-0' });
+    for (let k = 0; g.pending?.kind === 'action' && g.pending.shipId !== 'a-1' && k < 5; k++) g = act(g, { type: 'none' });
+    expect(g.pending).toMatchObject({ kind: 'action', shipId: 'a-1' });
+    expect((g.pending as { coordinated?: unknown }).coordinated).toBeUndefined();
+  });
+
+  it('a coordinated ship gets its linked action too (Barrel Roll → red Evade)', () => {
+    let g = coordinateGame();
+    g = act(g, { type: 'coordinate', targetId: 'a-1' });
+    g = act(g, (g.pending as { options: ActionChoice[] }).options.find((o) => o.type === 'barrelRoll')!);
+    expect(g.pending).toMatchObject({ shipId: 'a-1', linked: { from: 'barrelRoll', red: true }, coordinated: { by: 'a-0' } });
+    g = act(g, { type: 'evade' });
+    expect(g.ships[1]).toMatchObject({ evade: 1, stress: 1 });
+  });
+
+  it('stressed friends cannot be coordinated', () => {
+    const g = coordinateGame({ stress: 1 });
+    expect(coordinateTargets(g, g.ships[0])).toEqual([]);
+  });
+
+  it('two coordinators in range do not offer each other endlessly', () => {
+    const g = coordinateGame();
+    g.ships[1].typeId = 'bulwark'; // a second command ship beside the first
+    g.ships[1].pose = { x: 400, y: 150, h: Math.PI / 2 };
+    const opts = actionOptions(g, g.ships[0]);
+    expect(opts).toContainEqual({ type: 'coordinate', targetId: 'a-1' });
+  });
+
+  it('the AI coordinates a friend whose token is worth more than its own', () => {
+    const g = coordinateGame();
+    // Put the enemy right in front of the Wasp and out of the Bulwark's arcs: the Wasp's Focus is worth a lot.
+    g.ships[3].pose = { x: 380, y: 320, h: -Math.PI / 2 };
+    g.ships[0].pose = { x: 300, y: 150, h: 0 };
+    (g.pending as { options: ActionChoice[] }).options = actionOptions(g, g.ships[0]);
+    const cmd = aiDecide(g, 'a') as Extract<Command, { type: 'action' }>;
+    expect(cmd.choice).toEqual({ type: 'coordinate', targetId: 'a-1' });
   });
 });

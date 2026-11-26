@@ -21,8 +21,9 @@ export const SHIP_TYPES: Record<string, ShipType> = {
   bulwark: {
     id: 'bulwark', name: 'Bulwark Gunship', size: 'medium', class: 'freighter', cost: 28,
     primaries: [{ arc: 'front', attack: 3 }, { arc: 'rear', attack: 2 }], agility: 1, hull: 7, shields: 3,
-    // Reinforce: brace the front or rear half against attacks from that side.
-    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'reinforce' }, { type: 'boost', red: true }],
+    // Reinforce: brace the front or rear half against attacks from that side. Coordinate: the command ship
+    // lets a nearby friend act at once.
+    actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'reinforce' }, { type: 'coordinate' }, { type: 'boost', red: true }],
     dial: parseDial('0X:r 1TL:r 1BL:b 1S:b 1BR:b 1TR:r 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3BL:w 3S:w 3BR:w 4S:w 1RS:r 2SL:r 2SR:r'),
     slots: ['missile', 'turret', 'modification', 'modification'],
   },

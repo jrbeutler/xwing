@@ -31,6 +31,8 @@ export const ICONS = {
   reinforce: svg('<path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3z"/><path d="M12 3v18"/>'),
   /** Reload: a circular arrow around a round. */
   reload: svg('<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/><circle cx="12" cy="12" r="2.5"/>'),
+  /** Coordinate: a signal from one ship to another. */
+  coordinate: svg('<circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="7" r="2.5"/><path d="M8 15 16 9"/><path d="M5 10a6 6 0 0 1 5-5M19 14a6 6 0 0 1-5 5"/>'),
   /** Back to the menu. */
   back: svg('<path d="M10 6 4 12l6 6"/><path d="M4 12h11a5 5 0 0 1 0 10h-2"/>'),
 } as const;

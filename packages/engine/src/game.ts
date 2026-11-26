@@ -154,8 +154,11 @@ function downsample<T>(xs: T[], n: number): T[] {
   return Array.from({ length: n }, (_, i) => xs[Math.round((i / (n - 1)) * (xs.length - 1))]);
 }
 
-/** `ionized`: the ship just flew an ion maneuver, which leaves it only the Focus action. */
-export function actionOptions(s: GameState, sh: ShipState, ionized = false): ActionChoice[] {
+/**
+ * `ionized`: the ship just flew an ion maneuver, which leaves it only the Focus action.
+ * `coordinated`: it is acting because another ship coordinated it, so it cannot coordinate in turn.
+ */
+export function actionOptions(s: GameState, sh: ShipState, ionized = false, coordinated = false): ActionChoice[] {
   const opts: ActionChoice[] = [{ type: 'none' }];
   for (const a of shipType(sh).actions) {
     if (!actionAllowed(sh, a.type) || (ionized && a.type !== 'focus')) continue;
@@ -164,6 +167,7 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false): Act
     if (a.type === 'calculate') opts.push({ type: 'calculate' });
     if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
     if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
+    if (a.type === 'coordinate' && !coordinated) for (const t of coordinateTargets(s, sh)) opts.push({ type: 'coordinate', targetId: t.id });
     if (a.type === 'lock') {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
@@ -231,12 +235,34 @@ const actionDef = (sh: ShipState, type: ActionChoice['type']) => shipType(sh).ac
  * The linked action a ship may perform after `done`, as a pending decision, or null. A linked action is
  * allowed even if the first action left the ship stressed (a red first action), but not after an ion maneuver.
  */
-function linkedDecision(s: GameState, sh: ShipState, done: ActionChoice): Decision | null {
-  const link = done.type === 'none' ? undefined : actionDef(sh, done.type)?.linked;
+function linkedDecision(s: GameState, sh: ShipState, done: ActionChoice): Extract<Decision, { kind: 'action' }> | null {
+  // Coordinate hands the turn to the coordinated ship instead; it has no link of its own.
+  const link = done.type === 'none' || done.type === 'coordinate' ? undefined : actionDef(sh, done.type)?.linked;
   if (!link || sh.destroyed || !actionAllowed(sh, link.type)) return null;
   const options = actionOptions(s, sh).filter((o) => o.type === link.type);
   if (!options.length) return null;
   return { kind: 'action', playerId: sh.owner, shipId: sh.id, options: [{ type: 'none' }, ...options], linked: { from: done.type as ActionType, red: !!link.red } };
+}
+
+/** Range limit of Coordinate. */
+export const COORDINATE_RANGE = 2;
+
+/** The actions a coordinated ship may take: what it could do now, except Coordinate (no chains). */
+export const coordinatedOptions = (s: GameState, t: ShipState) => actionOptions(s, t, isIonized(t), true);
+
+/** Friendly ships at range 0-2 that could act if coordinated: not stressed, and with an action to take. */
+export function coordinateTargets(s: GameState, sh: ShipState): ShipState[] {
+  return activeShips(s).filter((t) => {
+    if (t.owner !== sh.owner || t.id === sh.id || t.stress > 0) return false;
+    const r = rangeBetween(sh, t);
+    return r !== null && r <= COORDINATE_RANGE && coordinatedOptions(s, t).length > 1;
+  });
+}
+
+/** The decision for a ship coordinated by `by`: its options (plus none). */
+function coordinateDecision(s: GameState, t: ShipState, by: ShipState): Decision {
+  const ionized = isIonized(t);
+  return { kind: 'action', playerId: t.owner, shipId: t.id, options: coordinatedOptions(s, t), coordinated: { by: by.id }, ...(ionized ? { ionized } : {}) };
 }
 
 /** Hide information a given player should not see (opponent dials, RNG state). */
@@ -289,8 +315,13 @@ export function apply(prev: GameState, cmd: Command): GameState {
     const legal = d.options.some((o) => JSON.stringify(o) === JSON.stringify(cmd.choice));
     if (!legal) throw new Error('Illegal action');
     const sh = ship(s, d.shipId);
-    performAction(s, sh, cmd.choice, d.linked ? d.linked.red : !!actionDef(sh, cmd.choice.type)?.red, !!d.linked);
-    s.pending = d.linked || d.ionized ? null : linkedDecision(s, sh, cmd.choice);
+    performAction(s, sh, cmd.choice, d.linked ? d.linked.red : !!actionDef(sh, cmd.choice.type)?.red, !!d.linked, d.coordinated?.by);
+    // What comes next before the activation moves on: the linked action (a coordinated ship gets its link
+    // too), or the ship this one just coordinated. Coordinated ships cannot coordinate again.
+    const link = d.linked || d.ionized ? null : linkedDecision(s, sh, cmd.choice);
+    let next: Decision | null = link && d.coordinated ? { ...link, coordinated: d.coordinated } : link;
+    if (!next && cmd.choice.type === 'coordinate') next = coordinateDecision(s, ship(s, cmd.choice.targetId), sh);
+    s.pending = next;
     if (s.pending) return s;
     s.queueIndex++;
     continueActivation(s);
@@ -548,13 +579,13 @@ function jam(s: GameState, from: ShipState, t: ShipState) {
 }
 
 /** `red`: the action costs a stress (a red action, or a red linked action). */
-function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolean, linked = false) {
+function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolean, linked = false, coordinatedBy?: string) {
   if (a.type === 'none') return;
   if (a.type === 'lock') sh.lock = a.targetId;
   if (a.type === 'barrelRoll' || a.type === 'boost') { const from = sh.pose; sh.pose = a.to; triggerMines(s, sh, [from, a.to]); }
   if (a.type === 'rotateArc') sh.turretArc = a.to;
   if (a.type === 'reload') { const u = sh.upgrades.find((x) => x.id === a.upgrade)!; u.charges++; sh.disarmed = true; }
-  s.log.push({ type: 'action', shipId: sh.id, action: a, ...(linked ? { linked } : {}) });
+  s.log.push({ type: 'action', shipId: sh.id, action: a, ...(linked ? { linked } : {}), ...(coordinatedBy ? { coordinatedBy } : {}) });
   if (a.type === 'focus' || a.type === 'evade' || a.type === 'calculate') gainToken(s, sh, a.type);
   if (a.type === 'reinforce') gainToken(s, sh, 'reinforce', a.side);
   if (a.type === 'jam') jam(s, sh, s.ships.find((x) => x.id === a.targetId)!);

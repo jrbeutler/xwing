@@ -72,7 +72,7 @@ function statLine(s: SquadShip) {
 
 const ACTION_NAMES: Record<ActionType, string> = {
   focus: 'Focus', evade: 'Evade', lock: 'Lock', barrelRoll: 'Barrel Roll', boost: 'Boost', repair: 'Repair',
-  rotateArc: 'Rotate', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload',
+  rotateArc: 'Rotate', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload', coordinate: 'Coordinate',
 };
 /** The hull's action bar: red actions in red, linked actions as "Focus → Rotate". */
 function actionLine(s: SquadShip) {
