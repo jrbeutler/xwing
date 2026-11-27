@@ -7,7 +7,7 @@ and stays cheap enough for phones (short-lived particles, everything disposed wh
 Colours: each side's shots use its team colour (Coalition red, Syndicate green); ion is always electric blue,
 jamming always violet, proton warheads orange-white.
 
-## Phase 1: shots (done in this branch)
+## Phase 1: shots (done)
 
 | Weapon | Before | Now |
 |---|---|---|
@@ -18,33 +18,40 @@ jamming always violet, proton warheads orange-white.
 | **Ion** (Ion Cannon Turret, Ion Torpedoes) | Blue-tinted laser or missile | The turret fires a jagged arc of electricity that flickers; ion torpedoes are blue warheads; a hit crackles with arcs over the target. **Ionized ships** keep a faint flickering blue aura with stray sparks until the ion wears off |
 | **Jamming** | A flat purple line | Rings of interference travel from the jammer to the target over a crackle of static; the target glitches (the model flickers and jitters, violet static) as its token is knocked off |
 
-## Phase 2: hits and lasting damage
+## Phase 2: hits and lasting damage (done)
 
-- **Critical hits** deal damage cards: show them on the ship, not only in a banner. Console Fire: a small fire
-  glow; Damaged Engine: a sputtering exhaust; Fuel Leak: a vapour trail; any hull below half: a thin smoke trail.
-- **Evades**: a near-miss streak past the hull with the jink.
-- **Shield hits**: the bubble ripples out from where the shot struck, not uniformly.
-- **Destroyed**: bigger, longer blast for medium bases; debris that drifts and fades on the table.
+- **Damage cards show on the ship**: Console Fire burns (a flickering glow, flames and smoke); a Damaged Engine
+  coughs (the glow drops out with a dark puff and sparks); a Fuel Leak trails vapour; Weapons Failure, Damaged
+  Sensor Array and Disabled Power Regulator short-circuit (blue-white sparks); a ship at half hull or less trails
+  smoke. Particles live in the world, so a moving ship leaves a trail.
+- **Evades**: shots the defender evaded skim just past the hull, the ship jinks away from them, and a faint heat
+  streak hangs where they passed.
+- **Shield hits**: the shot stops at the bubble, which flares there and ripples out from that point.
+- **Destroyed**: medium ships take secondary blasts, then a bigger, longer explosion; every wreck throws hull
+  fragments that tumble onto the table, skid, smoulder and fade after a few seconds.
 
-## Phase 3: bombs and mines
+## Phase 3: bombs and mines (done)
 
-- **Dropping**: the device detaches from the ship and settles on the table with a small thruster puff.
-- **Proton bomb**: a shockwave ring along the table, a fireball and debris.
-- **Ion bomb**: an expanding ion storm; caught ships crackle.
-- **Proximity mine**: arms with a blinking light; when triggered, it pops up and lunges at the ship.
+- **Dropping**: the device detaches with a puff, settles on a small thruster and kicks up a ring of dust; its
+  light flashes fast while it arms, then blinks slowly.
+- **Proton bomb**: a fireball, a shockwave ring along the table, flying fragments and a ring of rolling smoke.
+- **Ion bomb**: a dome of ion storm swells out to range 1, full of lightning; caught ships crackle.
+- **Proximity mine**: when a ship sets it off, it pops up off the table and lunges at the ship, then blows.
 
-## Phase 4: actions
+## Phase 4: actions (done)
 
-- **Lock**: a targeting reticle closes onto the enemy and stays on it while the lock is held (a thin dashed
-  line when the locking ship is selected).
-- **Coordinate**: a signal pulse travels to the friendly ship, which lights up briefly.
-- **Tokens**: Focus, Evade and Calculate give the ship a brief glow in the token's colour; **Reinforce** shows
-  a translucent shield over the braced half for the round.
-- **Reload**: a loading flash at the launcher. **Repair**: welding sparks. **Rotate**: the turret swings (exists).
+- **Lock**: a beam sweeps out and a reticle closes onto the target; it stays on it while the lock is held, and a
+  thin dashed line joins them while the locking ship is selected.
+- **Coordinate**: pulses of signal arc to the friendly ship, which lights up.
+- **Tokens**: Focus (green), Evade (cyan) and Calculate (violet) send a glowing ring up over the ship with rising
+  motes. **Reinforce** puts a translucent hex shield over the braced half for the round.
+- **Reload**: a loading flash and sparks under the nose, with a clunk. **Repair**: welding sparks across the hull.
+  **Rotate**: the turret swings.
 
-## Phase 5: movement and the table
+## Phase 5: movement and the table (done)
 
-- **Barrel roll**: the model actually rolls as it slides. **Boost**: an engine burn on the way.
-- **Bumps**: a jolt and a small spark where the bases touch. **Fleeing**: the ship burns off the edge.
-- **Obstacle hits**: an asteroid impact throws rock chips; debris clatters off the hull; a gas cloud
-  crackles around the ship as it takes ion.
+- **Barrel roll**: the model rolls over as it slides. **Boost**: an engine burn with a flame trail.
+- **Bumps**: a jolt for both ships and a spark where they touch. **Fleeing**: the ship burns off the edge and is
+  gone (no explosion).
+- **Obstacle hits**: an asteroid throws rock chips and dust; debris clatters off the hull with sparks; a gas cloud
+  crackles around the ship.
