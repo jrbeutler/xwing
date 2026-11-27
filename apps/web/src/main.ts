@@ -1527,7 +1527,9 @@ function refreshBoard() {
   } else showOddsFrom(s, s.pose, true);
   if (!candidate) {
     scene.clearGhost();
-    if (cand) cand.innerHTML = `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
+    if (cand) cand.innerHTML = isIonized(s)
+      ? `<p class="hint">Ionized: only the direction counts. Pick Left, Straight or Right below.</p>`
+      : `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
     return;
   }
   const i = candidate.group[candidate.flip];
