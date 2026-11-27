@@ -48,7 +48,14 @@ const viewBtn = document.createElement('button');
 viewBtn.id = 'viewbtn';
 viewBtn.setAttribute('aria-label', 'Toggle overview');
 document.getElementById('hud')!.appendChild(viewBtn);
-viewBtn.onclick = () => { userOverview = !userOverview; applyCamera(); };
+/**
+ * Phones: Overview shows the whole table; Recenter goes back to the game's own framing (following the
+ * ship you are working with), after an overview or after you moved the camera yourself.
+ */
+viewBtn.onclick = () => {
+  if (userOverview || camFree) { userOverview = false; camFree = false; } else userOverview = true;
+  applyCamera();
+};
 const speedBtn = document.createElement('button');
 speedBtn.id = 'speedbtn';
 speedBtn.setAttribute('aria-label', 'Animation speed');
@@ -1324,6 +1331,12 @@ const SNAP_RADIUS = 140;
 
 let selected: string | null = null;
 let candidate: { group: number[]; flip: number } | null = null;
+/**
+ * The candidate was chosen (a click or tap on a dot, a drag that ended, a special-move button), not just
+ * hovered: it stays put while the player looks it over, flips it, or compares, until they choose another
+ * or press Set move. Nothing is set without that.
+ */
+let locked = false;
 let lastPointer = 'mouse';
 let pointerDown: { x: number; y: number; moved: boolean } | null = null;
 
@@ -1334,15 +1347,16 @@ const SPECIAL = new Set<Bearing>(['kturn', 'sloopLeft', 'sloopRight', 'trollLeft
 const isSpecial = (s: ShipState, i: number) => SPECIAL.has(maneuverOf(s, i).bearing);
 
 /** Choose dial entry `i` directly (from a special-move chip); choosing the one already shown sets it. */
+/** Choose maneuver `i` for `s` (a special-move button or the classic dial): it is shown, not set. */
 function pickManeuver(s: ShipState, i: number) {
-  if (candidate && candidate.group[candidate.flip] === i) { commit(); return; }
   const g = snapGroups(s).find((x) => x.idx.includes(i));
   if (!g) return;
   candidate = { group: g.idx, flip: g.idx.indexOf(i) };
+  locked = true;
   refreshBoard();
 }
 
-/** A row of chips under the selected ship for its special maneuvers: tap to preview, tap again to set. */
+/** A row of chips under the selected ship for its special maneuvers: tap to choose (then Set move). */
 function specialChips(s: ShipState) {
   const specials = legalDial(state, s).filter((i) => isSpecial(s, i));
   const cur = candidate ? candidate.group[candidate.flip] : -1;
@@ -1350,7 +1364,7 @@ function specialChips(s: ShipState) {
   const chips = specials.map((i) => {
     const m = maneuverOf(s, i);
     return {
-      label: `${i === hint ? '💡 ' : ''}<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}${i === cur ? ' <b>· set</b>' : ''}`,
+      label: `${i === hint ? '💡 ' : ''}<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}${i === cur ? ' <b>· chosen</b>' : ''}`,
       cls: `special${i === cur ? ' on' : ''}`,
       onClick: () => pickManeuver(s, i),
     };
@@ -1390,10 +1404,12 @@ function updateControls() {
 function selectShip(id: string | null) {
   selected = id;
   candidate = null;
+  locked = false;
   if (id && plan[id] !== undefined) {
+    // A ship that already has a move shows it, chosen; pick another dot to change it.
     const s = shipById(id);
     const g = snapGroups(s).find((x) => x.idx.includes(plan[id]));
-    if (g) candidate = { group: g.idx, flip: g.idx.indexOf(plan[id]) };
+    if (g) { candidate = { group: g.idx, flip: g.idx.indexOf(plan[id]) }; locked = true; }
   }
   updateControls();
   renderPlanning();
@@ -1446,9 +1462,12 @@ function refreshBoard() {
   const flipHint = alt !== null ? `<div class="hint">F / Flip: ${BEARING_NAME[maneuverOf(s, alt).bearing]}</div>` : '';
   scene.showGhost(sizeOf(s), ghostPoses(s, i), DIFF_COLOR[m.difficulty], `${maneuverName(s, i)}${flipHint}`, s.id);
   if (cand) {
+    const already = plan[s.id] === i;
     cand.innerHTML = `<div class="cand-row"><span>${maneuverName(s, i)} <span class="hint">(${m.difficulty})</span></span>
       ${alt !== null ? '<button class="opt mini" id="flip">Flip</button>' : ''}
-      <button class="opt mini confirm" id="confirm">Set</button></div>`;
+      <button class="opt mini confirm" id="confirm">${already ? 'Keep' : 'Set move'}</button></div>
+      <p class="hint">${locked ? `Chosen${alt !== null ? ': Flip shows the other move from this spot' : ''}. Look it over, pick another dot to compare, then <b>Set move</b> (Enter).`
+        : 'Click to choose this move, or keep moving the pointer to compare.'}</p>`;
     document.getElementById('flip')?.addEventListener('click', flip);
     document.getElementById('confirm')!.addEventListener('click', commit);
   }
@@ -1521,6 +1540,7 @@ function useSuggestion(shipId: string) {
 
 function commit() {
   if (!selected || !candidate) return;
+  locked = false;
   lastCommit = { shipId: selected, prev: plan[selected] };
   plan[selected] = candidate.group[candidate.flip];
   const next = myShips().find((s) => plan[s.id] === undefined);
@@ -1531,6 +1551,7 @@ function executePlan() {
   const mine = myShips();
   if (mine.some((s) => plan[s.id] === undefined)) return;
   const dials = Object.fromEntries(mine.map((s) => [s.id, plan[s.id]]));
+  camFree = false; // movement and combat: the game frames the action again
   plan = {};
   selected = null;
   candidate = null;
@@ -1550,6 +1571,8 @@ function executePlan() {
 /** The pointer position a mode works with (touch drags are lifted above the finger). */
 type P = { clientX: number; clientY: number; pointerType: string };
 interface BoardMode {
+  /** Touch: whether a finger pressed here is the mode's (steering, dragging a ship); otherwise a drag pans the camera. */
+  grabs?(p: P): boolean;
   press?(p: P): void;
   hover?(p: P): void;
   click(p: P): void;
@@ -1571,8 +1594,9 @@ const screenDist = (p: P, x: number, y: number) => {
 const canvas = scene.renderer.domElement;
 const touches = new Set<number>();
 let multi = false; // a two-finger camera gesture is in progress
+/** A one-finger camera drag in progress (touch), with the last finger position. */
+let panning: { x: number; y: number } | null = null;
 canvas.addEventListener('pointerdown', (e) => {
-  if (busy) scene.skipping = true; // tap the board to skip the current animation
   // A primary pointer means no other finger is down: forget any lift we may have missed,
   // so a lost pointerup can never leave every later touch treated as a two-finger gesture.
   if (e.isPrimary) { touches.clear(); multi = false; }
@@ -1582,13 +1606,22 @@ canvas.addEventListener('pointerdown', (e) => {
   if (compact) logEl.classList.remove('open');
   lastPointer = e.pointerType;
   updateControls();
-  if (touches.size > 1) { multi = true; if (pointerDown) pointerDown.moved = true; return; }
+  if (touches.size > 1) { multi = true; if (pointerDown) pointerDown.moved = true; panning = null; return; }
   multi = false;
   pointerDown = { x: e.clientX, y: e.clientY, moved: false };
-  if (!busy && mode && e.pointerType !== 'mouse') { mode.press?.(e); mode.hover?.(lift(e)); }
+  // Touch: a finger the current mode doesn't claim (e.g. planning, away from the ship and its dots; or
+  // while it isn't our turn) drags the camera instead, so the player can look around with one finger.
+  const touch = e.pointerType !== 'mouse';
+  const grabbed = !busy && !!mode && (mode.grabs ? mode.grabs(e) : true);
+  panning = touch && !grabbed && stage === 'battle' ? { x: e.clientX, y: e.clientY } : null;
+  if (!busy && mode && touch && grabbed) { mode.press?.(e); mode.hover?.(lift(e)); }
 });
 canvas.addEventListener('pointermove', (e) => {
   if (pointerDown && Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y) > 8) pointerDown.moved = true;
+  if (panning && pointerDown && !multi) {
+    if (pointerDown.moved) { scene.panBy(e.clientX - panning.x, e.clientY - panning.y); panning = { x: e.clientX, y: e.clientY }; }
+    return;
+  }
   if (busy || !mode || multi) return;
   if (e.pointerType === 'mouse' ? !pointerDown : !!pointerDown) mode.hover?.(lift(e));
 });
@@ -1596,7 +1629,11 @@ canvas.addEventListener('pointerup', (e) => {
   touches.delete(e.pointerId);
   const down = pointerDown;
   pointerDown = null;
+  const panned = panning && down?.moved;
+  panning = null;
+  if (busy && down && !down.moved && !multi) scene.skipping = true; // a tap on the board skips the current animation (a drag looks around)
   if (multi) { if (touches.size === 0) multi = false; return; }
+  if (panned) return; // the drag looked around; it chose nothing
   if (busy || !mode || !down) return;
   if (down.moved) {
     // Mouse drag = camera move. Touch drag = steering; lifting the finger may commit.
@@ -1608,33 +1645,49 @@ canvas.addEventListener('pointerup', (e) => {
 canvas.addEventListener('pointercancel', (e) => {
   touches.delete(e.pointerId);
   pointerDown = null;
+  panning = null;
   if (touches.size === 0) multi = false;
 });
 addEventListener('keydown', (e) => { if (!busy && mode) mode.key?.(e); });
 
+/**
+ * Planning on the board. Choosing and setting are separate: hover (mouse) previews a move; a click or tap
+ * on a dot, or a drag from the ship that ends on one, chooses it (it stays shown, to look over or flip);
+ * Set move (or Enter) sets it and moves on to the next ship.
+ */
 const planningMode: BoardMode = {
+  /** A finger starting on the selected ship or one of its dots steers; anywhere else it pans the camera. */
+  grabs(p) {
+    if (!selected) return !!ownShipAt(p);
+    const s = shipById(selected);
+    if (screenDist(p, s.pose.x, s.pose.y) < 70 || ownShipAt(p)) return true;
+    return snapGroups(s).some((g) => screenDist(p, g.pos.x, g.pos.y) < 48);
+  },
   press(p) {
     // Pressing on another of your ships selects it, so you can drag straight out of it.
-    const picked = scene.pickShip(p.clientX, p.clientY);
-    if (picked && picked !== selected && shipById(picked).owner === me) selectShip(picked);
+    const picked = ownShipAt(p);
+    if (picked && picked !== selected) selectShip(picked);
+    locked = false; // steering: follow the finger until it lifts
   },
-  hover(p) { if (selected) candidateAt(p); },
+  hover(p) { if (selected && (!locked || pointerDown)) candidateAt(p); },
   click(p) {
-    const picked = scene.pickShip(p.clientX, p.clientY);
-    const mine = picked && shipById(picked).owner === me ? picked : null;
+    const mine = ownShipAt(p);
     if (mine && mine !== selected) return selectShip(mine);
-    if (selected) {
-      candidateAt(p);
-      if (candidate) commit(); else selectShip(null);
-    }
+    if (!selected) return;
+    candidateAt(p);
+    if (candidate) { locked = true; refreshBoard(); return; }
+    // A click on empty board puts a chosen move down first, then the ship.
+    if (locked) { locked = false; refreshBoard(); } else selectShip(null);
   },
-  release() { if (selected && candidate) commit(); },
+  release() { if (selected && candidate) { locked = true; refreshBoard(); } },
   key(e) {
     if (e.key === 'f' || e.key === 'F') flip();
-    if (e.key === 'Escape') selectShip(null);
+    if (e.key === 'Escape') { if (locked && candidate) { locked = false; candidate = null; refreshBoard(); } else selectShip(null); }
     if (e.key === 'Enter') { if (candidate) commit(); else executePlan(); }
   },
 };
+/** One of the player's own ships under the pointer, if any. */
+const ownShipAt = (p: P) => { const id = scene.pickShip(p.clientX, p.clientY); return id && shipById(id).owner === me ? id : null; };
 
 const deployMode: BoardMode = {
   press(p) {
@@ -1680,6 +1733,20 @@ function updateLayout() {
   applyCamera(250);
 }
 addEventListener('resize', () => updateLayout());
+/**
+ * Phones rotating: some browsers report the new size a moment late and can leave the page scrolled or
+ * zoomed from the other orientation. Put the page back at the origin and measure again once it settles.
+ */
+let settleTimers: number[] = [];
+const resettle = () => {
+  settleTimers.forEach(clearTimeout);
+  const again = () => { scrollTo(0, 0); scene.resize(); updateLayout(); };
+  again();
+  settleTimers = [150, 500, 1000].map((ms) => window.setTimeout(again, ms));
+};
+addEventListener('orientationchange', resettle);
+visualViewport?.addEventListener('resize', () => { if (visualViewport!.scale !== 1 || scrollX || scrollY) resettle(); });
+screen.orientation?.addEventListener?.('change', resettle);
 
 /** Screen area covered by UI, so the camera can frame what is left. */
 function uiInsets() {
@@ -1689,6 +1756,14 @@ function uiInsets() {
     ? { top, bottom: innerHeight - r.top + 6, left: 0, right: 0 }
     : { top: 44, bottom: 0, left: 0, right: innerWidth - r.left + 6 };
 }
+
+/** Phones: the player has moved the camera themselves, so the game leaves it alone (until Recenter, or the next round's planning). */
+let camFree = false;
+scene.onUserCamera = () => {
+  if (!compact || camFree) return;
+  camFree = true;
+  viewBtn.textContent = 'Recenter';
+};
 
 function applyCamera(ms = 500) {
   if (!compact || !state || scene.inAttackView) return;
@@ -1717,8 +1792,10 @@ function applyCamera(ms = 500) {
     if (d.kind === 'attack') pts = [shipById(d.shipId).pose, ...d.targets.map((t) => shipById(t.targetId).pose)];
     if (d.kind === 'system') { pts = [shipById(d.shipId).pose, ...d.options.flatMap((o) => (o.type === 'drop' ? [o.pose] : []))]; minHalf = 160; }
   }
-  viewBtn.hidden = !pts;
-  viewBtn.textContent = userOverview ? 'Zoom in' : 'Overview';
+  viewBtn.hidden = false;
+  viewBtn.textContent = userOverview || camFree ? 'Recenter' : 'Overview';
+  // The player moved the camera: leave it where they put it until they press Recenter.
+  if (camFree) return;
   if (pts && !userOverview) framePoints(pts, minHalf, ms);
   else board(0.2);
 }
@@ -1787,11 +1864,11 @@ function planningBar() {
     const s = shipById(selected);
     if (candidate) {
       const i = candidate.group[candidate.flip];
-      status = `<b>${s.name.split(' ')[0]}</b>: ${maneuverName(s, i)}`;
+      status = `<b>${s.name.split(' ')[0]}</b>: ${maneuverName(s, i)}${plan[s.id] === i ? ' <span class="hint">(set)</span>' : ' <span class="hint">· not set yet</span>'}`;
       if (candidate.group.length > 1) buttons.push({ label: 'Flip', onClick: flip });
-      if (plan[s.id] !== i) buttons.push({ label: 'Set', cls: 'primary', onClick: commit });
+      if (plan[s.id] !== i) buttons.push({ label: 'Set move', cls: 'primary', onClick: commit });
     } else {
-      status = `<b>${s.name.split(' ')[0]}</b>: drag on the board to steer`;
+      status = `<b>${s.name.split(' ')[0]}</b>: drag from the ship or tap a dot to choose a move · drag elsewhere to look around`;
     }
     // Learning aid on phones: the suggestion as a one-tap button (the gold-ringed dot shows where it goes).
     const sug = suggestions()?.[s.id];
@@ -1807,8 +1884,9 @@ function renderPlanning() {
   // An ionized ship ignores its dial (it drifts 1 straight), so plan it automatically.
   for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
-    Click to set it. Special moves (K-turn, loops, rolls) are the buttons under the ship: click once to preview, again to set.
-    A ringed dot hides one; <b>F</b> flips to it. Blue clears stress, red adds it.</p>${obstacleLegend()}`;
+    Click a dot to choose that move; it stays shown so you can look it over and compare. <b>Set move</b> (Enter) sets it.
+    Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.
+    Blue clears stress, red adds it.</p>${obstacleLegend()}`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
     const card = document.createElement('div');
@@ -1872,7 +1950,8 @@ function dialFallback(s: ShipState): HTMLElement {
       b.title = `${maneuverLabel(m)} (${m.difficulty})`;
       b.disabled = !legal.has(i);
       if (plan[s.id] === i) b.classList.add('sel');
-      b.onclick = () => { selected = s.id; plan[s.id] = i; const next = myShips().find((x) => plan[x.id] === undefined); selectShip(next ? next.id : null); };
+      // The classic dial chooses too; Set move confirms.
+      b.onclick = () => { if (selected !== s.id) selectShip(s.id); pickManeuver(s, i); };
       dial.appendChild(b);
     }
   }
@@ -1896,6 +1975,23 @@ const GREEN = 0x7cf0c5, RED = 0xff5a5a;
 const ACTION_SNAP = 45;
 
 /** `linked`: this is the linked action offered after another one (only its options, maybe red). */
+/** What each action does, for the action ring's help popup (hover with a mouse, hold with a finger). */
+const ACTION_HELP: Record<string, string> = {
+  focus: 'Gain a focus token. When you attack, every focus result becomes a hit; when you defend, every focus result becomes an evade. It is spent for you when it helps, and lasts until the end of the round.',
+  evade: 'Gain an evade token. When you defend, it adds an evade result, cancelling one hit. Lasts until the end of the round.',
+  calculate: 'Gain a calculate token. It changes <b>one</b> focus result: to a hit when you attack, or an evade when you defend. Weaker than Focus (one die instead of all of them), but cheap insurance. Lasts until the end of the round.',
+  lock: 'Lock onto an enemy (any range, no arc needed). Attacking that ship, you reroll your blanks (and focus results if you have no focus to spend). Most missiles and torpedoes can only fire at a locked ship. A lock lasts until you use it.',
+  jam: 'Jam an enemy at range 1-2 in your firing arc: it loses its focus, evade, calculate or reinforce token, or else its lock. If it has none, it gets a jam token that cancels the next token it gains.',
+  coordinate: 'Pick a friendly ship at range 0-2 that isn\'t stressed: it takes an action right now (and still gets its own later).',
+  barrelRoll: 'Slide sideways by one base width, forward, level or back, keeping your facing. A quick way into an enemy\'s path or out of its arc. Then pick a teal spot.',
+  boost: 'Fly a short extra move after your maneuver: 1 straight or a 1 bank. Close in, or slip out of an arc. Then pick a green spot.',
+  rotateArc: 'Turn your turret arc to face front, left, right or rear, so the turret can shoot that way.',
+  reinforce: 'Brace the front or rear half of your ship for the rest of the round: an attack from that side that lands 2 or more hits loses one.',
+  reload: 'Get back one charge on this missile, torpedo or bomb. You can\'t attack this round.',
+  none: 'Take no action this round.',
+};
+const RED_NOTE = '<br><span class="red">Red: it costs 1 stress. A stressed ship can\'t take actions or fly red maneuvers until a blue maneuver clears it.</span>';
+
 function renderAction(shipId: string, options: ActionChoice[], linked?: { from: ActionType; red: boolean }, coordinatedBy?: string) {
   const s = shipById(shipId);
   const by = coordinatedBy ? shipById(coordinatedBy).name : '';
@@ -1950,37 +2046,39 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
         { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
       return;
     }
+    const redOf = (t: ActionType) => !!SHIP_TYPES[s.typeId].actions.find((a) => a.type === t)?.red || !!linked?.red;
+    const helpOf = (t: ActionType) => ACTION_HELP[t] + (redOf(t) ? RED_NOTE : '');
     const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
-      ({ icon, label, title: hint, onClick: () => { only = t; cand = null; show(); } });
+      ({ icon, label, title: hint.split(':')[0], help: helpOf(t), onClick: () => { only = t; cand = null; show(); } });
     const items: RadialItem[] = [];
     const stress = linked?.red ? ' (red: +1 stress)' : '';
-    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: `Focus: turn focus results into hits or evades${stress}`, cls: red, onClick: () => choose({ type: 'focus' }) });
-    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: `Evade: add an evade result when defending${stress}`, cls: red, onClick: () => choose({ type: 'evade' }) });
-    if (has('calculate')) items.push({ icon: ICONS.calculate, label: 'Calc', title: `Calculate: change 1 focus result to a hit or evade, attacking or defending${stress}`, cls: red, onClick: () => choose({ type: 'calculate' }) });
+    if (has('focus')) items.push({ icon: ICONS.focus, label: 'Focus', title: `Focus${stress}`, help: helpOf('focus'), cls: red, onClick: () => choose({ type: 'focus' }) });
+    if (has('evade')) items.push({ icon: ICONS.evade, label: 'Evade', title: `Evade${stress}`, help: helpOf('evade'), cls: red, onClick: () => choose({ type: 'evade' }) });
+    if (has('calculate')) items.push({ icon: ICONS.calculate, label: 'Calc', title: `Calculate${stress}`, help: helpOf('calculate'), cls: red, onClick: () => choose({ type: 'calculate' }) });
     for (const o of options) {
       if (o.type !== 'reinforce') continue;
       items.push({
         icon: ICONS.reinforce, label: o.side === 'front' ? 'Reinf. fr.' : 'Reinf. rear',
-        title: `Reinforce ${o.side}: attacks from your ${o.side} half lose 1 of 2+ hits this round${stress}`, cls: red, onClick: () => choose(o),
+        title: `Reinforce ${o.side}${stress}`, help: helpOf('reinforce').replace('the front or rear half', `the <b>${o.side}</b> half`), cls: red, onClick: () => choose(o),
       });
     }
     for (const o of options) {
       if (o.type !== 'reload') continue;
       const u = UPGRADES[o.upgrade];
-      items.push({ icon: ICONS.reload, label: 'Reload', title: `Reload ${u.name}: recover 1 charge, but you cannot attack this round${stress}`, cls: red, onClick: () => choose(o) });
+      items.push({ icon: ICONS.reload, label: 'Reload', title: `Reload ${u.name}${stress}`, help: helpOf('reload').replace('this missile, torpedo or bomb', `your <b>${u.name}</b>`), cls: red, onClick: () => choose(o) });
     }
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
     if (jams.length) items.push(narrow('jam', ICONS.jam, 'Jam', 'Jam: strip an enemy\'s Focus, Evade or lock (range 1-2 in your arc); then click a ringed enemy'));
     if (coords.length) items.push(narrow('coordinate', ICONS.coordinate, 'Coord.', 'Coordinate: a friend at range 0-2 that is not stressed takes an action now; then click a ringed friend'));
     if (spots.some((o) => o.type === 'barrelRoll')) items.push(narrow('barrelRoll', ICONS.barrelRoll, 'Roll', 'Barrel roll: then click a teal dot'));
     if (spots.some((o) => o.type === 'boost')) items.push(narrow('boost', ICONS.boost, 'Boost', 'Boost: then click a green dot'));
-    if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, onClick: () => { only = 'rotateArc'; cand = null; show(); } });
+    if (has('rotateArc')) items.push({ icon: ICONS.turret, label: 'Rotate', title: `Rotate the turret (now facing ${s.turretArc})`, help: helpOf('rotateArc'), onClick: () => { only = 'rotateArc'; cand = null; show(); } });
     for (const o of options) {
       if (o.type !== 'repair') continue;
       const c = DAMAGE_CARDS[o.card];
-      items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
+      items.push({ icon: ICONS.repair, label: c.tag.slice(0, 7), title: `Repair ${c.title}`, help: `Use your action to fix this damage card and discard it. While it stays: ${c.text}`, cls: 'repair', onClick: () => choose(o) });
     }
-    items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+    items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', help: linked ? 'Don\'t take the linked action.' : ACTION_HELP.none, cls: 'quiet', onClick: () => choose({ type: 'none' }) });
     scene.showRadial(s.pose, items, {
       key: linked ? `linked|${linked.from}|${shipId}` : by ? `coord|${shipId}` : 'menu',
       caption: linked ? `${linkNote}: take it or skip` : by ? `Coordinated by ${by}: pick an action` : 'Pick an action',
@@ -2149,11 +2247,11 @@ function renderSystem(shipId: string, options: DropChoice[]) {
     icon: UPGRADES[o.upgrade].device!.kind === 'mine' ? ICONS.mine : ICONS.bomb,
     label: short(o.upgrade),
     badge: s.upgrades.find((u) => u.id === o.upgrade)?.charges,
-    title: `Drop ${UPGRADES[o.upgrade].name}: ${UPGRADES[o.upgrade].text}`,
+    title: `Drop ${UPGRADES[o.upgrade].name}`, help: UPGRADES[o.upgrade].text,
     onClick: () => choose(o),
     onHover: (on) => preview(on ? o : null),
   }));
-  items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
+  items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', help: 'Keep your bombs and mines for later.', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
   scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
   mode = { click() {}, key(e) { if (e.key === 'Escape') choose({ type: 'none' }); } };
   setBar({
@@ -2321,10 +2419,12 @@ function renderAttack(shipId: string, targets: Target[]) {
         return {
           icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, disabled: !ok,
           title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
+          help: w === 'primary' ? 'Your main guns. Range 1 rolls a die fewer, range 2 one more (the sweet spot), range 4 gives the defender an extra die. Then pick a ringed enemy; each shows your odds.'
+            : `${UPGRADES[w].text}${ok ? ' Then pick a ringed enemy; each shows your odds.' : `<br><span class="red">${why(w)}</span>`}`,
           onClick: () => pickWeapon(w),
         };
       });
-      items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
+      items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', help: 'Don\'t attack this round. Your tokens stay for defending.', cls: 'danger', onClick: () => fire(null) });
       scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
     }
     const btns: BarButton[] = weapon ? [{ label: 'Back', onClick: back }] : [];

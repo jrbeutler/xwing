@@ -2,7 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The game zooms the board itself (pinch); stop the browser zooming the page, which on phones could
+         keep a landscape zoom after turning back to portrait. viewport-fit=cover enables the safe-area insets. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
     <title>Squadron Tactics Prototype</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
