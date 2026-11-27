@@ -696,7 +696,7 @@ export class BattleScene {
       s.disarmed ? '<span class="dis" title="Disarmed: reloading, cannot attack this round">⊘</span>' : '',
     ].join('');
     v.label.element.querySelector('.info')!.innerHTML =
-      `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
+      `<div class="${s.owner}"><span class="nm">${s.name} </span><span class="nms">${this.shortName?.(s) ?? s.name.split(' ')[0]} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +
       `${s.stress ? `<span class="st"> ⚠${s.stress}</span>` : ''} ${tokens}${s.ion ? '<span class="ion"> ⚡</span>' : ''}</div>` +
       (s.crits.length ? `<div class="crits">${s.crits.map((c) => `<button type="button" class="crit-tag" data-crit="${c}" aria-label="${DAMAGE_CARDS[c].title}: ${DAMAGE_CARDS[c].text}">${DAMAGE_CARDS[c].tag}</button>`).join('')}</div>` : '');
@@ -1256,24 +1256,34 @@ export class BattleScene {
   /** Small dots on the table showing every spot the selected ship can reach. */
   /** `ring` circles a dot that hides more maneuvers (e.g. a K-turn behind a straight), in that colour. */
   /** Maneuver dots. `ring`: a special maneuver hides here (its colour). `suggested`: the hint's pick (gold halo). */
-  setMarkers(points: { x: number; y: number; color: number; active?: boolean; ring?: number; suggested?: boolean }[]) {
-    this.markers.clear();
+  /** `label`: a short text drawn on the dot (e.g. the maneuver's speed). `big`: finger-sized dots (phones). */
+  setMarkers(points: { x: number; y: number; color: number; active?: boolean; ring?: number; suggested?: boolean; label?: string }[], big = false) {
+    clearGroup(this.markers);
+    const k = big ? 2 : 1;
     for (const p of points) {
       const m = new THREE.Mesh(
-        new THREE.CircleGeometry(p.active ? 5 : 3.5, 16),
-        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: p.active ? 1 : 0.55 }),
+        new THREE.CircleGeometry((p.active ? 5 : 3.5) * k, 20),
+        new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: p.active ? 1 : big ? 0.8 : 0.55 }),
       );
+      if (p.label) {
+        const el = document.createElement('div');
+        el.className = 'dot-label';
+        el.textContent = p.label;
+        const l = new CSS2DObject(el);
+        l.position.copy(toV3(p.x, p.y, 0.6));
+        this.markers.add(l);
+      }
       m.rotation.x = -Math.PI / 2;
       m.position.copy(toV3(p.x, p.y, 0.6));
       this.markers.add(m);
       if (p.ring !== undefined) {
-        const r = new THREE.Mesh(new THREE.RingGeometry(7, 8.6, 24), new THREE.MeshBasicMaterial({ color: p.ring, transparent: true, opacity: 0.9 }));
+        const r = new THREE.Mesh(new THREE.RingGeometry(7 * k, 8.6 * k, 24), new THREE.MeshBasicMaterial({ color: p.ring, transparent: true, opacity: 0.9 }));
         r.rotation.x = -Math.PI / 2;
         r.position.copy(toV3(p.x, p.y, 0.7));
         this.markers.add(r);
       }
       if (p.suggested) {
-        const halo = new THREE.Mesh(new THREE.RingGeometry(10, 12.5, 32), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.95 }));
+        const halo = new THREE.Mesh(new THREE.RingGeometry(big ? 16 : 10, big ? 19 : 12.5, 32), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.95 }));
         halo.rotation.x = -Math.PI / 2;
         halo.position.copy(toV3(p.x, p.y, 0.8));
         this.markers.add(halo);
@@ -2662,6 +2672,9 @@ export class BattleScene {
       this.embers.spawn(p, new THREE.Vector3(0, 2, 0), 0.45 + (4 - Math.abs(i)) * 0.05, 5, 8, 0.55 - Math.abs(i) * 0.08, hot(color, 1.8), 0);
     }
   }
+
+  /** A short name for a ship's label on small screens (set by the client; defaults to the first word). */
+  shortName: ((s: ShipState) => string) | null = null;
 
   /** Refresh one ship's label from a (displayed) ship state. */
   refreshLabel(s: ShipState) {

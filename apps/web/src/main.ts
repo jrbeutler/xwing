@@ -4,7 +4,7 @@ import {
   viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
-import { openSetup, type BattleSetup } from './setup';
+import { openSetup, quickSetup, type BattleSetup } from './setup';
 import { campaignBriefing, markDone, nextMission, officerName, openBriefing, openCampaign, openStart, recordCampaign } from './campaign';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -42,7 +42,11 @@ const ticker = document.createElement('button');
 ticker.id = 'ticker';
 ticker.setAttribute('aria-label', 'Show battle log');
 document.body.appendChild(ticker);
-ticker.onclick = () => logEl.classList.toggle('open');
+ticker.onclick = () => {
+  // Phones: at the start of a round the ticker is the folded-up recap of the last one; a tap unfolds it.
+  if (ticker.dataset.recap && lastRecap) { if (recap.hidden) showRecap(lastRecap.round, lastRecap.lines); else hideRecap(); return; }
+  logEl.classList.toggle('open');
+};
 // On phones the log is a sheet over the board: a tap on it (not a scroll) puts it away.
 logEl.addEventListener('click', () => { if (compact) logEl.classList.remove('open'); });
 const viewBtn = document.createElement('button');
@@ -60,7 +64,6 @@ viewBtn.onclick = () => {
 const speedBtn = document.createElement('button');
 speedBtn.id = 'speedbtn';
 speedBtn.setAttribute('aria-label', 'Animation speed');
-document.getElementById('hud')!.appendChild(speedBtn);
 const setSpeed = (v: number) => {
   scene.speed = v;
   speedBtn.textContent = `${v}×`;
@@ -72,14 +75,37 @@ try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setS
 /** Back to the start menu (from a battle, after a confirmation). */
 const menuBtn = document.createElement('button');
 menuBtn.id = 'menubtn';
-menuBtn.textContent = '☰ Menu';
-menuBtn.setAttribute('aria-label', 'Main menu');
-menuBtn.onclick = () => {
+menuBtn.innerHTML = '☰<span class="mb-t"> Menu</span>';
+menuBtn.setAttribute('aria-label', 'Menu');
+document.getElementById('hud')!.prepend(menuBtn);
+/** Let the game choose every ship's action (the AI's pick), so the action step never asks. */
+let autoActions = false;
+try { autoActions = localStorage.getItem('xw-auto-actions') === '1'; } catch { /* storage unavailable */ }
+/** The menu sheet: animation speed, automatic actions, and the way back to the start menu. */
+const gameMenu = document.createElement('div');
+gameMenu.id = 'gamemenu';
+gameMenu.hidden = true;
+gameMenu.innerHTML = `<div class="gm-row"><span>Animation speed</span><span id="gm-speed"></span></div>
+  <label class="gm-row"><span>Auto actions<small>The game picks each ship's action for you</small></span><input type="checkbox" id="gm-auto"></label>
+  <button class="opt" id="gm-main">Main menu</button>`;
+document.body.appendChild(gameMenu);
+gameMenu.querySelector('#gm-speed')!.appendChild(speedBtn);
+const autoBox = gameMenu.querySelector<HTMLInputElement>('#gm-auto')!;
+autoBox.checked = autoActions;
+autoBox.onchange = () => {
+  autoActions = autoBox.checked;
+  try { localStorage.setItem('xw-auto-actions', autoActions ? '1' : '0'); } catch { /* storage unavailable */ }
+  // Turned on while an action is being asked for: take it now.
+  if (autoActions && stage === 'battle' && !busy && state?.pending?.kind === 'action') { gameMenu.hidden = true; render(); }
+};
+gameMenu.querySelector<HTMLButtonElement>('#gm-main')!.onclick = () => {
   const playing = stage !== 'setup' && state && state.phase !== 'over';
   if (playing && !confirm(mission ? 'Leave this mission?' : 'Leave this battle?')) return;
+  gameMenu.hidden = true;
   showStart();
 };
-document.getElementById('hud')!.prepend(menuBtn);
+menuBtn.onclick = (e) => { e.stopPropagation(); gameMenu.hidden = !gameMenu.hidden; };
+addEventListener('pointerdown', (e) => { if (!gameMenu.hidden && !gameMenu.contains(e.target as Node) && e.target !== menuBtn && !menuBtn.contains(e.target as Node)) gameMenu.hidden = true; });
 
 /** Whose turn it is, when two people share the device. */
 const seatEl = document.createElement('span');
@@ -107,6 +133,17 @@ const GLYPH: Record<Bearing, string> = {
 
 const shipById = (id: string) => state.ships.find((s) => s.id === id)!;
 const sizeOf = (s: ShipState) => BASE_SIZE[SHIP_TYPES[s.typeId].size];
+/** A ship's name short enough for a button or a small label: its first word, told apart from squadmates that share it. */
+function shortName(s: ShipState): string {
+  const base = s.name.split(' ')[0];
+  const plain = (n: string) => n.replace(/\s*#\d+$/, '');
+  const clash = state.ships.filter((x) => x.id !== s.id && x.owner === s.owner && x.name.split(' ')[0] === base);
+  if (!clash.length) return base;
+  const num = /#\d+$/.exec(s.name)?.[0];
+  const full = clash.some((x) => plain(x.name) !== plain(s.name)) ? plain(s.name) : base;
+  return num ? `${full} ${num}` : full;
+}
+scene.shortName = shortName;
 const nameHtml = (id: string) => { const s = shipById(id); return `<span class="${s.owner}c">${s.name}</span>`; };
 
 /** Open the squad builder (keeping the last opponent when coming back from deployment). */
@@ -132,7 +169,18 @@ function showStart() {
   hideHandoff();
   hideRecap();
   document.getElementById('setup')?.remove();
-  openStart({ campaign: showCampaign, skirmish: () => newGame() });
+  openStart({ campaign: showCampaign, skirmish: () => newGame(), quick: quickBattle });
+}
+
+/** Straight into a fight: the last squad flown (or a random one) against a fresh AI squad, deployed automatically. */
+function quickBattle() {
+  leaveOnline();
+  hideFinale();
+  hideHandoff();
+  leaveMission();
+  hideRecap();
+  seatEl.hidden = true;
+  startDeployment(quickSetup());
 }
 
 function showCampaign() {
@@ -206,8 +254,14 @@ function renderMissionHud() {
   if (!mission || !m) { scene.setMissionMarks([], []); return; }
   const mark = (o: ObjectiveState) => (o.status === 'done' ? '✓ ' : o.status === 'failed' ? '✗ ' : '');
   const progress = (o: ObjectiveState) => (o.status === 'open' && o.of > 1 && o.kind !== 'survive' ? `<span class="mh-progress">${o.progress}/${o.of}</span>` : '');
-  missionHud.innerHTML = `<div class="mh-title">${campaignMission ? 'Operation' : 'Mission'} ${mission.number}: ${mission.title}</div>
-    <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul>`;
+  // Phones show a chip (tap for the list): the one objective's progress, or how many are done.
+  const open = objectives.filter((o) => o.status === 'open');
+  const lone = objectives.length === 1 && objectives[0].of > 1 && objectives[0].kind !== 'survive' ? objectives[0] : null;
+  const chip = lone ? `${lone.progress}/${lone.of}` : `${objectives.length - open.length}/${objectives.length}`;
+  missionHud.innerHTML = `<button class="mh-chip" aria-label="Objectives">🎯 ${chip}</button>
+    <div class="mh-full"><div class="mh-title">${campaignMission ? 'Operation' : 'Mission'} ${mission.number}: ${mission.title}</div>
+    <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul></div>`;
+  missionHud.querySelector<HTMLButtonElement>('.mh-chip')!.onclick = () => missionHud.classList.toggle('open');
   // Gates: the next one in each open course is lit; the ones flown through fade.
   const done: string[] = [];
   let next: string | undefined;
@@ -230,8 +284,14 @@ function showCoach(title: string, text: string) {
   coachQueue.push({ title, text });
   if (coach.hidden) nextCoach();
 }
+/** Phones: the tip sits at the top of the bottom bar, where it never covers the board; elsewhere it is a card in the corner. */
+function placeCoach() {
+  if (compact) panel.prepend(coach); else document.body.appendChild(coach);
+}
 function nextCoach() {
   const m = coachQueue.shift();
+  // The bar changes height with the tip: frame the board again.
+  if (compact) setTimeout(() => applyCamera(250), 0);
   if (!m) { coach.hidden = true; return; }
   coach.innerHTML = `<b>${m.title}</b><p>${m.text}</p><button class="opt mini" id="coach-ok">${coachQueue.length ? 'Next tip' : 'Got it'}</button>`;
   coach.hidden = false;
@@ -271,6 +331,8 @@ function startDeployment(setup: BattleSetup) {
   scene.setDevices([]);
   roundEl.textContent = 'Setup';
   phaseEl.textContent = 'deployment';
+  // Against the AI the ships are placed for you, unless you asked to place them yourself.
+  if (versus === 'ai' && !setup.place) { setSeat(P1, true); scene.resetView(0); return beginBattle(); }
   startDeploying(P1);
 }
 
@@ -848,7 +910,10 @@ function logLine(e: GameEvent) {
   if (e.type === 'attack' || e.type === 'destroyed' || e.type === 'roundStart' || e.type === 'deviceDetonated' || (e.type === 'damageCard' && e.what === 'dealt')) div.className = 'hl';
   logEl.appendChild(div);
   logEl.scrollTop = logEl.scrollHeight;
-  ticker.innerHTML = text;
+  // Phones: the ticker is for what just happened in the fight, not every dial and token (those are in the log).
+  const news = e.type === 'attack' || e.type === 'destroyed' || e.type === 'obstacleHit' || e.type === 'deviceDetonated'
+    || (e.type === 'damageCard' && e.what === 'dealt') || (e.type === 'moved' && (e.fled || e.partial));
+  if (!compact || news) { ticker.innerHTML = text; delete ticker.dataset.recap; }
 }
 
 async function present() {
@@ -877,7 +942,15 @@ async function animate(e: GameEvent) {
       return;
     case 'roundStart':
       roundEl.textContent = `Round ${e.round}`;
-      if (roundShots.length) showRecap(recapRound, roundShots);
+      if (roundShots.length) {
+        lastRecap = { round: recapRound, lines: roundShots };
+        // Phones: the recap stays folded into the ticker (tap to read it) so it never covers the board.
+        if (compact) {
+          const n = roundShots.filter((l) => l.includes('→')).length;
+          ticker.innerHTML = `Round ${recapRound}: ${n} shot${n === 1 ? '' : 's'} fired <span class="hint">· tap for the recap</span>`;
+          ticker.dataset.recap = '1';
+        } else showRecap(recapRound, roundShots);
+      } else if (compact) { ticker.innerHTML = ''; delete ticker.dataset.recap; }
       roundShots = [];
       recapRound = e.round;
       return;
@@ -1147,10 +1220,10 @@ let lastAngle: AttackAngle = 'gunner';
  * a third of the time, a cinematic angle, often from behind the player's ship as the fire comes in.
  */
 function attackAngle(own: boolean, look: ShotLook): AttackAngle | null {
-  if (!own && Math.random() > 0.35) return null;
+  if (!own) return null; // enemy shots stay on the table view: no camera swing
   const slow = look === 'missile' || look === 'torpedo';
   if (own && Math.random() < (slow ? 0.3 : 0.5)) return (lastAngle = 'gunner');
-  const pool: AttackAngle[] = own ? ['reverse', 'side', 'low', ...(slow ? ['side' as const] : [])] : ['reverse', 'reverse', 'side', 'low'];
+  const pool: AttackAngle[] = ['reverse', 'side', 'low', ...(slow ? ['side' as const] : [])];
   const choices = pool.filter((x) => x !== lastAngle);
   return (lastAngle = choices[Math.floor(Math.random() * choices.length)] ?? 'side');
 }
@@ -1301,9 +1374,12 @@ function showRecap(round: number, lines: string[]) {
   recap.querySelector('.recap-close')!.addEventListener('click', hideRecap);
   recap.hidden = false;
   clearTimeout(recapTimer);
-  recapTimer = window.setTimeout(hideRecap, 9000);
+  // Opened by hand on a phone, it stays until closed (or the board is touched).
+  if (!compact) recapTimer = window.setTimeout(hideRecap, 9000);
 }
 let recapTimer = 0;
+/** The last finished round's recap, for the phone ticker to unfold. */
+let lastRecap: { round: number; lines: string[] } | null = null;
 function hideRecap() { recap.hidden = true; }
 
 function describe(e: GameEvent): string | null {
@@ -1420,6 +1496,7 @@ function render() {
 }
 
 function renderDecision() {
+  document.documentElement.classList.remove('plan-sel');
   scene.clearGhost();
   scene.clearOverlay();
   scene.clearChips();
@@ -1471,7 +1548,10 @@ function renderDecision() {
   }
   scene.setPlanned([]);
   scene.setMarkers([]);
-  if (d.kind === 'action') return renderAction(d.shipId, d.options, d.linked, d.coordinated?.by);
+  if (d.kind === 'action') {
+    if (autoAct(d.shipId, d.options, !!d.coordinated)) return;
+    return renderAction(d.shipId, d.options, d.linked, d.coordinated?.by);
+  }
   if (d.kind === 'attack') return renderAttack(d.shipId, d.targets, d.bonus?.source);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
@@ -1669,6 +1749,7 @@ function specialChips(s: ShipState) {
       onClick: () => pickManeuver(s, i),
     };
   });
+  if (compact) return scene.clearChips(); // phones: they are a row in the bar (planningBar)
   scene.showChips(s.pose, chips, { key: `${s.id}|${specials.join(',')}|${cur}|${hint}`, cls: 'special-row' });
 }
 
@@ -1718,6 +1799,8 @@ function selectShip(id: string | null) {
 
 function refreshBoard() {
   scene.highlight(selected);
+  // Phones: the selected ship's label would sit on its nearest dots; the bar names the ship instead.
+  document.documentElement.classList.toggle('plan-sel', !!selected);
   scene.setPlanned(
     myShips()
       .filter((s) => plan[s.id] !== undefined && s.id !== selected)
@@ -1743,7 +1826,8 @@ function refreshBoard() {
     // ring the dots that hide a special maneuver, in its colour
     ring: g.idx.filter((i) => isSpecial(s, i)).map((i) => DIFF_COLOR[maneuverOf(s, i).difficulty])[0],
     suggested: suggestions()?.[s.id] !== undefined && g.idx.includes(suggestions()![s.id].dial),
-  })));
+    label: compact ? String(maneuverOf(s, g.idx[0]).speed) : undefined,
+  })), compact);
   specialChips(s);
   // Firing arcs: from where the ship will end up once a move is picked, else from where it is now.
   scene.showArcs(candidate ? [] : [s.id]);
@@ -1755,21 +1839,21 @@ function refreshBoard() {
     scene.clearGhost();
     if (cand) cand.innerHTML = isIonized(s)
       ? `<p class="hint">Ionized: only the direction counts. Pick Left, Straight or Right below.</p>`
-      : `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
+      : `<p class="hint">${compact ? `Tap a dot, or drag out from the ship, to steer ${s.name}.` : `Move the pointer toward a dot to steer ${s.name}.`}</p>`;
     return;
   }
   const i = candidate.group[candidate.flip];
   const m = maneuverOf(s, i);
   const alt = candidate.group.length > 1 ? candidate.group[(candidate.flip + 1) % candidate.group.length] : null;
-  const flipHint = alt !== null ? `<div class="hint">F / Flip: ${BEARING_NAME[maneuverOf(s, alt).bearing]}</div>` : '';
+  const flipHint = alt !== null ? `<div class="hint">${compact ? 'Flip' : 'F / Flip'}: ${BEARING_NAME[maneuverOf(s, alt).bearing]}</div>` : '';
   scene.showGhost(sizeOf(s), ghostPoses(s, i), DIFF_COLOR[m.difficulty], `${maneuverName(s, i)}${flipHint}`, s.id);
   if (cand) {
     const already = plan[s.id] === i;
     cand.innerHTML = `<div class="cand-row"><span>${maneuverName(s, i)} <span class="hint">(${m.difficulty})</span></span>
       ${alt !== null ? '<button class="opt mini" id="flip">Flip</button>' : ''}
       <button class="opt mini confirm" id="confirm">${already ? 'Keep' : 'Set move'}</button></div>
-      <p class="hint">${locked ? `Chosen${alt !== null ? ': Flip shows the other move from this spot' : ''}. Look it over, pick another dot to compare, then <b>Set move</b> (Enter).`
-        : 'Click to choose this move, or keep moving the pointer to compare.'}</p>`;
+      <p class="hint">${locked ? `Chosen${alt !== null ? ': Flip shows the other move from this spot' : ''}. Look it over, pick another dot to compare, then <b>Set move</b>${compact ? '' : ' (Enter)'}.`
+        : compact ? 'Lift your finger to choose this move.' : 'Click to choose this move, or keep moving the pointer to compare.'}</p>`;
     document.getElementById('flip')?.addEventListener('click', flip);
     document.getElementById('confirm')!.addEventListener('click', commit);
   }
@@ -1840,9 +1924,13 @@ function useSuggestion(shipId: string) {
   selectShip(next ? next.id : null);
 }
 
+/** Whether this player has set a move before (in this browser): the planning how-to is only for the first time. */
+let planHintSeen = false;
+try { planHintSeen = localStorage.getItem('xw-plan-hint') === '1'; } catch { /* storage unavailable */ }
 function commit() {
   if (!selected || !candidate) return;
   locked = false;
+  if (!planHintSeen) { planHintSeen = true; try { localStorage.setItem('xw-plan-hint', '1'); } catch { /* storage unavailable */ } }
   lastCommit = { shipId: selected, prev: plan[selected] };
   plan[selected] = candidate.group[candidate.flip];
   const next = myShips().find((s) => plan[s.id] === undefined);
@@ -1859,6 +1947,7 @@ function executePlan() {
   candidate = null;
   lastCommit = null;
   hideRecap();
+  if (ticker.dataset.recap) { ticker.innerHTML = ''; delete ticker.dataset.recap; }
   scene.setPlanned([]);
   scene.setMarkers([]);
   updateControls();
@@ -1905,7 +1994,7 @@ canvas.addEventListener('pointerdown', (e) => {
   touches.add(e.pointerId);
   // Touching the board puts away the round recap and the log sheet.
   if (!recap.hidden) hideRecap();
-  if (compact) logEl.classList.remove('open');
+  if (compact) { logEl.classList.remove('open'); missionHud.classList.remove('open'); }
   lastPointer = e.pointerType;
   updateControls();
   if (touches.size > 1) { multi = true; if (pointerDown) pointerDown.moved = true; panning = null; return; }
@@ -2026,6 +2115,7 @@ function updateLayout() {
   root.toggle('landscape', c && !portrait);
   if (c !== compact) {
     compact = c;
+    placeCoach();
     panel.classList.remove('expanded');
     logEl.classList.remove('open');
     if (!c) scene.resetView();
@@ -2053,7 +2143,8 @@ screen.orientation?.addEventListener?.('change', resettle);
 /** Screen area covered by UI, so the camera can frame what is left. */
 function uiInsets() {
   const r = panel.getBoundingClientRect();
-  const top = Math.max(ticker.getBoundingClientRect().bottom, 40) + 6;
+  // Below the top row (and the ticker when it shows), with room for the label floating over the farthest ship.
+  const top = Math.max(ticker.getBoundingClientRect().bottom, 40) + (compact ? 34 : 6);
   return innerHeight >= innerWidth
     ? { top, bottom: innerHeight - r.top + 6, left: 0, right: 0 }
     : { top: 44, bottom: 0, left: 0, right: innerWidth - r.left + 6 };
@@ -2102,6 +2193,65 @@ function applyCamera(ms = 500) {
   else board(0.2);
 }
 
+/** Range band (1-4) between two ships by the gap between their bases, or null beyond range 4. A guide, not the arc-aware rule. */
+function bandBetween(a: ShipState, b: ShipState): number | null {
+  const gap = Math.hypot(a.pose.x - b.pose.x, a.pose.y - b.pose.y) - (sizeOf(a) + sizeOf(b)) / 2;
+  return gap <= 60 ? 1 : gap <= 160 ? 2 : gap <= 260 ? 3 : gap <= 360 ? 4 : null;
+}
+
+/**
+ * Phones: while you plan or pick an action the camera is close in on your ship, so enemies are often off
+ * screen. Each one that is gets an arrow at the screen's edge pointing to it, with its name and range from
+ * the ship you are working with. Tap an arrow for the overview.
+ */
+const edges = document.createElement('div');
+edges.id = 'edges';
+document.body.appendChild(edges);
+const edgeEls = new Map<string, HTMLButtonElement>();
+function updateEdges() {
+  requestAnimationFrame(updateEdges);
+  const d = state?.pending;
+  const focusId = compact && stage === 'battle' && !busy && d && !scene.inAttackView && isHuman(me)
+    ? (d.kind === 'planning' ? selected : d.kind === 'action' && d.playerId === me ? d.shipId : null) : null;
+  const focus = focusId ? state.ships.find((x) => x.id === focusId) : undefined;
+  const live = new Set<string>();
+  if (focus) {
+    const ins = uiInsets();
+    const box = { l: ins.left + 8, r: innerWidth - ins.right - 8, t: Math.max(ins.top - 24, 50), b: innerHeight - ins.bottom - 4 }; // below the top row
+    const placed: { x: number; y: number }[] = [];
+    const from = scene.screenPoint(focus.pose.x, focus.pose.y);
+    for (const e of state.ships) {
+      if (e.owner === focus.owner || e.destroyed) continue;
+      const p = scene.screenPoint(e.pose.x, e.pose.y);
+      if (p.x >= box.l && p.x <= box.r && p.y >= box.t && p.y <= box.b) continue;
+      live.add(e.id);
+      let el = edgeEls.get(e.id);
+      if (!el) {
+        el = document.createElement('button');
+        el.className = 'edge';
+        el.onclick = () => { userOverview = true; applyCamera(); };
+        edges.appendChild(el);
+        edgeEls.set(e.id, el);
+      }
+      const band = bandBetween(focus, e);
+      const html = `<i>➤</i><span>${shortName(e)} <b>${band ? `R${band}` : 'far'}</b></span>`;
+      if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
+      // Sit on the screen edge along the line from the ship being worked on to the enemy.
+      const x = Math.min(box.r - 44, Math.max(box.l + 44, p.x));
+      let y = Math.min(box.b - 14, Math.max(box.t + 14, p.y));
+      // Arrows that would land on top of each other stack inward from the edge.
+      const step = y > (box.t + box.b) / 2 ? -26 : 26;
+      while (placed.some((q) => Math.abs(q.x - x) < 96 && Math.abs(q.y - y) < 24)) y += step;
+      placed.push({ x, y });
+      const deg = (Math.atan2(p.y - from.y, p.x - from.x) * 180) / Math.PI;
+      el.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px) translate(-50%, -50%)`;
+      el.querySelector<HTMLElement>('i')!.style.transform = `rotate(${deg.toFixed(0)}deg)`;
+    }
+  }
+  for (const [id, el] of edgeEls) if (!live.has(id)) { el.remove(); edgeEls.delete(id); }
+}
+requestAnimationFrame(updateEdges);
+
 /** Frame a set of board points (with room for bases and labels) in the uncovered screen area. */
 function framePoints(pts: { x: number; y: number }[], minHalf: number, ms: number) {
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
@@ -2111,19 +2261,23 @@ function framePoints(pts: { x: number; y: number }[], minHalf: number, ms: numbe
     Math.max(minHalf, (x1 - x0) / 2 + pad), Math.max(minHalf, (y1 - y0) / 2 + pad), uiInsets(), 0.35, ms);
 }
 
-interface BarButton { label: string; cls?: string; disabled?: boolean; onClick: () => void }
-function setBar(o: { status: string; ships?: HTMLElement; buttons?: BarButton[] }) {
+/** `icon` and `sub` (a small second line) are for the grid of action buttons. */
+interface BarButton { label: string; cls?: string; disabled?: boolean; icon?: string; sub?: string; onClick: () => void }
+/** `grid`: lay the buttons out as a grid of icon tiles (the phone's action and weapon menus) instead of one row. */
+function setBar(o: { status: string; ships?: HTMLElement; extra?: HTMLElement; buttons?: BarButton[]; grid?: boolean; cols?: number }) {
   bar.innerHTML = `<div class="bar-top"><div class="bar-status">${o.status}</div>
     <button class="bar-more" aria-label="Show details">Details</button></div>`;
   bar.querySelector('.bar-more')!.addEventListener('click', () => panel.classList.toggle('expanded'));
   if (o.ships) bar.appendChild(o.ships);
+  if (o.extra) bar.appendChild(o.extra);
   if (o.buttons?.length) {
     const row = document.createElement('div');
-    row.className = 'bar-buttons';
+    row.className = 'bar-buttons' + (o.grid ? ' grid' : '');
+    if (o.grid) row.style.setProperty('--cols', String(o.cols ?? Math.min(4, o.buttons.length)));
     for (const b of o.buttons) {
       const el = document.createElement('button');
       el.className = b.cls ?? '';
-      el.innerHTML = b.label;
+      el.innerHTML = o.grid ? `${b.icon ?? ''}<span>${b.label}</span>${b.sub ? `<small>${b.sub}</small>` : ''}` : b.label;
       el.disabled = !!b.disabled;
       el.onclick = b.onClick;
       row.appendChild(el);
@@ -2153,7 +2307,7 @@ function planningBar() {
   for (const s of mine) {
     const b = document.createElement('button');
     b.className = 'sc' + (s.id === selected ? ' active' : '') + (plan[s.id] !== undefined ? ' done' : '');
-    b.innerHTML = `<span class="sc-name">${s.name.split(' ')[0]} <i>${s.initiative}</i></span>
+    b.innerHTML = `<span class="sc-name">${shortName(s)} <i>${s.initiative}</i></span>
       <span class="sc-move">${plan[s.id] !== undefined ? shortMove(s, plan[s.id]) : '<span class="hint">not set</span>'}</span>`;
     // Tapping a ship's button always brings the camera to it, even after an Overview or looking around.
     b.onclick = () => { userOverview = false; camFree = false; if (s.id === selected) applyCamera(); else selectShip(s.id); };
@@ -2167,11 +2321,13 @@ function planningBar() {
     const s = shipById(selected);
     if (candidate) {
       const i = candidate.group[candidate.flip];
-      status = `<b>${s.name.split(' ')[0]}</b>: ${maneuverName(s, i)}${plan[s.id] === i ? ' <span class="hint">(set)</span>' : ' <span class="hint">· not set yet</span>'}`;
+      status = `<b>${shortName(s)}</b>: ${maneuverName(s, i)}${plan[s.id] === i ? ' <span class="hint">(set)</span>' : ' <span class="hint">· not set yet</span>'}`;
       if (candidate.group.length > 1) buttons.push({ label: 'Flip', onClick: flip });
       if (plan[s.id] !== i) buttons.push({ label: 'Set move', cls: 'primary', onClick: commit });
     } else {
-      status = `<b>${s.name.split(' ')[0]}</b>: drag from the ship or tap a dot to choose a move · drag elsewhere to look around`;
+      // The how-to shows until the player has set a move once; after that the bar just names the ship.
+      status = planHintSeen || !coach.hidden ? `<b>${s.name}</b> <span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>${s.stress ? ' <span class="red">⚠ stressed</span>' : ''} <span class="hint">· choose a move</span>`
+        : `<b>${shortName(s)}</b>: drag from the ship or tap a dot to choose a move · drag elsewhere to look around`;
     }
     // Learning aid on phones: the suggestion as a one-tap button (the gold-ringed dot shows where it goes).
     const sug = suggestions()?.[s.id];
@@ -2179,7 +2335,27 @@ function planningBar() {
   }
   if (lastCommit) buttons.unshift({ label: 'Undo', onClick: undoCommit });
   buttons.push({ label: 'Execute', cls: 'go-btn', disabled: mine.some((s) => plan[s.id] === undefined), onClick: executePlan });
-  setBar({ status, ships, buttons });
+  // Special maneuvers (K-turn, loops, stop...) share a dot with a plain move, so they get their own buttons here.
+  let extra: HTMLElement | undefined;
+  if (selected && !isIonized(shipById(selected))) {
+    const s = shipById(selected);
+    const specials = legalDial(state, s).filter((i) => isSpecial(s, i));
+    const cur = candidate ? candidate.group[candidate.flip] : -1;
+    if (specials.length) {
+      const row = document.createElement('div');
+      row.className = 'bar-specials';
+      for (const i of specials) {
+        const m = maneuverOf(s, i);
+        const b = document.createElement('button');
+        b.className = 'chip special' + (i === cur ? ' on' : '');
+        b.innerHTML = `${i === suggestions()?.[s.id]?.dial ? '💡 ' : ''}<span class="${m.difficulty}">${m.speed} ${GLYPH[m.bearing]}</span> ${BEARING_NAME[m.bearing]}`;
+        b.onclick = () => pickManeuver(s, i);
+        row.appendChild(b);
+      }
+      extra = row;
+    }
+  }
+  setBar({ status, ships, extra, buttons });
 }
 
 type Drift = 'bankLeft' | 'straight' | 'bankRight';
@@ -2210,9 +2386,13 @@ function renderPlanning() {
   // An ionized ship only uses its dial's direction (it drifts a blue 1-bank or 1-straight that way): it starts
   // on straight, and the drift buttons on its card change it.
   for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = driftDial(s, 'straight') ?? legalDial(state, s)[0];
-  detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
+  detail.innerHTML = `<h2>Planning</h2><p class="hint">${compact
+    ? `Tap a ship, then tap one of its dots (the number is the speed) or drag out from the ship: the ghost shows where that move ends.
+    It stays shown so you can look it over and compare; <b>Set move</b> sets it. Drag anywhere else to look around; arrows at the screen's edge point to enemies out of view.
+    ${rulesOf(state).specialManeuvers ? 'Special moves (K-turn, loops, rolls) are buttons in the bar. A ringed dot hides one; Flip switches to it.' : ''}`
+    : `Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click a dot to choose that move; it stays shown so you can look it over and compare. <b>Set move</b> (Enter) sets it.
-    ${rulesOf(state).specialManeuvers ? 'Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.' : ''}
+    ${rulesOf(state).specialManeuvers ? 'Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.' : ''}`}
     ${rulesOf(state).redManeuvers ? 'Blue clears stress, red adds it.' : 'Blue maneuvers are easy, white ones normal.'}</p>${obstacleLegend()}`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
@@ -2302,6 +2482,45 @@ const GREEN = 0x7cf0c5, RED = 0xff5a5a;
 /** How far (mm) the pointer may be from a barrel roll / boost spot and still snap. */
 const ACTION_SNAP = 45;
 
+const choiceKey = (o: ActionChoice) => JSON.stringify(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1)));
+/** The action the AI would take with this ship now (from what this player can see): the suggestion shown, and the automatic pick. */
+function recommendedAction(options: ActionChoice[]): ActionChoice | null {
+  try {
+    const cmd = aiDecide({ ...viewFor(state, me), rng: state.rng }, me);
+    if (!cmd || cmd.type !== 'action') return null;
+    const k = choiceKey(cmd.choice);
+    return options.find((o) => choiceKey(o) === k) ?? (cmd.choice.type === 'none' ? cmd.choice : null);
+  } catch { return null; }
+}
+/**
+ * Nobody near: no enemy could shoot this ship or be shot by it this round, even after the enemies still to
+ * move have moved. Then the action is not a real decision.
+ */
+function quietFor(s: ShipState, coordinated: boolean): boolean {
+  return state.ships.every((e) => {
+    if (e.owner === s.owner || e.destroyed) return true;
+    const gap = Math.hypot(s.pose.x - e.pose.x, s.pose.y - e.pose.y) - (sizeOf(s) + sizeOf(e)) / 2;
+    // Lower initiative has already flown; anyone else may still close up to a fast straight.
+    const moved = state.phase === 'activation' && !coordinated && e.initiative < s.initiative;
+    return gap > 360 + 40 + (moved ? 0 : 150);
+  });
+}
+/**
+ * Take the action for the player when it isn't worth asking: always with "Auto actions" on; otherwise when
+ * no enemy is near (never in flight school, where the actions are the lesson, and never a move the player
+ * didn't ask for). Returns whether it did.
+ */
+function autoAct(shipId: string, options: ActionChoice[], coordinated: boolean): boolean {
+  const training = !!mission && !campaignMission;
+  const quiet = !training && quietFor(shipById(shipId), coordinated);
+  if (!autoActions && !quiet) return false;
+  const rec = recommendedAction(options);
+  if (!rec) return false;
+  if (!autoActions && (rec.type === 'barrelRoll' || rec.type === 'boost')) return false;
+  void send({ type: 'action', playerId: me, choice: rec });
+  return true;
+}
+
 /** `linked`: this is the linked action offered after another one (only its options, maybe red). */
 /** What each action does, for the action ring's help popup (hover with a mouse, hold with a finger). */
 const ACTION_HELP: Record<string, string> = {
@@ -2339,6 +2558,66 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
   let only: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost' | 'rotateArc' | null = null;
   const choose = (c: ActionChoice) => send({ type: 'action', playerId: me, choice: c });
   const back = () => { only = null; cand = null; show(); };
+  /** The AI's pick, shown as the suggestion. */
+  const rec = recommendedAction(options);
+  const isRec = (o: ActionChoice) => !!rec && choiceKey(o) === choiceKey(rec);
+  const isRed = (t: ActionType) => !!actionBar(s).find((a) => a.type === t)?.red || !!linked?.red;
+
+  /**
+   * Phones: every action is a tile in the bar (no ring: it runs off small screens and sits out of thumb reach).
+   * Instant ones act at once; Lock, Jam, Coordinate, Roll, Boost and Rotate swap the bar for their choices.
+   * Roll and Boost show the move on the board on the first tap and go on the second.
+   */
+  const barTiles = (): BarButton[] => {
+    const cls = (o: ActionChoice, t: ActionType = o.type as ActionType) => [isRec(o) ? 'rec' : '', isRed(t) ? 'red' : ''].join(' ');
+    const twoStep = (o: ActionChoice, label: string): BarButton =>
+      ({ label, sub: cand === o ? 'tap to confirm' : undefined, cls: cand === o ? 'primary' : cls(o), onClick: () => { if (cand === o) choose(o); else { cand = o; show(); } } });
+    const backTile: BarButton = { icon: ICONS.back, label: 'Back', cls: 'quiet', onClick: () => { if (only === 'rotateArc') void scene.setTurret(s.id, s.turretArc, 0, true); back(); } };
+    if (only === 'lock' || only === 'jam' || only === 'coordinate') {
+      return [...shownLocks().map((o): BarButton => {
+        const t = shipById(o.targetId), band = bandBetween(s, t);
+        return { icon: ICONS[o.type], label: shortName(t), sub: band ? `range ${band}` : 'far', cls: cls(o), onClick: () => choose(o) };
+      }), backTile];
+    }
+    if (only === 'barrelRoll') {
+      const rolls = spots.filter((o): o is Extract<Spot, { type: 'barrelRoll' }> => o.type === 'barrelRoll')
+        .sort((a, b) => (a.dir === b.dir ? (b.shift ?? 0) - (a.shift ?? 0) : a.dir === 'left' ? -1 : 1));
+      return [...rolls.map((o) => {
+        const where = (o.shift ?? 0) > 0 ? 'Fwd' : (o.shift ?? 0) < 0 ? 'Rear' : 'Mid';
+        return twoStep(o, o.dir === 'left' ? `◀ ${where}` : `${where} ▶`);
+      }), backTile];
+    }
+    if (only === 'boost') {
+      const order = ['bankLeft', 'straight', 'bankRight'];
+      const boosts = spots.filter((o): o is Extract<Spot, { type: 'boost' }> => o.type === 'boost').sort((a, b) => order.indexOf(a.bearing) - order.indexOf(b.bearing));
+      return [...boosts.map((o) => twoStep(o, o.bearing === 'bankLeft' ? '↖ Left' : o.bearing === 'straight' ? '↑ Straight' : 'Right ↗')), backTile];
+    }
+    if (only === 'rotateArc') {
+      return [...options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc')
+        .map((o): BarButton => ({ icon: ICONS.turret, label: o.to[0].toUpperCase() + o.to.slice(1), cls: cls(o), onClick: () => choose(o) })), backTile];
+    }
+    const tiles: BarButton[] = [];
+    const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost' | 'rotateArc', icon: string, label: string) =>
+      tiles.push({ icon, label, cls: [rec?.type === t ? 'rec' : '', isRed(t) ? 'red' : ''].join(' '), onClick: () => { only = t; cand = null; show(); } });
+    for (const o of options) {
+      if (o.type === 'focus') tiles.push({ icon: ICONS.focus, label: 'Focus', cls: cls(o), onClick: () => choose(o) });
+      if (o.type === 'evade') tiles.push({ icon: ICONS.evade, label: 'Evade', cls: cls(o), onClick: () => choose(o) });
+      if (o.type === 'calculate') tiles.push({ icon: ICONS.calculate, label: 'Calc', cls: cls(o), onClick: () => choose(o) });
+      if (o.type === 'reinforce') tiles.push({ icon: ICONS.reinforce, label: 'Reinforce', sub: o.side, cls: cls(o), onClick: () => choose(o) });
+      if (o.type === 'reload') tiles.push({ icon: ICONS.reload, label: 'Reload', sub: weaponShort(o.upgrade), cls: cls(o), onClick: () => choose(o) });
+    }
+    if (locks.length) narrow('lock', ICONS.lock, 'Lock');
+    if (jams.length) narrow('jam', ICONS.jam, 'Jam');
+    if (coords.length) narrow('coordinate', ICONS.coordinate, 'Coord.');
+    if (spots.some((o) => o.type === 'barrelRoll')) narrow('barrelRoll', ICONS.barrelRoll, 'Roll');
+    if (spots.some((o) => o.type === 'boost')) narrow('boost', ICONS.boost, 'Boost');
+    if (options.some((o) => o.type === 'rotateArc')) narrow('rotateArc', ICONS.turret, 'Rotate');
+    for (const o of options) if (o.type === 'repair') tiles.push({ icon: ICONS.repair, label: 'Repair', sub: DAMAGE_CARDS[o.card].tag, cls: `${cls(o)} repair`, onClick: () => choose(o) });
+    // The suggested action comes first; Skip is always last.
+    tiles.sort((a, b) => Number(!!b.cls?.includes('rec')) - Number(!!a.cls?.includes('rec')));
+    tiles.push({ icon: ICONS.skip, label: 'Skip', cls: `quiet${rec?.type === 'none' ? ' rec' : ''}`, onClick: () => choose({ type: 'none' }) });
+    return tiles;
+  };
   /** Ships the picked targeted action (Lock, Jam: enemies; Coordinate: friends) can reach: ringed on the board. */
   const shownLocks = (): ShipTargeted[] => (only === 'lock' ? locks : only === 'jam' ? jams : only === 'coordinate' ? coords : []);
   const shownSpots = () => spots.filter((o) => only === o.type);
@@ -2409,14 +2688,15 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     items.push({ icon: ICONS.skip, label: 'Skip', title: linked ? 'Skip the linked action' : 'Skip the action', help: linked ? 'Don\'t take the linked action.' : ACTION_HELP.none, cls: 'quiet', onClick: () => choose({ type: 'none' }) });
     scene.showRadial(s.pose, items, {
       key: linked ? `linked|${linked.from}|${shipId}` : by ? `coord|${shipId}` : 'menu',
-      caption: linked ? `${linkNote}: take it or skip` : by ? `Coordinated by ${by}: pick an action` : 'Pick an action',
+      caption: (linked ? `${linkNote}: take it or skip` : by ? `Coordinated by ${by}: pick an action` : 'Pick an action')
+        + (rec ? ` · suggested: ${rec.type === 'none' ? 'Skip' : actionText(rec)}` : ''),
     });
   };
 
   const show = () => {
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(shownLocks().map((l) => [l.targetId, ACTION_COLOR[l.type]])) });
     scene.setMarkers(shownSpots().map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
-    radial();
+    if (compact) scene.clearChips(); else radial();
     const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
     scene.showArcs(repositioning ? [] : [s.id], only === 'rotateArc' ? 'turret' : 'all');
     showOddsFrom(s, cand && (cand.type === 'barrelRoll' || cand.type === 'boost') ? cand.to : s.pose, true);
@@ -2426,7 +2706,13 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     if (cand?.type === 'lock' || cand?.type === 'jam' || cand?.type === 'coordinate') {
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR[cand.type], actionText(cand));
     } else scene.clearOverlay();
-    const who = `<b>${s.name.split(' ')[0]}</b>`;
+    const who = `<b>${shortName(s)}</b>`;
+    if (compact) {
+      const what = only === 'barrelRoll' ? 'roll where?' : only === 'boost' ? 'boost where?' : only === 'lock' ? 'lock which enemy?' : only === 'jam' ? 'jam which enemy?'
+        : only === 'coordinate' ? 'coordinate which friend?' : only === 'rotateArc' ? `turret faces ${s.turretArc}: turn it where?` : `${linkNote ? `${linkNote} · ` : ''}pick an action`;
+      setBar({ status: cand && only ? `${who}: ${actionText(cand)} <span class="hint">· tap again to confirm</span>` : `${who}: ${what}`, buttons: barTiles(), grid: true, cols: only === 'barrelRoll' ? 3 : undefined });
+      return;
+    }
     const boardHint = only === 'barrelRoll' ? 'tap a teal dot to roll' : only === 'boost' ? 'tap a green dot to boost'
       : only === 'lock' ? 'tap a ringed enemy to lock it' : only === 'jam' ? 'tap a ringed enemy to jam it'
       : only === 'coordinate' ? 'tap a ringed friend to coordinate it' : 'pick from the ring around your ship';
@@ -2475,6 +2761,13 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     ? `<h2>Linked action: ${s.name}</h2><p class="hint">${linkNote}. Take it from the ring, or skip.</p>${critList(s)}`
     : by ? `<h2>Coordinated: ${s.name}</h2><p class="hint">${by} lets ${s.name} take an action now, outside its own turn. ${ring.join('; ')}.</p>${critList(s)}`
     : `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
+  if (compact) {
+    // Phones: the bar has the buttons; this sheet says what each action does.
+    const kinds = [...new Set(options.map((o) => o.type))].filter((t): t is ActionType => t !== 'none' && t !== 'repair' && !!ACTION_HELP[t]);
+    detail.innerHTML = `<h2>${linked ? 'Linked action' : by ? 'Coordinated' : 'Action'}: ${s.name}</h2>
+      <p class="hint">${linkNote ? `${linkNote}. ` : ''}Tap an action in the bar${rec ? '; the outlined one is the suggestion' : ''}. Red ones cost 1 stress.</p>${critList(s)}
+      ${kinds.map((t) => `<p class="hint"><b>${actionTypeName(t)}</b>: ${ACTION_HELP[t].replace(/ Then pick a (teal|green) spot\./, '')}</p>`).join('')}`;
+  }
   for (const o of options) {
     const b = document.createElement('button');
     b.className = 'opt';
@@ -2519,7 +2812,7 @@ function abilityLine(s: ShipState): string {
 function upgradeLabel(u: { id: string; charges: number }, ship?: ShipState) {
   const def = UPGRADES[u.id];
   if (def.weapon?.arc === 'turret') return `${def.name}${ship ? ` (facing ${ship.turretArc})` : ''}`;
-  if (def.weapon || def.device) return `${def.name} ${u.charges}/${def.charges}`;
+  if ((def.weapon || def.device) && def.charges !== undefined) return `${def.name} ${u.charges}/${def.charges}`;
   return `${def.name}${def.charges && !u.charges ? ' (spent)' : ''}`;
 }
 
@@ -2580,15 +2873,16 @@ function renderSystem(shipId: string, options: DropChoice[]) {
     onHover: (on) => preview(on ? o : null),
   }));
   items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', help: 'Keep your bombs and mines for later.', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
-  scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
+  if (compact) scene.clearChips();
+  else scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
   mode = { click() {}, key(e) { if (e.key === 'Escape') choose({ type: 'none' }); } };
   setBar({
-    status: `<b>${s.name.split(' ')[0]}</b>: drop a bomb or mine?`,
+    status: `<b>${shortName(s)}</b>: drop a bomb or mine behind you?`,
     buttons: [...drops.map((o) => ({ label: `Drop ${short(o.upgrade)}`, onClick: () => choose(o) })), { label: 'Skip', onClick: () => choose({ type: 'none' }) }],
   });
   detail.innerHTML = `<h2>System: ${s.name}</h2><p class="hint">Before anyone moves, you may drop one device one straight template behind
     your ship. Bombs go off at the end of the Activation phase and hit every ship at range 0-1, yours too; mines stay until a ship
-    flies through or onto one. Hover a button in the ring to preview.</p>`;
+    flies through or onto one.${compact ? '' : ' Hover a button in the ring to preview.'}</p>`;
   for (const o of drops) {
     const b = document.createElement('button');
     b.className = 'opt';
@@ -2612,6 +2906,8 @@ const WEAPON_SHORT: Record<string, string> = {
   primary: 'Lasers', 'proton-torpedoes': 'Proton', 'ion-torpedoes': 'Ion torp', 'concussion-missiles': 'Missiles', 'rocket-pods': 'Rockets',
   'dorsal-turret': 'Turret', 'ion-turret': 'Ion cann.',
 };
+/** Below this chance to hit, a shot is a long shot: holding fire is offered as the main choice. */
+const WEAK_SHOT = 0.2;
 const weaponShort = (w: string) => WEAPON_SHORT[w] ?? UPGRADES[w].name.split(' ')[0].slice(0, 8);
 
 // ---------------------------------------------------------------------------
@@ -2621,15 +2917,17 @@ const gunsight = document.createElement('div');
 gunsight.id = 'gunsight';
 gunsight.hidden = true;
 document.body.appendChild(gunsight);
-function setGunsight(html: string | null, on: Record<string, () => void> = {}) {
-  if (html === null) { gunsight.hidden = true; gunsight.innerHTML = ''; return; }
-  // Sit above whatever UI covers the bottom (the phone panel), centred in the space left over.
-  // On desktop, keep clear of the combat log in the bottom-left corner.
+/** Sit above whatever UI covers the bottom (the phone bar), centred in the space left over; on desktop, clear of the combat log. */
+function placeGunsight() {
   const ins = uiInsets();
   const log = logEl.getBoundingClientRect();
-  gunsight.style.bottom = `${(compact ? ins.bottom : 0) + 16}px`;
+  gunsight.style.bottom = `${(compact ? ins.bottom : 0) + (compact ? 6 : 16)}px`;
   gunsight.style.left = `${compact ? ins.left : log.width ? log.right + 12 : 0}px`;
   gunsight.style.right = `${compact ? ins.right : 0}px`;
+}
+function setGunsight(html: string | null, on: Record<string, () => void> = {}) {
+  if (html === null) { gunsight.hidden = true; gunsight.innerHTML = ''; return; }
+  placeGunsight();
   gunsight.innerHTML = html;
   gunsight.hidden = false;
   gunsight.querySelectorAll<HTMLElement>('[data-act]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); on[b.dataset.act!]?.(); }));
@@ -2700,6 +2998,7 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
     const list = ordered();
     const n = list.length, i = list.findIndex((t) => t.targetId === c.targetId);
     const isBest = n > 1 && best(list)?.targetId === c.targetId;
+    const weak = o.hit < WEAK_SHOT;
     const wname = weapon === 'primary' ? (turretPrimary ? 'Turret lasers' : 'Lasers') : UPGRADES[weapon!].name;
     // The same enemy through the ship's other weapons, so the best option is one click away.
     const alts = targets.filter((t) => t.targetId === c.targetId && (t.weapon ?? 'primary') !== weapon);
@@ -2711,7 +3010,7 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
       `<button class="gs-nav" data-act="${d}" aria-label="${label}"${n < 2 ? ' disabled' : ''}>${sym}</button>`;
     return `<div class="gs-row">${nav('prev', 'Previous target', '&#8249;')}
       <div class="gs-main">
-        <div class="gs-name"><span class="p2c">${e.name}</span>${isBest ? '<span class="gs-best">Best shot</span>' : ''}<span class="gs-count">${i + 1} / ${n}</span></div>
+        <div class="gs-name"><span class="p2c">${e.name}</span>${weak ? '<span class="gs-best weak">Long shot</span>' : isBest ? '<span class="gs-best">Best shot</span>' : ''}<span class="gs-count">${i + 1} / ${n}</span></div>
         <div class="gs-odds"><span class="gs-pct ${cls}">${pct(o.hit)}</span><span>hit chance</span></div>
         <div class="gs-stats">${o.expected.toFixed(1)} dmg${o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : ''}${o.ion >= 0.05 ? ` · <span class="ion">${o.ion.toFixed(1)} ion</span>` : ''}</div>
         <div class="gs-meta">${wname} · range ${c.range} · ${shots(attackDiceFor(s, c, e))}${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
@@ -2719,7 +3018,8 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
       </div>${nav('next', 'Next target', '&#8250;')}</div>
       ${altHtml ? `<div class="gs-alts"><span>Also on this ship:</span>${altHtml}</div>` : ''}
       <div class="gs-actions"><button class="opt mini" data-act="back">Back <kbd>Esc</kbd></button>
-        <button class="go gs-fire" data-act="fire">Fire ${isPrimary(c) ? '' : weaponShort(c.weapon!)} <kbd>Enter</kbd></button></div>`;
+        <button class="opt mini" data-act="hold">Hold fire</button>
+        <button class="go gs-fire${weak ? ' weak' : ''}" data-act="fire">Fire ${isPrimary(c) ? '' : weaponShort(c.weapon!)} <kbd>Enter</kbd></button></div>`;
   };
 
   const show = () => {
@@ -2735,13 +3035,13 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
       scene.clearChips();
       if (aimed !== c.targetId) { aimed = c.targetId; scene.attackView(s.id, c.targetId, 450); }
       setGunsight(sight(c), {
-        prev: () => cycle(-1), next: () => cycle(1), back, fire: () => fire(c),
+        prev: () => cycle(-1), next: () => cycle(1), back, fire: () => fire(c), hold: () => fire(null),
         ...Object.fromEntries(weaponIds.map((w) => [`w:${w}`, () => pickWeapon(w)])),
       });
     } else {
       setGunsight(null);
       if (aimed) { aimed = null; scene.restoreView(); }
-      const items: RadialItem[] = weaponIds.map((w) => {
+      const items: RadialItem[] = compact ? [] : weaponIds.map((w) => {
         const u = s.upgrades.find((x) => x.id === w);
         const ok = targetsFor(w).length > 0;
         return {
@@ -2753,12 +3053,35 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
         };
       });
       items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', help: 'Don\'t attack this round. Your tokens stay for defending.', cls: 'danger', onClick: () => fire(null) });
-      scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
+      if (compact) scene.clearChips(); // phones: the weapons are tiles in the bar
+      else scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
+    }
+    if (compact) {
+      const pct = (p: number) => `${Math.round(p * 100)}%`;
+      if (weapon && c) {
+        // Aiming: one row. A long shot makes Hold the obvious button; Weapons only shows when there is a choice.
+        const weak = attackOdds(s, shipById(c.targetId), c, state).hit < WEAK_SHOT;
+        const row: BarButton[] = [{ label: 'Hold fire', cls: weak ? 'primary' : 'danger', onClick: () => fire(null) }];
+        if (weaponIds.filter((w) => targetsFor(w).length).length > 1) row.push({ label: 'Weapons', onClick: back });
+        row.push({ label: isPrimary(c) ? 'Fire' : `Fire ${weaponShort(c.weapon!)}`, cls: weak ? '' : 'fire', onClick: () => fire(c) });
+        setBar({ status: `<b>${shortName(s)}</b> → <span class="p2c">${shortName(shipById(c.targetId))}</span>${weak ? ' <span class="hint">· long shot: holding keeps your tokens</span>' : ''}`, buttons: row });
+        placeGunsight(); // the bar just changed height
+      } else {
+        const tiles: BarButton[] = weaponIds.map((w) => {
+          const b = best(targetsFor(w));
+          const u = s.upgrades.find((x) => x.id === w);
+          const left = u && UPGRADES[w].charges !== undefined ? ` ×${u.charges}` : '';
+          return { icon: weaponIcon(w, turretPrimary), label: `${weaponShort(w)}${left}`, sub: b ? `${pct(attackOdds(s, shipById(b.targetId), b, state).hit)} hit` : 'no shot', disabled: !b, onClick: () => pickWeapon(w) };
+        });
+        tiles.push({ icon: ICONS.holdFire, label: 'Hold', cls: 'danger', onClick: () => fire(null) });
+        setBar({ status: `<b>${shortName(s)}</b>: pick a weapon`, buttons: tiles, grid: true });
+      }
+      return;
     }
     const btns: BarButton[] = weapon ? [{ label: 'Back', onClick: back }] : [];
     if (c) btns.push({ label: isPrimary(c) ? 'Fire' : `Fire ${weaponName(c)}`, cls: 'primary', onClick: () => fire(c) });
     if (!weapon) btns.push({ label: 'Hold fire', cls: 'danger', onClick: () => fire(null) });
-    setBar({ status: c ? targetText(c, s) : `<b>${s.name.split(' ')[0]}</b>: pick a weapon from the ring`, buttons: btns });
+    setBar({ status: c ? targetText(c, s) : `<b>${shortName(s)}</b>: pick a weapon from the ring`, buttons: btns });
   };
   const pick = (p: P): string | null => {
     const ids = current().map((t) => t.targetId);
@@ -2798,9 +3121,10 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
   const bonusNote = bonusBy
     ? `<p class="hint"><b>${effectSource(bonusBy)?.name ?? 'Bonus attack'}:</b> that attack missed, so you may fire again with a different weapon through your turret arc. Or hold fire.</p>`
     : '';
-  detail.innerHTML = `<h2>${bonusBy ? 'Bonus attack' : 'Attack'}: ${s.name}</h2>${bonusNote}<p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
-    The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
-    the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) fires one shot fewer, range 2 is the sweet spot (an extra shot), range 3 is plain, and range 4 gives the defender an extra dodge;
+  detail.innerHTML = `<h2>${bonusBy ? 'Bonus attack' : 'Attack'}: ${s.name}</h2>${bonusNote}<p class="hint">${compact
+    ? 'The camera drops in behind your ship, aimed at its best shot. The arrows beside the odds (or a tap on another ringed enemy) look at the other enemies in range; Fire shoots, and a tap on the enemy in your sights fires too. Weapons shows your other weapons.'
+    : `The camera drops in behind your ship, aimed at its best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
+    the odds, then Fire (Enter). Esc goes back to the table and the weapon ring (or press 1-${weaponIds.length}).`} Primary weapons: range 1 (very close) fires one shot fewer, range 2 is the sweet spot (an extra shot), range 3 is plain, and range 4 gives the defender an extra dodge;
     at range 0 (touching) you cannot spend tokens or re-fire missed shots, and nothing can take dodges from the defender;
     obstruction gives the defender an extra dodge. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;
   for (const t of targets) {
@@ -2821,6 +3145,9 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
   hold.textContent = 'Hold fire';
   hold.onclick = () => fire(null);
   detail.appendChild(hold);
+  // No weapon menu first: open in the sights on the best shot this ship has (Back / Weapons shows the rest).
+  const first = best(targets);
+  if (first) { weapon = first.weapon ?? 'primary'; candId = first.targetId; }
   show();
 }
 

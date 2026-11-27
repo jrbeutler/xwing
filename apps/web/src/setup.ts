@@ -15,7 +15,11 @@ export type Versus = 'ai' | 'human' | 'online';
  * `hints`: whether each human player sees the AI's suggested maneuver while planning (a learning aid). `you`
  * is player 1; `them` is player 2 in a two-player game (ignored against the AI).
  */
-export interface BattleSetup { budget: number; versus: Versus; player: Squad; opponent: Squad; hints: Record<Side, boolean> }
+export interface BattleSetup {
+  budget: number; versus: Versus; player: Squad; opponent: Squad; hints: Record<Side, boolean>;
+  /** Against the AI: place the ships yourself before the battle (otherwise they deploy automatically). */
+  place?: boolean;
+}
 
 const BUDGETS = [50, 75, 100, 150];
 const SLOT_LABEL: Record<SlotType, string> = {
@@ -87,6 +91,17 @@ function actionLine(s: SquadShip) {
 }
 
 type Side = 'you' | 'them';
+
+/** A battle with no setup screens: the squad last flown (or a random one) against a fresh AI squad. */
+export function quickSetup(): BattleSetup {
+  const last = load<{ budget?: number; squad?: Squad }>(LAST_KEY, {});
+  const budget = BUDGETS.includes(last.budget ?? 0) ? last.budget! : DEFAULT_BUDGET;
+  const seed = () => (Math.random() * 1e9) | 0;
+  const mine = clean(last.squad ?? { ships: [] });
+  const player = mine.ships.length && !validateSquad(mine, budget).length ? mine : buildAiSquad(seed(), budget);
+  const hints = { you: false, them: false, ...load<Partial<Record<Side, boolean>>>(HINTS_KEY, {}) };
+  return { budget, versus: 'ai', player, opponent: buildAiSquad(seed(), budget, uniquesIn(player)), hints: { you: hints.you, them: false } };
+}
 
 /** `keep`: reopen with this setup (e.g. back from deployment) instead of the last saved squad and a new opponent. */
 /** `onMenu`: back to the start menu (shown as a Menu button when given). */
@@ -186,8 +201,9 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
           </section>`}
         </div>
         <footer class="setup-foot">
-          <span class="hint">${problems.length ? esc(problems[0]) : two() ? 'Next: each player places their ships.' : versus === 'online' ? 'Next: host a game or join one.' : 'Next: place your ships in your setup area.'}</span>
-          <button class="go" id="su-deploy" ${problems.length ? 'disabled' : ''}>${versus === 'online' ? 'Continue online →' : 'Deploy →'}</button>
+          <span class="hint">${problems.length ? esc(problems[0]) : two() ? 'Next: each player places their ships.' : versus === 'online' ? 'Next: host a game or join one.' : 'Your ships deploy along your edge.'}</span>
+          ${versus === 'ai' ? `<button class="opt mini" id="su-place" ${problems.length ? 'disabled' : ''}>Place ships</button>` : ''}
+          <button class="go" id="su-deploy" ${problems.length ? 'disabled' : ''}>${versus === 'online' ? 'Continue online →' : versus === 'ai' ? 'Start battle →' : 'Deploy →'}</button>
         </footer>
       </div>`;
     wire();
@@ -227,18 +243,22 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
         <i>${SLOT_LABEL[UPGRADES[u].slot]}</i> ${esc(UPGRADES[u].name)} <em>${upgradeCost(u, s)}</em>
         <button data-unfit="${side}:${i}:${ui}" aria-label="Remove ${esc(UPGRADES[u].name)}">✕</button></span>`] as const);
     const opts = upgradeOptions(s);
-    const empty = freeSlots(s).map((slot) => [slot, emptySlot(slot)] as const);
     const of = (xs: readonly (readonly [SlotType, string])[], talent: boolean) => xs.filter(([k]) => (k === 'talent') === talent).map(([, h]) => h);
-    const pilotRow = [...sig, ...lost, ...of(filled, true), ...of(empty, true)];
-    const shipRow = [...of(filled, false), ...of(empty, false)];
-    function emptySlot(slot: SlotType) {
-      if (!OPEN_SLOTS.has(slot)) return `<span class="slot soon" title="Power-ups for this slot are coming in a later update"><i>${SLOT_LABEL[slot]}</i> soon</span>`;
+    // Every free slot is offered from one menu, grouped by slot, instead of a row per slot.
+    const free = freeSlots(s);
+    const kinds = [...new Set(free)].filter((slot) => OPEN_SLOTS.has(slot));
+    const slotName = (slot: SlotType) => (slot === 'talent' ? `${CLASS_LABEL[p.specialty]} talent` : SLOT_LABEL[slot]);
+    const groups = kinds.map((slot) => {
+      const n = free.filter((x) => x === slot).length;
       const fit = opts.filter((u) => UPGRADES[u].slot === slot);
-      return `<select class="slot pick" data-fit="${side}:${i}" aria-label="Add a ${SLOT_LABEL[slot]}">
-          <option value="">+ ${slot === 'talent' ? `${CLASS_LABEL[p.specialty]} talent` : SLOT_LABEL[slot]}</option>
-          ${fit.map((u) => `<option value="${u}" ${upgradeCost(u, s) > room ? 'class="dear"' : ''}>${esc(UPGRADES[u].name)} (${upgradeCost(u, s)}) — ${esc(UPGRADES[u].text)}</option>`).join('')}
-        </select>`;
-    }
+      return fit.length ? `<optgroup label="${slotName(slot)}${n > 1 ? ` (${n} slots)` : ''}">
+        ${fit.map((u) => `<option value="${u}" ${upgradeCost(u, s) > room ? 'class="dear"' : ''}>${esc(UPGRADES[u].name)} (${upgradeCost(u, s)}) — ${esc(UPGRADES[u].text)}</option>`).join('')}</optgroup>` : '';
+    }).join('');
+    const addUpgrade = groups ? `<select class="slot pick" data-fit="${side}:${i}" aria-label="Add an upgrade to ${esc(p.name)}">
+        <option value="">+ Add upgrade (${kinds.map((k) => SLOT_LABEL[k].toLowerCase()).join(', ')})</option>${groups}</select>` : '';
+    const freeTalent = free.includes('talent') ? ['<span class="hint">talent slot free</span>'] : [];
+    const pilotRow = [...sig, ...lost, ...of(filled, true), ...freeTalent];
+    const shipRow = [...of(filled, false), addUpgrade];
     return `<div class="sq-ship ${isSel(side, i) ? 'selected' : ''}" data-sel="${side}:${i}">
         ${isSel(side, i) ? '<div class="preview-slot" aria-hidden="true"></div>' : ''}
         <div class="sq-top"><span class="who"><b>${esc(p.name)}</b> ${initBadge(s)}
@@ -283,7 +303,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
             <span class="cost">${cost}</span></button>`;
         }).join('')}</div>`;
     });
-    return `<div class="picker"><p class="hint">Pilots fly any ship of their class; another class costs them 1 initiative (and maybe a talent slot). Talents belong to the pilot: 1 slot at initiative 3-4, 2 at 5+. ★ marks a signature talent, which comes with the pilot and fills a slot. Named pilots also have an ability of their own (hover to read it).</p>${groups.join('')}</div>`;
+    return `<div class="picker"><p class="hint">Pilots fly any ship of their class; another class costs them 1 initiative (and maybe a talent slot). Talents belong to the pilot: 1 slot at initiative 3-4, 2 at 5+. ★ marks a signature talent, which comes with the pilot and fills a slot. Named pilots also have an ability of their own (its text is on the ship's card once added).</p>${groups.join('')}</div>`;
   };
 
   /** Split a `side:rest` data attribute. */
@@ -317,10 +337,13 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     each<HTMLButtonElement>('[data-clear]', (b) => { b.onclick = () => { setSquad(b.dataset.clear as Side, { ships: [] }); render(); }; });
     const reroll = $('su-reroll');
     if (reroll) reroll.onclick = () => { aiSeed = (Math.random() * 1e9) | 0; refreshAi(true); render(); };
-    $('su-deploy')!.onclick = () => {
+    const go = (place: boolean) => () => {
       root.remove();
-      onDeploy({ budget, versus, player: structuredClone(player), opponent: versus === 'online' ? { ships: [] } : structuredClone(two() ? second : ai), hints: { you: hints.you, them: two() && hints.them } });
+      onDeploy({ budget, versus, player: structuredClone(player), opponent: versus === 'online' ? { ships: [] } : structuredClone(two() ? second : ai), hints: { you: hints.you, them: two() && hints.them }, place });
     };
+    $('su-deploy')!.onclick = go(false);
+    const place = $('su-place');
+    if (place) place.onclick = go(true);
     each<HTMLInputElement>('[data-name]', (input) => { input.oninput = () => { saveName[input.dataset.name as Side] = input.value; }; });
     const reopenSaved = (side: Side) => { const d = root.querySelector<HTMLDetailsElement>(`[data-saved="${side}"]`); if (d) d.open = true; };
     each<HTMLButtonElement>('[data-save]', (b) => { b.onclick = () => {

@@ -8,7 +8,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 body { position: fixed; inset: 0; width: 100%; }
 #viewport { position: fixed; inset: 0; }
 #hud { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: calc(16px + env(safe-area-inset-left, 0px)); display: flex; gap: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-#hud span { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; }
+#hud > span { background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; }
 #panel { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); width: 360px; max-height: calc(100% - 24px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
 #log { position: fixed; left: calc(16px + env(safe-area-inset-left, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: 420px; max-height: 32%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 12px; color: var(--muted); }
 #log div { padding: 1px 0; } #log .hl { color: var(--text); }
@@ -64,7 +64,7 @@ html:not(.compact) #panel .bar { display: none; }
 
 /* ---------- phones and small tablets (html.compact, set from JS) ---------- */
 html.compact #hud { top: calc(8px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); gap: 6px; font-size: 11px; align-items: center; }
-html.compact #hud span { padding: 4px 8px; }
+html.compact #hud > span { padding: 4px 8px; }
 html.compact #viewbtn { display: inline-block; font: inherit; text-transform: none; letter-spacing: 0; background: var(--panel); color: var(--accent); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; min-height: 30px; cursor: pointer; }
 html.compact #viewbtn[hidden] { display: none; }
 
@@ -105,7 +105,9 @@ html.compact.landscape .bar-ships { flex-direction: column; }
 /* lighter board labels: name only on the selected/ringed ship */
 html.compact .label { font-size: 10px; padding: 1px 4px; }
 html.compact .label .nm { display: none; }
+html.compact .label .nms { display: inline; }
 html.compact .label.sel .nm { display: inline; }
+html.compact .label.sel .nms { display: none; }
 html.compact .chips { display: none; }
 html.compact .ghost-label { font-size: 11px; }
 
@@ -484,15 +486,21 @@ html.compact #log.open { cursor: pointer; }
 #mission-hud li.done { color: var(--accent); }
 #mission-hud li.failed { color: var(--red); }
 #mission-hud .mh-progress { color: var(--muted); margin-left: 4px; }
-html.compact #mission-hud { top: calc(84px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); font-size: 12px; padding: 6px 10px; }
+#mission-hud .mh-chip { display: none; }
+/* Phones: the objectives fold into a chip at the end of the top row; a tap drops the list down. */
+html.compact #mission-hud { top: calc(8px + env(safe-area-inset-top, 0px)); left: auto; right: calc(10px + env(safe-area-inset-right, 0px)); font-size: 12px; padding: 0; background: none; border: 0; z-index: 6; }
+html.compact.landscape #mission-hud { right: calc(min(270px, 40vw) + 10px); }
+html.compact #mission-hud .mh-chip { display: block; font: inherit; font-weight: 600; background: var(--panel); color: var(--accent); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-height: 30px; cursor: pointer; margin-left: auto; }
+html.compact #mission-hud .mh-full { display: none; }
+html.compact #mission-hud.open .mh-full { display: block; margin-top: 6px; width: min(300px, calc(100vw - 20px)); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
 #coach { position: fixed; z-index: 8; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   width: min(340px, calc(100vw - 32px)); background: #0a1120f5; border: 1px solid var(--accent); border-radius: 12px; padding: 12px 14px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, .45); }
 #coach[hidden] { display: none; }
 #coach b { display: block; color: var(--accent); margin-bottom: 4px; }
 #coach p { margin: 0 0 8px; line-height: 1.45; }
-html.compact.portrait #coach { bottom: auto; top: calc(150px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px));
-  right: calc(10px + env(safe-area-inset-right, 0px)); width: auto; padding: 8px 12px; font-size: 13px; }
+/* Phones: the tip is the first thing in the bottom bar (main.ts moves it there), so it never covers the board. */
+html.compact #coach { position: static; width: auto; margin: 0 0 8px; padding: 8px 12px; font-size: 13px; box-shadow: none; }
 html.compact #coach p { margin-bottom: 6px; }
 html:not(.compact) #panel ~ #coach { right: calc(390px + env(safe-area-inset-right, 0px)); }
 #menubtn { font: inherit; font-weight: 600; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
@@ -509,3 +517,77 @@ html.compact #menubtn { padding: 4px 8px; min-height: 30px; }
 #finale.mission h1 { font-size: clamp(34px, 9vw, 56px); }
 #finale h1 .word { display: inline-block; white-space: nowrap; }
 #finale h1 span.word { opacity: 1; transform: none; animation: none; }
+
+/* ---------- top row: round and phase share one chip; speed and the way out live in the menu sheet ---------- */
+.label .nms { display: none; }
+#rp { display: inline-flex; gap: 6px; white-space: nowrap; }
+#rp #phase:not(:empty)::before { content: '· '; color: var(--muted); }
+html.compact #menubtn .mb-t { display: none; }
+html.compact #menubtn { min-width: 34px; }
+#gamemenu { position: fixed; z-index: 25; top: calc(48px + env(safe-area-inset-top, 0px)); left: calc(10px + env(safe-area-inset-left, 0px)); width: min(300px, calc(100vw - 20px));
+  background: #0a1120f7; border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .55); }
+#gamemenu[hidden] { display: none; }
+#gamemenu .gm-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 0 4px; cursor: pointer; }
+#gamemenu .gm-row small { display: block; color: var(--muted); font-size: 11px; }
+#gamemenu input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+#gamemenu #speedbtn { min-width: 52px; min-height: 36px; }
+#gamemenu .opt { margin: 0; min-height: 44px; text-align: center; }
+
+/* ---------- phones: move dots carry their speed ---------- */
+.dot-label { font: 700 10px/1 system-ui, sans-serif; color: #04101f; pointer-events: none; }
+
+/* ---------- phones: arrows at the screen edge to enemies out of view ---------- */
+#edges { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
+.edge { position: absolute; left: 0; top: 0; display: inline-flex; align-items: center; gap: 4px; pointer-events: auto; cursor: pointer; white-space: nowrap;
+  font: 600 11px/1 system-ui, sans-serif; color: var(--p2); background: rgba(8, 12, 22, .88); border: 1px solid #6b4a22; border-radius: 12px; padding: 4px 8px; }
+.edge i { font-style: normal; display: inline-block; font-size: 12px; }
+.edge b { color: var(--text); }
+#edges .edge { will-change: transform; }
+
+/* ---------- phones: the bar's grid of action / weapon tiles ---------- */
+.bar-buttons.grid { display: grid; grid-template-columns: repeat(var(--cols, 4), 1fr); gap: 6px; }
+html.compact.landscape .bar-buttons.grid { grid-template-columns: repeat(3, 1fr); }
+.bar-buttons.grid button { min-width: 0; min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 4px 2px; font-size: 13px; line-height: 1.15; }
+.bar-buttons.grid button svg { width: 20px; height: 20px; flex: none; }
+.bar-buttons.grid button small { font-size: 10.5px; font-weight: 500; color: var(--muted); }
+.bar-buttons.grid button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-buttons button.rec { border-color: var(--accent); color: var(--accent); background: #12332b; box-shadow: 0 0 0 1px var(--accent) inset; }
+.bar-buttons button.red { color: #ff7a7a; }
+.bar-buttons button.rec.red { border-color: #ff7a7a; box-shadow: 0 0 0 1px #ff7a7a inset; background: #2a1418; }
+.bar-buttons button.quiet { color: var(--muted); }
+.bar-buttons button.quiet.rec { color: var(--accent); }
+.bar-buttons button.repair { color: #ffb08a; }
+.bar-buttons button.fire { background: var(--red); border-color: var(--red); color: #1a0505; flex-grow: 2; }
+.bar-buttons button.primary small { color: inherit; }
+.bar-specials { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.bar-specials .chip { min-height: 36px; }
+
+/* gunsight: on phones the bar has Fire / Hold / Weapons, so the card only shows the readout */
+html.compact #gunsight .gs-actions { display: none; }
+#gunsight .gs-best.weak { background: #5a2a33; color: #ffb3b3; }
+#gunsight .gs-fire.weak { background: #3a2226; color: #ffb3b3; }
+
+/* ---------- squad builder on phones: finger-sized controls, a header that doesn't wrap mid-word ---------- */
+.seg button { white-space: nowrap; }
+select.slot.pick { max-width: 100%; }
+@media (max-width: 760px), (pointer: coarse) {
+  .setup-head { flex-wrap: wrap; }
+  .head-opts { width: 100%; justify-content: space-between; }
+  .seg button { min-height: 40px; padding: 8px 12px; }
+  #setup .opt.mini, #lobby .opt.mini, .menu-screen .opt.mini { min-height: 40px; padding: 8px 14px; }
+  .setup-head select, .hull-pick, select.slot.pick { min-height: 40px; font-size: 14px; padding: 6px 10px; }
+  .sq-ship .rm, .slot button { min-width: 36px; min-height: 36px; font-size: 18px; }
+  .slot.full { display: inline-flex; align-items: center; gap: 4px; padding: 0 2px 0 10px; }
+  .hint-toggle { min-height: 36px; }
+  #setup .hint-toggle input { width: 20px; height: 20px; }
+  .setup-foot { gap: 8px; }
+  .setup-foot .go { padding: 12px 18px; }
+  .saved summary { min-height: 36px; display: flex; align-items: center; }
+  #coach .opt.mini { min-height: 36px; padding: 6px 14px; }
+}
+html.compact.landscape .bar-buttons.grid[style*="--cols: 3"] { grid-template-columns: repeat(3, 1fr); }
+html.compact.plan-sel .label.sel { display: none !important; }
+.bar-status .sh { color: var(--blue); letter-spacing: 1px; } .bar-status .hu { color: #ffd166; letter-spacing: 1px; }
+html.compact #gunsight { padding: 8px 10px; }
+html.compact #gunsight .gs-pct { font-size: 28px; }
+.bar-status .p1c { color: var(--p1); } .bar-status .p2c { color: var(--p2); }
