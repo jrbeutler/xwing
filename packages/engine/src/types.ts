@@ -1,5 +1,5 @@
 import type { Pose, Polygon } from './geometry';
-import type { BaseSize, Maneuver } from './maneuvers';
+import type { BaseSize, Bearing, Difficulty, Maneuver } from './maneuvers';
 import type { DamageCardId } from './damage';
 
 export type PlayerId = string;
@@ -14,7 +14,18 @@ export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | '
 export interface ActionDef { type: ActionType; red?: boolean; linked?: { type: ActionType; red?: boolean } }
 
 /** Kinds of upgrade slot a ship can have (power-ups go in matching slots). */
-export type SlotType = 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device';
+export type SlotType =
+  | 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device'
+  /** Front-arc secondary guns without charges. */
+  | 'cannon'
+  /** A second person aboard (medium ships): new actions and tricks. */
+  | 'crew'
+  /** A gunner: second chances with the ship's guns. */
+  | 'gunner'
+  /** A small ship's droid: repairs and flight help. */
+  | 'droid'
+  /** Locks and information. */
+  | 'sensor';
 
 /** Ship classes. Pilots specialise in one; flying another class costs them initiative. */
 export type ShipClass = 'fighter' | 'bomber' | 'freighter';
@@ -51,10 +62,12 @@ export interface UpgradeDef {
  *   outsideDefenderArcs: the attacker is outside every firing arc of the defender
  *   defenderStressed: the defender has at least 1 stress
  *   range: [min, max] range bands the attack's range must fall in
+ *   weapon: fired with this upgrade (its id)
  */
 export interface AttackCondition {
   primary?: boolean; turret?: boolean; bullseye?: boolean; frontArc?: boolean; outsideDefenderArcs?: boolean; defenderStressed?: boolean;
   range?: [number, number];
+  weapon?: string;
 }
 
 /** Moments in the round that trigger effects. */
@@ -80,7 +93,9 @@ export type EffectOp =
   /** Recover 1 charge on the effect's own upgrade. */
   | { op: 'recoverCharge' }
   /** Lose every charge on the effect's own upgrade. */
-  | { op: 'loseCharges' };
+  | { op: 'loseCharges' }
+  /** Repair the ship's worst face-up damage card (any card, repairable or not). */
+  | { op: 'repairCard' };
 
 /**
  * An effect of an upgrade or a pilot ability. `cost: 'charge'` spends one of its source's charges each time it
@@ -98,11 +113,32 @@ export type Effect =
   /** On `on`, if the conditions hold, log the upgrade as `log` and apply `do` in order. */
   | {
       kind: 'trigger'; on: TriggerEvent; do: EffectOp[]; log: 'used' | 'recovered' | 'spent';
-      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean; actions?: ActionType[]; attack?: AttackCondition };
+      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean; hasDamageCard?: boolean; actions?: ActionType[]; attack?: AttackCondition };
       cost?: 'charge'; needsCharge?: boolean;
     }
   /** A flat bonus to a number the rules look up. */
-  | { kind: 'stat'; stat: 'jamRange' | 'deviceCharges'; delta: number };
+  | { kind: 'stat'; stat: StatName; delta: number }
+  /** Adds an action to the ship's action bar (if it does not have it already). */
+  | { kind: 'action'; action: ActionDef }
+  /** While attacking: change up to `dice` focus results to hits, without spending anything. */
+  | { kind: 'changeAttack'; dice: number; if?: AttackCondition }
+  /**
+   * After an attack that deals no damage, the ship may make a bonus attack with a different weapon through
+   * its turret arc (once per Engagement phase).
+   */
+  | { kind: 'bonusAttack' }
+  /** Dial entries with these bearings and difficulty `from` are flown as `to` instead. */
+  | { kind: 'maneuverDifficulty'; bearings: Bearing[]; from: Difficulty; to: Difficulty }
+  /** At the start of the Activation phase, see the dial of the nearest enemy at range 1 to `range`. */
+  | { kind: 'peekDial'; range: number };
+
+/**
+ * Numbers and switches the rules look up (sum of `stat` effects). jamRange: +range bands for Jam.
+ * deviceCharges: extra charges on each bomb and mine. repairAny (1 = on): the Repair action can fix any
+ * face-up card. keepActionOnObstacle (1 = on): touching an obstacle never costs the ship its action.
+ * coordinateRange: +range bands for Coordinate. keepLock (1 = on): rerolling with a lock does not spend it.
+ */
+export type StatName = 'jamRange' | 'deviceCharges' | 'repairAny' | 'keepActionOnObstacle' | 'coordinateRange' | 'keepLock';
 
 export interface DeviceDef {
   /** Bombs detonate at the end of the Activation phase; mines when a ship moves through or onto them. */
@@ -126,6 +162,8 @@ export interface WeaponDef {
   effect?: 'proton' | 'ion';
   /** 'turret': fires through the ship's turret arc (which the Rotate action turns); default: front arc. */
   arc?: 'turret';
+  /** Only at a target in the ship's bullseye. */
+  bullseyeOnly?: boolean;
   /**
    * How clients draw its shots. Default: ion weapons 'ion' (torpedoes stay 'torpedo'), torpedoes 'torpedo',
    * missiles 'missile', turrets 'laser'.
@@ -217,6 +255,8 @@ export interface ShipState {
   crits: DamageCardId[];
   /** Index into the ship type's dial; hidden from opponents during planning. */
   dial: number | null;
+  /** Players who may see this ship's dial this round although it is not theirs (an upgrade peeked at it). */
+  dialSeenBy?: PlayerId[];
   destroyed: boolean;
   /** Destroyed ships linger until their initiative step ends (simultaneous fire). */
   removed: boolean;
@@ -283,7 +323,8 @@ export type Decision =
       /** This ship is acting because the ship `by` coordinated it (not its own activation). */
       coordinated?: { by: string };
     }
-  | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[] }
+  /** `bonus`: a bonus attack (e.g. a gunner's after a miss), not the ship's own attack for the round. */
+  | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[]; bonus?: { source: string } }
   | { kind: 'system'; playerId: PlayerId; shipId: string; options: DropChoice[] };
 
 /** Tokens a ship gains from actions and loses in the End phase (jam takes them away). */
@@ -338,6 +379,8 @@ export type GameEvent =
       /** What it did to each ship caught by it (damage cards it dealt follow as damageCard events). */
       ships: { shipId: string; shieldDamage: number; hullDamage: number; ion?: number; roll?: AttackFace[] }[];
     }
+  /** A ship's upgrade showed it another ship's dial (the view of that ship's player keeps the dial). */
+  | { type: 'dialPeeked'; shipId: string; targetId: string; upgrade: string }
   | { type: 'destroyed'; shipId: string }
   | { type: 'gameOver'; winner: PlayerId | 'draw' }
   | { type: 'info'; text: string };

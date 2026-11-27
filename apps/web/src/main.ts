@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, actionBar, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
@@ -860,6 +860,15 @@ async function animate(e: GameEvent) {
     case 'damageCard':
       await showDamageCard(e);
       return;
+    case 'dialPeeked': {
+      // The peeking player sees the maneuver; the other player only that their dial was seen.
+      const target = shipById(e.targetId), mine = shipById(e.shipId).owner === me;
+      const dial = mine ? state.ships.find((x) => x.id === e.targetId)?.dial : null;
+      const what = dial !== null && dial !== undefined ? maneuverLabel(maneuverFor(target, dial)).toUpperCase() : 'DIAL SEEN';
+      void scene.floatText(e.shipId, (effectSource(e.upgrade)?.name ?? 'INTEL').toUpperCase(), 'talent-float');
+      await scene.floatText(e.targetId, mine ? `INTEL: ${what}` : 'DIAL SEEN', 'talent-float');
+      return;
+    }
     case 'deviceDropped':
       scene.highlight(e.shipId);
       await scene.dropDevice(e.shipId, e.device);
@@ -1206,6 +1215,11 @@ function describe(e: GameEvent): string | null {
         ? `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>jammed</b> (its next Focus or Evade is lost)`
         : `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>loses ${what}</b>`;
     }
+    case 'dialPeeked': {
+      const dial = shipById(e.shipId).owner === me ? state.ships.find((x) => x.id === e.targetId)?.dial : null;
+      const seen = dial !== null && dial !== undefined ? `: <b>${maneuverLabel(maneuverFor(shipById(e.targetId), dial))}</b>` : '';
+      return `${nameHtml(e.shipId)}'s ${effectSource(e.upgrade)?.name ?? 'crew'} sees ${nameHtml(e.targetId)}'s dial${seen}`;
+    }
     case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost[0].toUpperCase() + e.lost.slice(1)} is lost`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
     case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
@@ -1284,7 +1298,7 @@ function renderDecision() {
   scene.setPlanned([]);
   scene.setMarkers([]);
   if (d.kind === 'action') return renderAction(d.shipId, d.options, d.linked, d.coordinated?.by);
-  if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
+  if (d.kind === 'attack') return renderAttack(d.shipId, d.targets, d.bonus?.source);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
 
@@ -2107,7 +2121,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
         { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
       return;
     }
-    const redOf = (t: ActionType) => !!SHIP_TYPES[s.typeId].actions.find((a) => a.type === t)?.red || !!linked?.red;
+    const redOf = (t: ActionType) => !!actionBar(s).find((a) => a.type === t)?.red || !!linked?.red;
     const helpOf = (t: ActionType) => ACTION_HELP[t] + (redOf(t) ? RED_NOTE : '');
     const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
       ({ icon, label, title: hint.split(':')[0], help: helpOf(t), onClick: () => { only = t; cand = null; show(); } });
@@ -2340,7 +2354,7 @@ function renderSystem(shipId: string, options: DropChoice[]) {
 }
 
 /** Radial-menu icon and short label for a weapon ('primary' or an ordnance upgrade id). */
-const weaponIcon = (w: string, turretPrimary = false) => (w === 'primary' ? (turretPrimary ? ICONS.turret : ICONS.lasers) : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : ICONS.missile);
+const weaponIcon = (w: string, turretPrimary = false) => (w === 'primary' ? (turretPrimary ? ICONS.turret : ICONS.lasers) : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : UPGRADES[w].slot === 'cannon' ? ICONS.lasers : ICONS.missile);
 const WEAPON_SHORT: Record<string, string> = {
   primary: 'Lasers', 'proton-torpedoes': 'Proton', 'ion-torpedoes': 'Ion torp', 'concussion-missiles': 'Missiles', 'rocket-pods': 'Rockets',
   'dorsal-turret': 'Turret', 'ion-turret': 'Ion cann.',
@@ -2379,7 +2393,7 @@ function relBearing(from: Pose, to: Pose) {
  * best shot; cycle through every enemy that weapon can hit (arrows / Tab, or the gunsight's buttons),
  * compare the odds, and fire. Esc / Back returns to the table and the ring.
  */
-function renderAttack(shipId: string, targets: Target[]) {
+function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
   const s = shipById(shipId);
   const weaponIds = ['primary', ...s.upgrades.filter((u) => UPGRADES[u.id].weapon).map((u) => u.id)];
   const turretPrimary = SHIP_TYPES[s.typeId].primaries.some((p) => p.arc === 'turret');
@@ -2528,7 +2542,10 @@ function renderAttack(shipId: string, targets: Target[]) {
     },
   };
 
-  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
+  const bonusNote = bonusBy
+    ? `<p class="hint"><b>${effectSource(bonusBy)?.name ?? 'Bonus attack'}:</b> that attack missed, so you may fire again with a different weapon through your turret arc. Or hold fire.</p>`
+    : '';
+  detail.innerHTML = `<h2>${bonusBy ? 'Bonus attack' : 'Attack'}: ${s.name}</h2>${bonusNote}<p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
     The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
     the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) loses an attack die, range 2 is the sweet spot (an extra attack die), range 3 is plain, and range 4 gives the defender an extra die;
     obstruction adds a defense die. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;

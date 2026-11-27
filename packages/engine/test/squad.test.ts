@@ -58,7 +58,8 @@ describe('points and slots', () => {
     expect(fitsSlots(ship('drav-okono', ['shield-booster', 'hull-plating']))).toBe(true); // two
     expect(fitsSlots(ship('drav-okono', ['shield-booster', 'shield-booster']))).toBe(false);
     expect(upgradeOptions(ship('tobin-reyes', ['shield-booster'])).map((u) => UPGRADES[u].slot)).not.toContain('modification');
-    expect(upgradeOptions(ship('grunt-seven', ['shield-booster']))).toEqual([]); // no talent slot below initiative 3
+    // No talent slot below initiative 3: with the modification taken, only the Wasp's sensor slot is left.
+    expect(new Set(upgradeOptions(ship('grunt-seven', ['shield-booster'])).map((u) => UPGRADES[u].slot))).toEqual(new Set(['sensor']));
   });
 });
 

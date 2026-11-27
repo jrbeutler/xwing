@@ -7,7 +7,7 @@ import {
   attackDicePenalty, canModifyAttack, defenseDicePenalty, discardCard, drawDamageCard, hasCard,
 } from './damage';
 import { SHIP_TYPES, UPGRADES } from './content';
-import { AttackFacts, attackEffects, diceDelta, diceSources, payFor, runTriggers } from './effects';
+import { AttackFacts, attackEffects, diceDelta, diceSources, payFor, runTriggers, statBonus } from './effects';
 import type { ArcName, AttackFace, DefenseFace, GameState, Obstacle, ShipState, TargetInfo } from './types';
 
 /**
@@ -123,6 +123,7 @@ export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[
       const arc: ArcName = w.arc === 'turret' ? attacker.turretArc : 'front';
       const m = measureArc(state, attacker, t, arc);
       if (!m || m.range < w.minRange || m.range > w.maxRange) continue;
+      if (w.bullseyeOnly && !m.bullseye) continue;
       const turret = w.arc === 'turret';
       out.push({ targetId: t.id, arc, attack: w.attack, ...m, bullseye: !turret && arc === 'front' && m.bullseye, weapon: u.id, ...(turret ? { turret } : {}) });
     }
@@ -156,7 +157,7 @@ export function attackFacts(t: ShotInfo, defender: ShipState, attacker?: ShipSta
   let outside: boolean | undefined;
   return {
     primary: isPrimary(t), turret, bullseye: !!t.bullseye, frontArc: (t.arc ?? 'front') === 'front' && !turret,
-    range: t.range, defenderStressed: defender.stress > 0,
+    range: t.range, defenderStressed: defender.stress > 0, weapon: t.weapon ?? 'primary',
     get outsideDefenderArcs() { return (outside ??= !!attacker && !inFiringArc(defender, attacker)); },
   };
 }
@@ -196,6 +197,8 @@ const useCalculate = (focusResults: number, needOne: boolean, focusWouldBeSpent:
 
 /** Attack dice to reroll for the attacker's reroll effects (e.g. Marksman), before any lock. */
 const rerollCount = (fx: { effect: { dice: number } }[]) => fx.reduce((a, x) => a + x.effect.dice, 0);
+/** Focus results the attacker's change effects (e.g. Gunnery Chief) turn into hits on this attack, at most. */
+const changeCount = (attacker: ShipState, facts: AttackFacts) => rerollCount(attackEffects(attacker, 'changeAttack', facts));
 
 /** A fitted upgrade, optionally only if it still has a charge. */
 export const upgradeOf = (sh: ShipState, id: string, needCharge = false) =>
@@ -232,12 +235,17 @@ export function spendPlan(state: GameState | undefined, attacker: ShipState, def
   const primary = isPrimary(t);
   return {
     holdFocus: attacker.focus > 0 && shipType(attacker).agility - defenseDicePenalty(attacker) > 0 && !!state && stillThreatened(state, attacker),
-    saveLock: primary && attacker.upgrades.some((u) => UPGRADES[u.id].weapon?.requires === 'lock' && hasAmmo(u)),
+    saveLock: primary && !keepsLock(attacker) && attacker.upgrades.some((u) => UPGRADES[u.id].weapon?.requires === 'lock' && hasAmmo(u)),
     health: defender.shields + defender.hull,
     defenseDice: defenseDiceFor(defender, t, attacker),
     capped: weaponOf(t)?.effect !== 'ion',
   };
 }
+/** Whether rerolling with a lock leaves it in place (Fire-Control System). */
+const keepsLock = (sh: ShipState) => statBonus(sh, 'keepLock') > 0;
+/** 'attacker:<id>' for each upgrade giving a stat, for the attack's `spent` list (clients name them). */
+const effectSourcesOf = (sh: ShipState, stat: 'keepLock') =>
+  sh.upgrades.filter((u) => UPGRADES[u.id].effects?.some((e) => e.kind === 'stat' && e.stat === stat)).map((u) => `attacker:${u.id}`);
 /** Hits + crits already enough that no token can add anything. */
 const enough = (p: SpendPlan, total: number) => p.capped && total >= p.health + p.defenseDice;
 /** Focus results when focus is being held: spend it anyway if it turns 2+ dice or could finish the defender. */
@@ -289,9 +297,16 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
     if (idx.length && (enough(plan, landed()) || (plan.saveLock && idx.length <= 1))) kept.push('attacker:lock');
     else if (idx.length) {
       reroll(idx);
-      attacker.lock = null;
-      spent.push('attacker:lock');
+      if (keepsLock(attacker)) spent.push(...effectSourcesOf(attacker, 'keepLock'));
+      else { attacker.lock = null; spent.push('attacker:lock'); }
     }
+  }
+  // Change effects (Gunnery Chief) turn focus results into hits for free, before any token is spent on them.
+  const changeFx = mods ? attackEffects(attacker, 'changeAttack', facts) : [];
+  if (changeFx.length && !enough(plan, landed())) {
+    let n = rerollCount(changeFx);
+    for (let i = 0; i < atk.length && n > 0; i++) if (atk[i] === 'focus') { atk[i] = 'hit'; n--; }
+    if (n < rerollCount(changeFx)) for (const fx of changeFx) { payFor(fx); spent.push(`attacker:${fx.source.id}`); }
   }
   const focusDice = atk.filter((f) => f === 'focus').length;
   const wantFocus = mods && canFocus && focusDice > 0 && !enough(plan, landed()) && (!plan.holdFocus || spendHeldFocus(plan, landed(), focusDice));
@@ -451,6 +466,7 @@ export function attackOdds(
   const focusRerollable = !canFocus || plan.holdFocus;
   const facts = attackFacts(t, defender, attacker);
   const talentRerolls = mods ? rerollCount(attackEffects(attacker, 'rerollAttack', facts)) : 0;
+  const changes = mods ? changeCount(attacker, facts) : 0;
   const useLock = mods && attacker.lock === defender.id;
   const useFocus = mods && canFocus;
   const useCalc = mods && attacker.calculate > 0;
@@ -472,7 +488,10 @@ export function attackOdds(
       const kept = n ? st.u.map((x, i) => (i === BLANK || (focusRerollable && i === FOCUS) ? 0 : x)) : st.u;
       for (const o of reroll(n, aw)) {
         const f = plus(plus(kept, st.r), o.counts);
-        const total = f[HIT] + f[CRIT], fd = f[FOCUS];
+        let total = f[HIT] + f[CRIT], fd = f[FOCUS];
+        const changed = changes && !enough(plan, total) ? Math.min(changes, fd) : 0;
+        total += changed;
+        fd -= changed;
         const spendFocus = useFocus && fd > 0 && !enough(plan, total) && (!plan.holdFocus || spendHeldFocus(plan, total, fd));
         const calc = useCalc && !enough(plan, total) && useCalculate(fd, false, spendFocus);
         add(total + (calc ? 1 : spendFocus ? fd : 0), st.p * o.p);
