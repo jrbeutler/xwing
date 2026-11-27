@@ -8,6 +8,7 @@ import {
 } from './damage';
 import { SHIP_TYPES, UPGRADES } from './content';
 import { AttackFacts, attackEffects, diceDelta, diceSources, payFor, runTriggers, statBonus } from './effects';
+import { rulesOf } from './rules';
 import type { ArcName, AttackFace, DefenseFace, GameState, Obstacle, ShipState, TargetInfo } from './types';
 
 /**
@@ -101,7 +102,7 @@ export function rangeBetween(a: ShipState, b: ShipState): number | null {
 
 export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[] {
   const out: TargetInfo[] = [];
-  if (attacker.disarmed) return out; // reloaded this round
+  if (attacker.disarmed || !rulesOf(state).attacks) return out; // reloaded this round, or attacks not taught yet
   for (const t of state.ships) {
     if (t.owner === attacker.owner || t.destroyed) continue;
     let best: TargetInfo | null = null;
@@ -612,6 +613,7 @@ function critToHull(s: GameState, ship: ShipState) {
     s.log.push({ type: 'damageCard', shipId: ship.id, card: 'fuelLeak', what: 'discarded' });
   }
   if (ship.hull <= 0) return; // destroyed: no card to deal
+  if (!rulesOf(s).damageCards) return; // a mission without damage cards: a crit is plain hull damage
   const id = drawDamageCard(s);
   if (!id) return;
   ship.crits.push(id);
