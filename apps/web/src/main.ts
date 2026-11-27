@@ -1883,7 +1883,8 @@ function planningBar() {
     b.className = 'sc' + (s.id === selected ? ' active' : '') + (plan[s.id] !== undefined ? ' done' : '');
     b.innerHTML = `<span class="sc-name">${s.name.split(' ')[0]} <i>${s.initiative}</i></span>
       <span class="sc-move">${plan[s.id] !== undefined ? shortMove(s, plan[s.id]) : '<span class="hint">not set</span>'}</span>`;
-    b.onclick = () => selectShip(s.id);
+    // Tapping a ship's button always brings the camera to it, even after an Overview or looking around.
+    b.onclick = () => { userOverview = false; camFree = false; if (s.id === selected) applyCamera(); else selectShip(s.id); };
     ships.appendChild(b);
   }
   const buttons: BarButton[] = [];
