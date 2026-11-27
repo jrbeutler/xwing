@@ -2592,10 +2592,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
       const boosts = spots.filter((o): o is Extract<Spot, { type: 'boost' }> => o.type === 'boost').sort((a, b) => order.indexOf(a.bearing) - order.indexOf(b.bearing));
       return [...boosts.map((o) => twoStep(o, o.bearing === 'bankLeft' ? '↖ Left' : o.bearing === 'straight' ? '↑ Straight' : 'Right ↗')), backTile];
     }
-    if (only === 'rotateArc') {
-      return [...options.filter((o): o is Extract<ActionChoice, { type: 'rotateArc' }> => o.type === 'rotateArc')
-        .map((o): BarButton => ({ icon: ICONS.turret, label: o.to[0].toUpperCase() + o.to.slice(1), cls: cls(o), onClick: () => choose(o) })), backTile];
-    }
+    if (only === 'rotateArc') return [backTile]; // the facings are the ring around the ship
     const tiles: BarButton[] = [];
     const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost' | 'rotateArc', icon: string, label: string) =>
       tiles.push({ icon, label, cls: [rec?.type === t ? 'rec' : '', isRed(t) ? 'red' : ''].join(' '), onClick: () => { only = t; cand = null; show(); } });
@@ -2641,8 +2638,8 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
         onClick: () => choose(o),
         onHover: (on) => { void scene.setTurret(s.id, on ? o.to : s.turretArc, 150, true); },
       }));
-      items.push({ angle: onScreen(s.turretArc), icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: () => { void scene.setTurret(s.id, s.turretArc, 0, true); back(); } });
-      scene.showRadial(s.pose, items, { key: 'rotate', caption: `Turret faces ${s.turretArc}: pick a new facing · Esc to go back` });
+      if (!compact) items.push({ angle: onScreen(s.turretArc), icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: () => { void scene.setTurret(s.id, s.turretArc, 0, true); back(); } });
+      scene.showRadial(s.pose, items, { key: 'rotate', caption: compact ? `Turret faces ${s.turretArc}: tap a new facing` : `Turret faces ${s.turretArc}: pick a new facing · Esc to go back` });
       return;
     }
     if (only) {
@@ -2696,7 +2693,8 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
   const show = () => {
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(shownLocks().map((l) => [l.targetId, ACTION_COLOR[l.type]])) });
     scene.setMarkers(shownSpots().map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
-    if (compact) scene.clearChips(); else radial();
+    // Phones use the bar, except for the turret: its facings stay a ring around the ship, each where it points.
+    if (compact && only !== 'rotateArc') scene.clearChips(); else radial();
     const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
     scene.showArcs(repositioning ? [] : [s.id], only === 'rotateArc' ? 'turret' : 'all');
     showOddsFrom(s, cand && (cand.type === 'barrelRoll' || cand.type === 'boost') ? cand.to : s.pose, true);
@@ -2709,7 +2707,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     const who = `<b>${shortName(s)}</b>`;
     if (compact) {
       const what = only === 'barrelRoll' ? 'roll where?' : only === 'boost' ? 'boost where?' : only === 'lock' ? 'lock which enemy?' : only === 'jam' ? 'jam which enemy?'
-        : only === 'coordinate' ? 'coordinate which friend?' : only === 'rotateArc' ? `turret faces ${s.turretArc}: turn it where?` : `${linkNote ? `${linkNote} · ` : ''}pick an action`;
+        : only === 'coordinate' ? 'coordinate which friend?' : only === 'rotateArc' ? 'tap a facing around the ship' : `${linkNote ? `${linkNote} · ` : ''}pick an action`;
       setBar({ status: cand && only ? `${who}: ${actionText(cand)} <span class="hint">· tap again to confirm</span>` : `${who}: ${what}`, buttons: barTiles(), grid: true, cols: only === 'barrelRoll' ? 3 : undefined });
       return;
     }
