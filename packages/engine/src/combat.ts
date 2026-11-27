@@ -134,6 +134,19 @@ export function legalTargets(state: GameState, attacker: ShipState): TargetInfo[
 /** Weapons with charges need one left; turrets (no charges) never run out. */
 export const hasAmmo = (u: { id: string; charges: number }) => UPGRADES[u.id].charges === undefined || u.charges > 0;
 
+/** Ion tokens it takes to ionize a ship: 1 small, 2 medium, 3 large. */
+export const ionThreshold = (sh: ShipState) => ({ small: 1, medium: 2, large: 3 })[shipType(sh).size];
+export const isIonized = (sh: ShipState) => sh.ion >= ionThreshold(sh);
+
+/** Give a ship ion tokens. A ship that becomes ionized breaks the lock it holds (and cannot lock again while ionized). */
+export function gainIon(s: GameState, sh: ShipState, n: number) {
+  sh.ion += n;
+  if (isIonized(sh) && sh.lock) {
+    sh.lock = null;
+    s.log.push({ type: 'info', text: `${sh.name} is ionized: its lock is broken.` });
+  }
+}
+
 /** Whether a target entry is a primary attack (range bonuses and bullseye talents apply only to those). */
 export const isPrimary = (t: Pick<TargetInfo, 'weapon'>) => !t.weapon || t.weapon === 'primary';
 const weaponOf = (t: Pick<TargetInfo, 'weapon'>) => (isPrimary(t) ? undefined : UPGRADES[t.weapon!].weapon);
@@ -381,7 +394,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
     // Ion: one hit's worth of damage; everything else that got through becomes ion tokens.
     ion = finalHits + finalCrits - 1;
     dmg = sufferDamage(state, defender, 1, 0);
-    defender.ion += ion;
+    gainIon(state, defender, ion);
   } else {
     dmg = sufferDamage(state, defender, finalHits, finalCrits);
   }

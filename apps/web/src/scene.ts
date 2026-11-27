@@ -90,6 +90,8 @@ class ParticleField {
   private next = 0;
   private active = false;
   readonly scale = { value: 400 };
+  /** Share of spawned particles that are kept (lowered on slow devices; see BattleScene.setLowQuality). */
+  density = 1;
   constructor(private cap: number, additive: boolean) {
     const f = () => new Float32Array(cap);
     this.pos = new Float32Array(cap * 3); this.col = new Float32Array(cap * 3); this.vel = new Float32Array(cap * 3);
@@ -122,6 +124,7 @@ class ParticleField {
   }
   /** One particle: `s0`→`s1` size over `life` seconds, peak opacity `a`, velocity slowed by `drag` per second. */
   spawn(at: THREE.Vector3, vel: THREE.Vector3, life: number, s0: number, s1: number, a: number, color: THREE.Color, drag = 0.6) {
+    if (this.density < 1 && Math.random() > this.density) return;
     const i = this.next;
     this.next = (this.next + 1) % this.cap;
     this.pos.set([at.x, at.y, at.z], i * 3);
@@ -336,8 +339,11 @@ export class BattleScene {
 
     addEventListener('resize', () => this.resize());
     this.resize();
+    if (new URLSearchParams(location.search).get('quality') === 'low') this.setLowQuality();
     const loop = () => {
-      const dt = Math.min(0.05, this.clock.getDelta());
+      const raw = this.clock.getDelta();
+      const dt = Math.min(0.05, raw);
+      this.watchFrameRate(raw);
       this.controls.update();
       this.animateIdle(this.clock.elapsedTime, dt);
       this.smoke.update(dt);
@@ -409,6 +415,32 @@ export class BattleScene {
   }
 
   /** Fit the renderer to its container (call after the screen changes shape, e.g. a phone rotating). */
+  /** Effects run lighter: set automatically when frames are slow (or with ?quality=low). */
+  lowQuality = false;
+  private frameAvg = 1 / 60;
+  private slowFor = 0;
+
+  /**
+   * Watch the frame rate: after a few seconds below about 40 fps (once the scene has settled), switch to
+   * low quality for the rest of the session. Long gaps (a hidden tab, a stall) are ignored.
+   */
+  private watchFrameRate(raw: number) {
+    if (this.lowQuality || raw > 1) return;
+    this.frameAvg = this.frameAvg * 0.95 + raw * 0.05;
+    this.slowFor = this.clock.elapsedTime > 4 && this.frameAvg > 1 / 40 ? this.slowFor + raw : 0;
+    if (this.slowFor > 2.5) this.setLowQuality();
+  }
+
+  /** Halve the particles and render at a lower resolution (bloom and effects are fill-heavy on phones). */
+  setLowQuality() {
+    if (this.lowQuality) return;
+    this.lowQuality = true;
+    this.smoke.density = this.embers.density = 0.5;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+    this.resize();
+    console.info('Effects: switched to low quality (slow frames).');
+  }
+
   resize() {
     const w = this.host.clientWidth, h = this.host.clientHeight;
     this.renderer.setSize(w, h);

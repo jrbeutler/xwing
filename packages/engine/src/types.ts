@@ -247,7 +247,7 @@ export interface ShipState {
   reinforce: 'front' | 'rear' | null;
   /** Disarmed (after a Reload): cannot attack this round. Cleared in the End phase. */
   disarmed: boolean;
-  /** Ion tokens: an ionized ship flies a white 1-straight instead of its dial. */
+  /** Ion tokens: an ionized ship flies a blue 1-bank or 1-straight toward its dial's direction instead (ionManeuverFor). */
   ion: number;
   /** Which way the ship's turret arc faces (ships with a turret upgrade). */
   turretArc: ArcName;

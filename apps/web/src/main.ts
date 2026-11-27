@@ -1,6 +1,6 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
-  legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
+  legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, effectSource, actionBar, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
@@ -1954,10 +1954,34 @@ function planningBar() {
   setBar({ status, ships, buttons });
 }
 
+type Drift = 'bankLeft' | 'straight' | 'bankRight';
+const DRIFT_LABEL: Record<Drift, string> = { bankLeft: 'bank left', straight: 'straight', bankRight: 'bank right' };
+/** Which way an ionized ship drifts with this dial setting. */
+const driftOf = (s: ShipState, dial: number | undefined): Drift =>
+  dial === undefined ? 'straight' : ionManeuverFor(maneuverFor(s, dial)).bearing as Drift;
+/** A legal dial setting that makes an ionized ship drift `way` (the dial only sets the direction). */
+const driftDial = (s: ShipState, way: Drift) => legalDial(state, s).find((i) => driftOf(s, i) === way);
+/** Left / straight / right buttons for an ionized ship's drift. */
+function driftButtons(s: ShipState): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'row';
+  for (const way of ['bankLeft', 'straight', 'bankRight'] as const) {
+    const i = driftDial(s, way);
+    if (i === undefined) continue;
+    const b = document.createElement('button');
+    b.className = 'opt mini' + (driftOf(s, plan[s.id]) === way ? ' confirm' : '');
+    b.textContent = way === 'bankLeft' ? '↖ Left' : way === 'straight' ? '↑ Straight' : 'Right ↗';
+    b.onclick = (e) => { e.stopPropagation(); plan[s.id] = i; render(); };
+    row.appendChild(b);
+  }
+  return row;
+}
+
 function renderPlanning() {
   const mine = myShips();
-  // An ionized ship ignores its dial (it drifts 1 straight), so plan it automatically.
-  for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
+  // An ionized ship only uses its dial's direction (it drifts a blue 1-bank or 1-straight that way): it starts
+  // on straight, and the drift buttons on its card change it.
+  for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = driftDial(s, 'straight') ?? legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click a dot to choose that move; it stays shown so you can look it over and compare. <b>Set move</b> (Enter) sets it.
     Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.
@@ -1972,7 +1996,7 @@ function renderPlanning() {
       ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
       ${isIonized(s) ? '' : hintLine(s)}
-      <div class="planned">${isIonized(s) ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
+      <div class="planned">${isIonized(s) ? `<span class="ion">⚡ Ionized: drifts 1 ${DRIFT_LABEL[driftOf(s, plan[s.id])]} (blue), Focus only</span>`
         : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
     card.querySelector<HTMLButtonElement>('[data-use-hint]')?.addEventListener('click', () => useSuggestion(s.id));
@@ -1981,7 +2005,8 @@ function renderPlanning() {
       cand.id = 'cand';
       card.appendChild(cand);
     }
-    card.appendChild(dialFallback(s));
+    if (isIonized(s)) card.appendChild(driftButtons(s));
+    else card.appendChild(dialFallback(s));
     detail.appendChild(card);
   }
   const go = document.createElement('button');

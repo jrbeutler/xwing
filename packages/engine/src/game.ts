@@ -1,7 +1,7 @@
 import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { OBSTACLE_RULES, PILOTS, SHIP_TYPES, UPGRADES } from './content';
-import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { cardDamage, gainIon, ionThreshold, isIonized, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
 import { actionBar, easedManeuver, effectsOf, gainToken, recoverRecurringCharges, runTriggers, statBonus } from './effects';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
@@ -111,12 +111,21 @@ export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => eased
 export const hasTurret = (sh: ShipState) =>
   shipType(sh).primaries.some((w) => w.arc === 'turret') || sh.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret');
 
-/** Ion tokens it takes to ionize a ship: 1 small, 2 medium, 3 large. */
-export const ionThreshold = (sh: ShipState) => ({ small: 1, medium: 2, large: 3 })[shipType(sh).size];
-export const isIonized = (sh: ShipState) => sh.ion >= ionThreshold(sh);
+export { ionThreshold, isIonized };
 
-/** The white 1-straight an ionized ship flies instead of its dial. */
-export const ION_MANEUVER: Maneuver = { bearing: 'straight', speed: 1, difficulty: 'white' };
+/** An ionized ship's maneuver with its dial on a straight (or a stop): a blue 1-straight. */
+export const ION_MANEUVER: Maneuver = { bearing: 'straight', speed: 1, difficulty: 'blue' };
+
+/**
+ * The ion maneuver an ionized ship flies instead of its dial: a blue speed-1 move in the direction the dial
+ * shows, a bank to that side for anything turning left or right, otherwise a straight.
+ */
+export function ionManeuverFor(m: Maneuver): Maneuver {
+  if (m.bearing.startsWith('reverse')) return ION_MANEUVER;
+  if (/Left$/.test(m.bearing)) return { bearing: 'bankLeft', speed: 1, difficulty: 'blue' };
+  if (/Right$/.test(m.bearing)) return { bearing: 'bankRight', speed: 1, difficulty: 'blue' };
+  return ION_MANEUVER;
+}
 
 /** Dial indices a ship may select this round (stressed ships cannot pick red). */
 export function legalDial(s: GameState, sh: ShipState): number[] {
@@ -184,7 +193,7 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false, coor
     if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
     if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
     if (a.type === 'coordinate' && !coordinated) for (const t of coordinateTargets(s, sh)) opts.push({ type: 'coordinate', targetId: t.id });
-    if (a.type === 'lock') {
+    if (a.type === 'lock' && !isIonized(sh)) {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
         const r = rangeBetween(sh, t);
@@ -482,7 +491,7 @@ function detonate(s: GameState, d: Device, victims: ShipState[]) {
   const effect = UPGRADES[d.upgrade].device!.effect;
   const mark = s.log.length;
   const hits = victims.map((v) => {
-    if (effect === 'ion') { v.ion += 3; return { shipId: v.id, shieldDamage: 0, hullDamage: 0, ion: 3 }; }
+    if (effect === 'ion') { gainIon(s, v, 3); return { shipId: v.id, shieldDamage: 0, hullDamage: 0, ion: 3 }; }
     if (effect === 'proton') return { shipId: v.id, ...sufferDamage(s, v, 0, 1) };
     const roll = rollAttack(s, 2);
     return { shipId: v.id, ...sufferDamage(s, v, roll.filter((f) => f === 'hit').length, roll.filter((f) => f === 'crit').length), roll };
@@ -533,10 +542,10 @@ function continueActivation(s: GameState) {
     const sh = ship(s, s.queue[s.queueIndex]);
     if (sh.destroyed || sh.dial === null) { s.queueIndex++; continue; }
     const ionized = isIonized(sh);
-    const m = ionized ? ION_MANEUVER : maneuverFor(sh, sh.dial);
+    const m = ionized ? ionManeuverFor(maneuverFor(sh, sh.dial)) : maneuverFor(sh, sh.dial);
     if (ionized) {
       sh.ion = 0;
-      s.log.push({ type: 'info', text: `${sh.name} is ionized and drifts 1 straight.` });
+      s.log.push({ type: 'info', text: `${sh.name} is ionized and drifts 1 ${m.bearing === 'straight' ? 'straight' : m.bearing === 'bankLeft' ? 'bank left' : 'bank right'}.` });
     }
     s.log.push({ type: 'dialRevealed', shipId: sh.id, maneuver: m });
     const mv = resolveMovement(s, sh, m);
@@ -591,7 +600,7 @@ function obstacleContact(s: GameState, sh: ShipState, o: Obstacle) {
   s.log.push(ev);
   const hit = rule.hitOn.includes(face) ? 1 : 0, crit = rule.critOn.includes(face) ? 1 : 0;
   if (hit || crit) Object.assign(ev, sufferDamage(s, sh, hit, crit));
-  if (rule.ionOn.includes(face)) { sh.ion++; ev.ion = 1; }
+  if (rule.ionOn.includes(face)) { ev.ion = 1; gainIon(s, sh, 1); }
 }
 
 /** Effects that reward fully executing a red maneuver (Elusive, Hotshot). */
@@ -683,8 +692,8 @@ function beforeEngage(s: GameState, sh: ShipState) {
     if (roll === 'hit') cardDamage(s, sh, ev, 1);
   }
   if (hasCard(sh, 'disabledPowerRegulator')) {
-    sh.ion++;
     s.log.push({ type: 'damageCard', shipId: sh.id, card: 'disabledPowerRegulator', what: 'triggered', ion: 1 });
+    gainIon(s, sh, 1);
   }
   if (sh.hull <= 0) destroy(s, sh);
 }

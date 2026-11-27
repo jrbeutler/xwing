@@ -5,7 +5,7 @@ import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, isIonized, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, ionManeuverFor, isIonized, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
@@ -55,7 +55,7 @@ const straightAhead = (e: ShipState): Prediction[] => {
  * How the AI predicts enemy maneuvers. 'modeled': it puts itself in each enemy's seat, scores that enemy's
  * legal maneuvers with scoreManeuver (assuming our ships fly straight ahead), and keeps the `top` best,
  * weighted by exp((score - best) / temperature). 'straight': everyone flies 100 mm straight ahead.
- * Ionized enemies are known to drift 1 straight; stressed ones cannot pick red maneuvers. Mutable for experiments.
+ * Ionized enemies drift a blue 1-straight or 1-bank (which way is hidden); stressed ones cannot pick red maneuvers. Mutable for experiments.
  */
 export const PREDICTION = { mode: 'modeled' as 'modeled' | 'straight', top: 3, temperature: 8 };
 
@@ -67,7 +67,11 @@ export function predictEnemies(s: GameState, playerId: PlayerId): Map<string, Pr
 function predictShip(s: GameState, e: ShipState): Prediction[] {
   if (PREDICTION.mode === 'straight') return straightAhead(e);
   const size = shipSize(e);
-  if (isIonized(e)) return [{ pose: maneuverFinalPose(e.pose, size, ION_MANEUVER), w: 1 }];
+  // Ionized: a blue 1-bank or 1-straight, toward whichever side its hidden dial points; each as likely.
+  if (isIonized(e)) {
+    const drifts: Maneuver[] = [ION_MANEUVER, { ...ION_MANEUVER, bearing: 'bankLeft' }, { ...ION_MANEUVER, bearing: 'bankRight' }];
+    return drifts.map((m) => ({ pose: maneuverFinalPose(e.pose, size, m), w: 1 / 3 }));
+  }
   const naive = new Map(activeShips(s).filter((x) => x.owner !== e.owner).map((x) => [x.id, straightAhead(x)]));
   const scored = legalDial(s, e).map((i) => ({ i, sc: scoreManeuver(s, e, i, () => 0, naive) }))
     .filter((x) => x.sc > -1000).sort((a, b) => b.sc - a.sc).slice(0, PREDICTION.top);
@@ -82,7 +86,8 @@ function predictShip(s: GameState, e: ShipState): Prediction[] {
  * without it every enemy is assumed to fly straight ahead.
  */
 export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number, predictions?: Map<string, Prediction[]>): number {
-  const m = maneuverFor(sh, dialIndex); // as damage cards make it fly
+  // As damage cards and upgrades make it fly, or the ion maneuver its dial points to if it is ionized.
+  const m = isIonized(sh) ? ionManeuverFor(maneuverFor(sh, dialIndex)) : maneuverFor(sh, dialIndex);
   const size = shipSize(sh);
   const pose = maneuverFinalPose(sh.pose, size, m);
   const poly = basePolygon(pose, size);

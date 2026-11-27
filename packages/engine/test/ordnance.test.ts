@@ -101,3 +101,31 @@ describe('firing ordnance', () => {
     expect(() => apply(g0, { type: 'attack', playerId: 'a', targetId: d.id, weapon: 'proton-torpedoes' })).toThrow('Illegal target');
   });
 });
+
+describe('ion maneuvers and locks (official rules)', () => {
+  it('an ionized ship drifts a blue 1-bank toward its dial, or a blue 1-straight', async () => {
+    const { ionManeuverFor } = await import('../src/game');
+    const m = (bearing: string, difficulty = 'white') => ({ bearing, speed: 3, difficulty }) as never;
+    expect(ionManeuverFor(m('turnLeft'))).toEqual({ bearing: 'bankLeft', speed: 1, difficulty: 'blue' });
+    expect(ionManeuverFor(m('bankRight', 'red'))).toEqual({ bearing: 'bankRight', speed: 1, difficulty: 'blue' });
+    expect(ionManeuverFor(m('sloopLeft'))).toEqual({ bearing: 'bankLeft', speed: 1, difficulty: 'blue' });
+    expect(ionManeuverFor(m('kturn'))).toEqual({ bearing: 'straight', speed: 1, difficulty: 'blue' });
+    expect(ionManeuverFor(m('reverseBankLeft'))).toEqual({ bearing: 'straight', speed: 1, difficulty: 'blue' });
+  });
+
+  it('becoming ionized breaks the lock, and an ionized ship cannot lock', async () => {
+    const { gainIon } = await import('../src/combat');
+    const { actionOptions } = await import('../src/game');
+    const g = createGame({
+      seed: 3, players: [{ id: 'a', name: 'A', faction: 'x' }, { id: 'b', name: 'B', faction: 'y' }],
+      squads: { a: [{ pilotId: 'drav-okono', pose: { x: 300, y: 300, h: 0 } }], b: [{ pilotId: 'syl-ketch', pose: { x: 500, y: 300, h: Math.PI } }] },
+    });
+    const [med] = g.ships;
+    med.lock = 'b-0';
+    gainIon(g, med, 1); // medium ships need 2
+    expect(med.lock).toBe('b-0');
+    gainIon(g, med, 1);
+    expect(med.lock).toBeNull();
+    expect(actionOptions(g, med).some((o) => o.type === 'lock')).toBe(false);
+  });
+});
