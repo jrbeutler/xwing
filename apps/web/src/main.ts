@@ -1,10 +1,11 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, actionBar, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
+import { markDone, nextMission, openBriefing, openCampaign, openStart } from './campaign';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
 import { openLobby, type LobbyUi } from './lobby';
@@ -68,6 +69,18 @@ const setSpeed = (v: number) => {
 speedBtn.onclick = () => setSpeed(scene.speed === 1 ? 2 : 1);
 try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setSpeed(1); }
 
+/** Back to the start menu (from a battle, after a confirmation). */
+const menuBtn = document.createElement('button');
+menuBtn.id = 'menubtn';
+menuBtn.textContent = '☰ Menu';
+menuBtn.setAttribute('aria-label', 'Main menu');
+menuBtn.onclick = () => {
+  const playing = stage !== 'setup' && state && state.phase !== 'over';
+  if (playing && !confirm(mission ? 'Leave this mission?' : 'Leave this battle?')) return;
+  showStart();
+};
+document.getElementById('hud')!.prepend(menuBtn);
+
 /** Whose turn it is, when two people share the device. */
 const seatEl = document.createElement('span');
 seatEl.id = 'seat';
@@ -75,6 +88,8 @@ seatEl.hidden = true;
 document.getElementById('hud')!.appendChild(seatEl);
 
 let state: GameState;
+/** The mission being played (campaign), or null in a skirmish. */
+let mission: MissionDef | null = null;
 /** Where we are: building squads, placing ships, or fighting. */
 let stage: 'setup' | 'deploy' | 'battle' = 'setup';
 let lastSetup: BattleSetup | null = null;
@@ -97,12 +112,118 @@ function newGame(keep?: BattleSetup) {
   leaveOnline();
   hideFinale();
   hideHandoff();
+  leaveMission();
   stage = 'setup';
   seatEl.hidden = true;
   mode = null;
   scene.setDeployZone(null);
   hideRecap();
-  openSetup(startDeployment, keep);
+  openSetup(startDeployment, keep, showStart);
+}
+
+// ---------------------------------------------------------------------------
+// The way in: the start menu, the campaign's missions and their briefings (campaign.ts draws the screens).
+// ---------------------------------------------------------------------------
+function showStart() {
+  leaveOnline();
+  hideFinale();
+  hideHandoff();
+  hideRecap();
+  document.getElementById('setup')?.remove();
+  openStart({ campaign: showCampaign, skirmish: () => newGame() });
+}
+
+function showCampaign() {
+  hideFinale();
+  openCampaign({ play: briefMission, back: showStart });
+}
+
+const briefMission = (m: MissionDef) => openBriefing(m, { begin: () => startMission(m), back: showCampaign });
+
+/** Play a mission: its ships are already placed, so the battle starts straight away (no squad or deployment). */
+function startMission(m: MissionDef) {
+  leaveOnline();
+  hideFinale();
+  hideHandoff();
+  hideRecap();
+  mission = m;
+  versus = 'ai';
+  // Missions turn the move hints on (the AI's suggestion for each ship, drawn to the objectives).
+  lastSetup = { budget: 0, versus: 'ai', player: { ships: [] }, opponent: { ships: [] }, hints: { you: true, them: false } };
+  state = missionGame(m, (Math.random() * 1e9) | 0);
+  shown = 0;
+  plan = {};
+  logEl.innerHTML = '';
+  roundShots = [];
+  disp = structuredClone(state.ships);
+  finaleFor = null;
+  scene.clearShips();
+  scene.setObstacles(state.obstacles);
+  scene.syncShips(state.ships);
+  scene.setDevices([]);
+  scene.setDeployZone(null);
+  scene.setRings({});
+  objectives = structuredClone(state.mission!.objectives);
+  renderMissionHud();
+  setSeat(P1, true);
+  scene.resetView(0);
+  stage = 'battle';
+  mode = null;
+  pump();
+}
+
+/** Back to a skirmish or the menu: clear what a mission put on screen. */
+function leaveMission() {
+  mission = null;
+  objectives = [];
+  coachQueue.length = 0;
+  coach.hidden = true;
+  renderMissionHud();
+}
+
+/** The objectives as shown so far (they move on as events are presented, not ahead of the animations). */
+let objectives: ObjectiveState[] = [];
+const missionHud = document.createElement('div');
+missionHud.id = 'mission-hud';
+missionHud.hidden = true;
+document.body.appendChild(missionHud);
+
+function renderMissionHud() {
+  const m = state?.mission;
+  missionHud.hidden = !mission || !m;
+  if (!mission || !m) { scene.setMissionMarks([], []); return; }
+  const mark = (o: ObjectiveState) => (o.status === 'done' ? '✓ ' : o.status === 'failed' ? '✗ ' : '');
+  const progress = (o: ObjectiveState) => (o.status === 'open' && o.of > 1 && o.kind !== 'survive' ? `<span class="mh-progress">${o.progress}/${o.of}</span>` : '');
+  missionHud.innerHTML = `<div class="mh-title">Mission ${mission.number}: ${mission.title}</div>
+    <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul>`;
+  // Gates: the next one in each open course is lit; the ones flown through fade.
+  const done: string[] = [];
+  let next: string | undefined;
+  for (const o of objectives) {
+    if (o.kind !== 'course') continue;
+    done.push(...o.markers.slice(0, o.progress));
+    if (o.status === 'open') next ??= o.markers[o.progress];
+  }
+  scene.setMissionMarks(m.markers, m.zones, next, done);
+}
+
+/** Coach tips and scripted lines: a card in the corner, one at a time, until dismissed. */
+const coach = document.createElement('div');
+coach.id = 'coach';
+coach.hidden = true;
+coach.setAttribute('role', 'status');
+document.body.appendChild(coach);
+const coachQueue: { title: string; text: string }[] = [];
+function showCoach(title: string, text: string) {
+  coachQueue.push({ title, text });
+  if (coach.hidden) nextCoach();
+}
+function nextCoach() {
+  const m = coachQueue.shift();
+  if (!m) { coach.hidden = true; return; }
+  coach.innerHTML = `<b>${m.title}</b><p>${m.text}</p><button class="opt mini" id="coach-ok">${coachQueue.length ? 'Next tip' : 'Got it'}</button>`;
+  coach.hidden = false;
+  coach.querySelector<HTMLButtonElement>('#coach-ok')!.onclick = nextCoach;
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +981,19 @@ async function animate(e: GameEvent) {
     case 'damageCard':
       await showDamageCard(e);
       return;
+    case 'objective': {
+      const o = objectives.find((x) => x.id === e.id);
+      if (o) { o.status = e.status; o.progress = e.progress; o.of = e.of; }
+      renderMissionHud();
+      if (o && e.status === 'done') showBanner(`<span class="who">Objective complete</span><b>${o.label.toUpperCase()}</b>`, 'hit', 1800);
+      else if (o && e.status === 'failed') showBanner(`<span class="who">Objective failed</span><b>${o.label.toUpperCase()}</b>`, 'crit incoming', 2200);
+      else if (o && o.kind === 'course') showBanner(`<span class="who">${o.label}</span><b>GATE ${e.progress} OF ${e.of}</b>`, 'hit', 1100);
+      await scene.wait(o?.kind === 'course' ? 500 : 900);
+      return;
+    }
+    case 'message':
+      showCoach(e.title, e.text);
+      return;
     case 'dialPeeked': {
       // The peeking player sees the maneuver; the other player only that their dial was seen.
       const target = shipById(e.targetId), mine = shipById(e.shipId).owner === me;
@@ -1220,9 +1354,16 @@ function describe(e: GameEvent): string | null {
       const seen = dial !== null && dial !== undefined ? `: <b>${maneuverLabel(maneuverFor(shipById(e.targetId), dial))}</b>` : '';
       return `${nameHtml(e.shipId)}'s ${effectSource(e.upgrade)?.name ?? 'crew'} sees ${nameHtml(e.targetId)}'s dial${seen}`;
     }
+    case 'objective': {
+      const o = state.mission?.objectives.find((x) => x.id === e.id);
+      const what = o?.label ?? e.id;
+      return e.status === 'done' ? `<b>✓ Objective complete: ${what}</b>` : e.status === 'failed' ? `<b>✗ Objective failed: ${what}</b>` : `${what}: ${e.progress}/${e.of}`;
+    }
+    case 'message': return `💬 <b>${e.title}</b>: ${e.text}`;
     case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost[0].toUpperCase() + e.lost.slice(1)} is lost`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
-    case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
+    case 'gameOver': return e.mission ? `<b>${e.mission === 'win' ? 'Mission complete' : 'Mission failed'}</b>`
+      : `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
     default: return null;
   }
@@ -1272,6 +1413,21 @@ function renderDecision() {
   // Online: the other player's decision (or ours, sent and waiting for the host) shows what they are doing.
   if (versus === 'online' && d && state.phase !== 'over' && (awaitingHost || !(d.kind === 'planning' ? d.waitingOn.includes(me) : d.playerId === me))) {
     return renderOpponentTurn(d);
+  }
+  if ((state.phase === 'over' || !d) && mission) {
+    scene.highlight(null);
+    const won = state.mission?.result === 'win';
+    detail.innerHTML = `<h2>${won ? 'Mission complete' : 'Mission failed'}</h2>
+      <p class="hint">${mission.title}, round ${state.round}.</p>
+      <div class="row"><button class="go" id="ms-next">${won && nextMission(mission) ? 'Next mission' : 'Campaign'}</button>
+      <button class="opt mini" id="ms-retry">Retry</button><button class="opt mini" id="ms-results">Debrief</button></div>`;
+    document.getElementById('ms-next')!.onclick = afterMission;
+    document.getElementById('ms-retry')!.onclick = () => briefMission(mission!);
+    document.getElementById('ms-results')!.onclick = () => showFinale();
+    setBar({ status: `<b>${won ? 'Mission complete' : 'Mission failed'}</b>`, buttons: [
+      { label: 'Retry', onClick: () => briefMission(mission!) }, { label: won && nextMission(mission) ? 'Next' : 'Campaign', cls: 'primary', onClick: afterMission }] });
+    if (finaleFor !== state) { finaleFor = state; showFinale(true); }
+    return;
   }
   if (state.phase === 'over' || !d) {
     scene.highlight(null);
@@ -1337,7 +1493,50 @@ function resultTitle() {
   return state.winner === me ? 'Victory' : 'Defeat';
 }
 
+/** After a mission: the next one's briefing if it was won and there is one, else the campaign list. */
+function afterMission() {
+  const next = mission && state.mission?.result === 'win' ? nextMission(mission) : undefined;
+  hideFinale();
+  if (next) briefMission(next);
+  else showCampaign();
+}
+
+/** The end of a mission: complete or failed, how each objective went, and where to go next. */
+function showDebrief(first: boolean) {
+  const m = mission!, won = state.mission?.result === 'win';
+  if (won && first) markDone(m.id);
+  const next = won ? nextMission(m) : undefined;
+  const title = won ? 'Mission complete' : 'Mission failed';
+  // Letters animate one by one; words stay whole when the title wraps.
+  let n = 0;
+  const letters = title.toUpperCase().split(' ').map((w) => `<span class="word">${[...w].map((c) => `<span style="--i:${n++}">${c}</span>`).join('')}</span>`).join(' ');
+  const objs = state.mission!.objectives;
+  const why = won ? (next ? `Next: ${next.title} (${next.teaches.toLowerCase()}).` : 'Training complete: every rule is unlocked for skirmishes.')
+    : objs.some((o) => o.status === 'failed') ? 'An objective failed.' : !state.ships.some((x) => x.owner === P1 && !x.destroyed) ? 'Your ships were lost.'
+      : `Out of time: the mission had ${state.mission!.maxRounds} rounds.`;
+  finale.className = `${won ? 'victory' : 'defeat'} mission`;
+  finale.innerHTML = `
+    <div class="finale-rays" aria-hidden="true"></div>
+    <div class="finale-card" role="dialog" aria-modal="true" aria-labelledby="finale-title">
+      <div class="finale-kicker">Training · Mission ${m.number} · round ${state.round}</div>
+      <h1 id="finale-title" aria-label="${title}">${letters}</h1>
+      <p class="finale-why">${why}</p>
+      <ul class="objective-list" style="text-align:left">${objs.map((o) => `<li class="${o.status}">${o.status === 'done' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.label}</li>`).join('')}</ul>
+      <div class="finale-buttons"><button class="opt" id="fn-board">View board</button><button class="opt" id="fn-retry">Retry</button>
+        <button class="go" id="fn-next">${next ? 'Next mission' : 'Campaign'}</button></div>
+    </div>`;
+  finale.hidden = false;
+  void finale.offsetWidth;
+  finale.classList.add('show');
+  finale.querySelector<HTMLButtonElement>('#fn-next')!.onclick = afterMission;
+  finale.querySelector<HTMLButtonElement>('#fn-retry')!.onclick = () => { hideFinale(); briefMission(m); };
+  finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
+  finale.querySelector<HTMLButtonElement>('#fn-next')!.focus();
+  if (won && first) scene.celebrate(P1);
+}
+
 function showFinale(first = false) {
+  if (mission) return showDebrief(first);
   const two = versus === 'human';
   // Two players: told from the winner's side (it's their celebration), and named rather than "you".
   const hero = two && state.winner && state.winner !== 'draw' ? state.winner : me;
@@ -1986,8 +2185,8 @@ function renderPlanning() {
   for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = driftDial(s, 'straight') ?? legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click a dot to choose that move; it stays shown so you can look it over and compare. <b>Set move</b> (Enter) sets it.
-    Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.
-    Blue clears stress, red adds it.</p>${obstacleLegend()}`;
+    ${rulesOf(state).specialManeuvers ? 'Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.' : ''}
+    ${rulesOf(state).redManeuvers ? 'Blue clears stress, red adds it.' : 'Blue maneuvers are easy, white ones normal.'}</p>${obstacleLegend()}`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
     const card = document.createElement('div');
@@ -2599,7 +2798,9 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
 }
 
 updateLayout();
-newGame();
+// An invite link goes straight to the online lobby; otherwise the start menu.
+if (inviteCode) newGame();
+else showStart();
 
 // Debug/test hook (also handy in the browser console).
 (window as unknown as { __xw: unknown }).__xw = {
@@ -2608,6 +2809,8 @@ newGame();
   /** The player this device is acting for, and a way to send its commands (as the UI would). */
   get me() { return me; },
   send: (cmd: Command) => send(cmd),
+  /** The move hints for the player planning now (for test scripts that fly missions). */
+  suggest: () => suggestManeuvers(viewFor(state, me), me),
   /** Legal dial indices for one of the ships (for test scripts that plan moves). */
   legalDial: (id: string) => legalDial(state, shipById(id)),
   get stage() { return stage; },

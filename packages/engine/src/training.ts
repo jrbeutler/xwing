@@ -39,6 +39,7 @@ export function missionGame(def: MissionDef, seed: number): GameState {
     players: [{ ...MISSION_PLAYERS[0] }, { ...MISSION_PLAYERS[1] }],
     squads: { p1: def.player, p2: def.enemy },
     obstacles: def.obstacles,
+    maxRounds: def.maxRounds,
     mission: {
       id: def.id, player: 'p1', ruleset: def.ruleset, objectives: def.objectives, triggers: def.triggers ?? [],
       zones: def.zones ?? [], markers: def.markers ?? [], ai: { p2: def.enemyAi ?? 'standard' }, maxRounds: def.maxRounds,
@@ -80,7 +81,7 @@ export const TRAINING: MissionDef[] = [
     player: [cadet(457)], enemy: [],
     objectives: [{ id: 'course', label: 'Fly through the gates in order', kind: 'course', markers: ['g1', 'g2', 'g3', 'g4', 'g5'] }],
     triggers: [
-      tip({ roundStart: 1 }, 'Your dial', 'Click your ship, then move the pointer toward a dot: the ghost shows where that maneuver ends. Click to choose it, then Set move.'),
+      tip({ roundStart: 1 }, 'Your dial', 'Select your ship and pick one of the dots in front of it: the ghost shows where that maneuver ends. Then set the move. The 💡 hint suggests one.'),
       tip({ roundStart: 2 }, 'Banks and turns', 'Banks curve gently (45°), turns sharply (90°). Turning near a gate is easier at low speed.'),
       tip({ objectiveDone: 'course' }, 'Course complete', 'Nicely flown. Next: shooting.'),
     ],

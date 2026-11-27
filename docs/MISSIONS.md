@@ -1,6 +1,7 @@
 # Missions, training and campaign: plan
 
-Status: plan, not built. Decisions so far:
+Status: the mission framework and the eight training missions are built (build steps 1 and 2 below); the
+campaign layer and fleet battles are not. Decisions so far:
 - **Fighters in fleet battles** are abstract squadron tokens to start (the fleet layer is later).
 - **Permadeath**: pilots and ships lost in a mission are gone.
 - **Single player** first; the design keeps co-op possible (two players sharing one roster against the AI).
@@ -122,6 +123,23 @@ strategic situation and fighter missions are the plot points whose results chang
 
 **Co-op later**: two players share one roster against the AI. The online code already runs two humans in
 one game (the host's browser runs it); campaign state would live with the host, or on the planned server.
+
+## As built (steps 1 and 2)
+
+- Engine: `rules.ts` (rulesets), `mission.ts` (objectives, triggers, result), `training.ts` (the eight missions
+  and `missionGame`). Objectives built: destroy, survive, reach, course, protect (`scan` and reinforcements
+  later). Triggers fire messages on a round, an objective done, a tagged ship destroyed, or the first stress,
+  damage card, obstacle hit, attack, hit or lock of the player's. The AI has a `drone` profile, and the
+  player's side is drawn to its objectives (move hints). The ruleset gates attacks, actions, linked actions, red
+  and special maneuvers and damage cards; mission forces are fixed, so slots and devices need no gate yet.
+- Client: a start menu (Campaign, Skirmish), the campaign's mission list (progress in localStorage, Skip
+  training), briefings, the objectives HUD, gates and zones on the table, coach-tip cards, and a debrief with
+  Next / Retry / Campaign. Missions turn the move hints on.
+- Mission 8 teaches upgrades with a fixed escort (the escorts carry a Shield Booster and Hull Plating); building
+  your own squad within a budget comes with the campaign layer.
+- In tests each mission is played to a result with the AI flying both sides: the course and the drones are
+  won nearly every time; the fights are won roughly a quarter to two thirds of the time by the AI, so a player
+  using the hints should do better.
 
 ## Build order
 
