@@ -29,14 +29,14 @@ const card = (id: DamageCardId, title: string, tag: string, copies: number, repa
 export const DAMAGE_CARDS: Record<DamageCardId, DamageCardDef> = {
   directHit: card('directHit', 'Direct Hit!', 'HIT', 5, false, 'Take 1 more damage, then discard this card.'),
   panickedPilot: card('panickedPilot', 'Panicked Pilot', 'PANIC', 2, false, 'Gain 2 stress, then discard this card.'),
-  blindedPilot: card('blindedPilot', 'Blinded Pilot', 'BLIND', 2, true, 'Your attacks cannot spend focus or a lock to change dice.'),
-  woundedPilot: card('woundedPilot', 'Wounded Pilot', 'WOUND', 2, true, 'After you perform an action, roll an attack die: on a hit or crit, gain 1 stress.'),
+  blindedPilot: card('blindedPilot', 'Blinded Pilot', 'BLIND', 2, true, 'Your attacks cannot spend focus or a lock to improve your shots.'),
+  woundedPilot: card('woundedPilot', 'Wounded Pilot', 'WOUND', 2, true, 'After you perform an action, 50% chance to gain 1 stress.'),
   stunnedPilot: card('stunnedPilot', 'Stunned Pilot', 'STUN', 2, false, 'After you move, if you touched an asteroid, take 1 damage.'),
-  consoleFire: card('consoleFire', 'Console Fire', 'FIRE', 2, true, 'Before you engage, roll an attack die: on a hit, take 1 damage.'),
+  consoleFire: card('consoleFire', 'Console Fire', 'FIRE', 2, true, 'Before you engage, 38% chance to take 1 damage.'),
   damagedEngine: card('damagedEngine', 'Damaged Engine', 'ENGINE', 2, false, 'Your turns are one step harder (blue → white → red).'),
-  weaponsFailure: card('weaponsFailure', 'Weapons Failure', 'WEAPONS', 2, true, 'Roll 1 fewer attack die.'),
+  weaponsFailure: card('weaponsFailure', 'Weapons Failure', 'WEAPONS', 2, true, 'Fire 1 fewer shot per attack.'),
   hullBreach: card('hullBreach', 'Hull Breach', 'BREACH', 2, true, 'Damage you take from hits counts as crits instead.'),
-  structuralDamage: card('structuralDamage', 'Structural Damage', 'FRAME', 2, false, 'Roll 1 fewer defense die.'),
+  structuralDamage: card('structuralDamage', 'Structural Damage', 'FRAME', 2, false, 'Get 1 fewer dodge when defending.'),
   damagedSensorArray: card('damagedSensorArray', 'Damaged Sensor Array', 'SENSORS', 2, true, 'The only actions you can perform are Focus and Repair.'),
   looseStabilizer: card('looseStabilizer', 'Loose Stabilizer', 'STABLZR', 2, true, 'After you fly anything but a straight, take 1 damage and discard this card.'),
   disabledPowerRegulator: card('disabledPowerRegulator', 'Disabled Power Regulator', 'POWER', 2, false, 'Before you engage, gain an ion token. After you fly an ion maneuver, discard this card.'),
@@ -97,6 +97,14 @@ export const actionAllowed = (sh: ShipState, type: ActionType) => !hasCard(sh, '
 /** Distinct face-up cards this ship could repair with an action. */
 export const repairableCards = (sh: ShipState): DamageCardId[] =>
   [...new Set(sh.crits)].filter((c) => DAMAGE_CARDS[c].repairable);
+
+/** Face-up cards from most to least harmful, for effects that repair "a card" of their own choosing. */
+export const REPAIR_PRIORITY: DamageCardId[] = [
+  'consoleFire', 'hullBreach', 'fuelLeak', 'weaponsFailure', 'blindedPilot', 'structuralDamage', 'damagedEngine',
+  'damagedSensorArray', 'disabledPowerRegulator', 'woundedPilot', 'looseStabilizer', 'stunnedPilot', 'panickedPilot', 'directHit',
+];
+/** The face-up card a repair effect fixes first, or undefined if the ship has none. */
+export const worstCard = (sh: ShipState): DamageCardId | undefined => REPAIR_PRIORITY.find((c) => sh.crits.includes(c)) ?? sh.crits[0];
 
 /** Remove one copy of a face-up card from a ship to the discard pile. */
 export function discardCard(s: GameState, sh: ShipState, id: DamageCardId) {

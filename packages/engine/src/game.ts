@@ -1,23 +1,33 @@
 import { Pose, basePolygon, convexHull, normalizeAngle, polygonDistance, polygonsOverlap, toWorld, vec } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath, RANGE_BAND, STRAIGHT_UNIT } from './maneuvers';
 import { OBSTACLE_RULES, PILOTS, SHIP_TYPES, UPGRADES } from './content';
-import { cardDamage, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
-import { gainToken, recoverRecurringCharges, runTriggers, statBonus } from './effects';
+import { cardDamage, gainIon, ionThreshold, isIonized, upgradeOf, legalTargets, maxRangeBand, measureArc, rangeBetween, resolveAttack, rollAttack, shipPolygon, shipSize, shipType, sufferDamage } from './combat';
+import { actionBar, easedManeuver, effectsOf, gainToken, recoverRecurringCharges, runTriggers, statBonus } from './effects';
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
+import { missionRoundEnd, missionScan, startMission, type MissionSetup } from './mission';
+import { isSpecialManeuver, rulesOf } from './rules';
 import type {
   ActionChoice, ActionType, Command, Decision, Device, DropChoice, GameState, GreenToken, Obstacle, ObstacleKind, Player, PlayerId, ShipState,
 } from './types';
 
-/** A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. */
-export interface SquadEntry { pilotId: string; shipType?: string; pose: Pose; upgrades?: string[] }
+/**
+ * A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. Missions can
+ * also rename the ship, change its hull and shields (training drones) and tag it for objectives.
+ */
+export interface SquadEntry {
+  pilotId: string; shipType?: string; pose: Pose; upgrades?: string[];
+  name?: string; hull?: number; shields?: number; tags?: string[];
+}
 export interface GameSetup {
   seed: number;
   players: [Player, Player];
   squads: Record<PlayerId, SquadEntry[]>;
   obstacles?: Obstacle[];
   maxRounds?: number;
+  /** Play as a mission: its rules, objectives, zones and markers (docs/MISSIONS.md). */
+  mission?: MissionSetup;
 }
 
 const clone = <T>(x: T): T => structuredClone(x);
@@ -33,6 +43,7 @@ export function createGame(setup: GameSetup): GameState {
     players: setup.players, firstPlayer: setup.players[0].id, ships: [], obstacles: setup.obstacles ?? [],
     queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null, devices: [],
     damageDeck: [], damageDiscard: [],
+    ...(setup.mission ? { mission: startMission(setup.mission) } : {}),
   };
   state.damageDeck = newDamageDeck(state); // shuffled with the game's own RNG
   const fielded = new Map<string, number>(); // generic pilots flown more than once get numbered
@@ -43,12 +54,13 @@ export function createGame(setup: GameSetup): GameState {
       // Signature talents come with the pilot; they take talent slots ahead of bought upgrades.
       const ups = allUpgrades({ ...e, upgrades: e.upgrades ?? [] }).map((id) => UPGRADES[id]);
       const payload = statBonus(ups.map((u) => u.id), 'deviceCharges');
-      const hull = t.hull + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
-      const shields = t.shields + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
+      const hull = (e.hull ?? t.hull) + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
+      const shields = (e.shields ?? t.shields) + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
       const n = (fielded.get(pilot.id) ?? 0) + 1;
       fielded.set(pilot.id, n);
       state.ships.push({
-        id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
+        id: `${p.id}-${i}`, pilotId: pilot.id, name: e.name ?? (n > 1 ? `${pilot.name} #${n}` : pilot.name), typeId: t.id, owner: p.id,
+        ...(e.tags?.length ? { tags: [...e.tags] } : {}),
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
         ability: pilot.ability ? { id: pilot.id, charges: pilot.ability.charges ?? 0 } : null,
@@ -57,6 +69,7 @@ export function createGame(setup: GameSetup): GameState {
     });
   }
   startRound(state);
+  missionScan(state); // messages for round 1
   return state;
 }
 
@@ -104,23 +117,38 @@ export function generateObstacles(seedState: { rng: number }, mix: Partial<Recor
 
 export const activeShips = (s: GameState) => s.ships.filter((x) => !x.destroyed);
 
-/** A ship's dial entry as it must fly it now (damage cards can make it harder). */
-export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => effectiveManeuver(sh, shipType(sh).dial[dialIndex]);
+/** A ship's dial entry as it must fly it now (damage cards can make it harder, upgrades easier). */
+export const maneuverFor = (sh: ShipState, dialIndex: number): Maneuver => easedManeuver(sh, effectiveManeuver(sh, shipType(sh).dial[dialIndex]));
 
 /** Whether a ship carries a turret weapon (and so has the Rotate action and a turret arc). */
 export const hasTurret = (sh: ShipState) =>
   shipType(sh).primaries.some((w) => w.arc === 'turret') || sh.upgrades.some((u) => UPGRADES[u.id].weapon?.arc === 'turret');
 
-/** Ion tokens it takes to ionize a ship: 1 small, 2 medium, 3 large. */
-export const ionThreshold = (sh: ShipState) => ({ small: 1, medium: 2, large: 3 })[shipType(sh).size];
-export const isIonized = (sh: ShipState) => sh.ion >= ionThreshold(sh);
+export { ionThreshold, isIonized };
 
-/** The white 1-straight an ionized ship flies instead of its dial. */
-export const ION_MANEUVER: Maneuver = { bearing: 'straight', speed: 1, difficulty: 'white' };
+/** An ionized ship's maneuver with its dial on a straight (or a stop): a blue 1-straight. */
+export const ION_MANEUVER: Maneuver = { bearing: 'straight', speed: 1, difficulty: 'blue' };
+
+/**
+ * The ion maneuver an ionized ship flies instead of its dial: a blue speed-1 move in the direction the dial
+ * shows, a bank to that side for anything turning left or right, otherwise a straight.
+ */
+export function ionManeuverFor(m: Maneuver): Maneuver {
+  if (m.bearing.startsWith('reverse')) return ION_MANEUVER;
+  if (/Left$/.test(m.bearing)) return { bearing: 'bankLeft', speed: 1, difficulty: 'blue' };
+  if (/Right$/.test(m.bearing)) return { bearing: 'bankRight', speed: 1, difficulty: 'blue' };
+  return ION_MANEUVER;
+}
 
 /** Dial indices a ship may select this round (stressed ships cannot pick red). */
 export function legalDial(s: GameState, sh: ShipState): number[] {
-  return shipType(sh).dial.map((_, i) => (sh.stress > 0 && maneuverFor(sh, i).difficulty === 'red' ? -1 : i)).filter((i) => i >= 0);
+  const rules = rulesOf(s);
+  return shipType(sh).dial.map((_, i) => {
+    const m = maneuverFor(sh, i);
+    if (m.difficulty === 'red' && (sh.stress > 0 || !rules.redManeuvers)) return -1;
+    if (!rules.specialManeuvers && isSpecialManeuver(m)) return -1;
+    return i;
+  }).filter((i) => i >= 0);
 }
 
 export function inBounds(poly: { x: number; y: number }[]): boolean {
@@ -176,7 +204,7 @@ function downsample<T>(xs: T[], n: number): T[] {
  */
 export function actionOptions(s: GameState, sh: ShipState, ionized = false, coordinated = false): ActionChoice[] {
   const opts: ActionChoice[] = [{ type: 'none' }];
-  for (const a of shipType(sh).actions) {
+  for (const a of actionBar(sh)) {
     if (!actionAllowed(sh, a.type) || (ionized && a.type !== 'focus')) continue;
     if (a.type === 'focus') opts.push({ type: 'focus' });
     if (a.type === 'evade') opts.push({ type: 'evade' });
@@ -184,7 +212,7 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false, coor
     if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
     if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
     if (a.type === 'coordinate' && !coordinated) for (const t of coordinateTargets(s, sh)) opts.push({ type: 'coordinate', targetId: t.id });
-    if (a.type === 'lock') {
+    if (a.type === 'lock' && !isIonized(sh)) {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
         const r = rangeBetween(sh, t);
@@ -217,16 +245,20 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false, coor
     }
   }
   // Jam: an enemy at range 1-2 inside one of this ship's firing arcs (a turret's included).
-  if (!ionized && shipType(sh).actions.some((a) => a.type === 'jam') && actionAllowed(sh, 'jam')) {
+  if (!ionized && actionBar(sh).some((a) => a.type === 'jam') && actionAllowed(sh, 'jam')) {
     for (const t of jamTargets(s, sh)) opts.push({ type: 'jam', targetId: t.id });
   }
   // A turret upgrade adds the Rotate action: turn the turret arc to face another way.
   if (!ionized && hasTurret(sh) && actionAllowed(sh, 'rotateArc')) {
     for (const to of ['front', 'left', 'right', 'rear'] as const) if (to !== sh.turretArc) opts.push({ type: 'rotateArc', to });
   }
-  if (!ionized) for (const card of repairableCards(sh)) opts.push({ type: 'repair', card });
-  return opts;
+  if (!ionized) for (const card of repairOptions(sh)) opts.push({ type: 'repair', card });
+  const allowed = rulesOf(s).actions;
+  return opts.filter((o) => o.type === 'none' || allowed.includes(o.type));
 }
+
+/** Cards the Repair action could fix: repairable ones, or any face-up card with a Patch Droid. */
+export const repairOptions = (sh: ShipState) => (statBonus(sh, 'repairAny') > 0 ? [...new Set(sh.crits)] : repairableCards(sh));
 
 /** Charges an upgrade starts the battle with (devices get the ship's bonus, e.g. Payload Expert). */
 export const startingCharges = (sh: ShipState, id: string) =>
@@ -245,7 +277,7 @@ export function reloadable(sh: ShipState) {
 }
 
 /** The action-bar entry for an action type, if the ship has one. */
-const actionDef = (sh: ShipState, type: ActionChoice['type']) => shipType(sh).actions.find((x) => x.type === type);
+const actionDef = (sh: ShipState, type: ActionChoice['type']) => actionBar(sh).find((x) => x.type === type);
 
 /**
  * The linked action a ship may perform after `done`, as a pending decision, or null. A linked action is
@@ -253,7 +285,7 @@ const actionDef = (sh: ShipState, type: ActionChoice['type']) => shipType(sh).ac
  */
 function linkedDecision(s: GameState, sh: ShipState, done: ActionChoice): Extract<Decision, { kind: 'action' }> | null {
   // Coordinate hands the turn to the coordinated ship instead; it has no link of its own.
-  const link = done.type === 'none' || done.type === 'coordinate' ? undefined : actionDef(sh, done.type)?.linked;
+  const link = done.type === 'none' || done.type === 'coordinate' || !rulesOf(s).linkedActions ? undefined : actionDef(sh, done.type)?.linked;
   if (!link || sh.destroyed || !actionAllowed(sh, link.type)) return null;
   const options = actionOptions(s, sh).filter((o) => o.type === link.type);
   if (!options.length) return null;
@@ -266,12 +298,12 @@ export const COORDINATE_RANGE = 2;
 /** The actions a coordinated ship may take: what it could do now, except Coordinate (no chains). */
 export const coordinatedOptions = (s: GameState, t: ShipState) => actionOptions(s, t, isIonized(t), true);
 
-/** Friendly ships at range 0-2 that could act if coordinated: not stressed, and with an action to take. */
+/** Friendly ships at range 0-2 (more with a Tactical Officer) that could act if coordinated: not stressed, with an action to take. */
 export function coordinateTargets(s: GameState, sh: ShipState): ShipState[] {
   return activeShips(s).filter((t) => {
     if (t.owner !== sh.owner || t.id === sh.id || t.stress > 0) return false;
     const r = rangeBetween(sh, t);
-    return r !== null && r <= COORDINATE_RANGE && coordinatedOptions(s, t).length > 1;
+    return r !== null && r <= COORDINATE_RANGE + statBonus(sh, 'coordinateRange') && coordinatedOptions(s, t).length > 1;
   });
 }
 
@@ -287,8 +319,9 @@ export function viewFor(s: GameState, playerId: PlayerId): GameState {
   v.rng = 0;
   v.damageDeck.sort(); // contents are public, order is not
   // Opponents' dials stay hidden in every phase: each one becomes public only when its ship moves (the
-  // `dialRevealed` event), and ships later in the activation order have not revealed theirs yet.
-  for (const sh of v.ships) if (sh.owner !== playerId) sh.dial = null;
+  // `dialRevealed` event), and ships later in the activation order have not revealed theirs yet. A dial an
+  // upgrade of this player's peeked at (Intelligence Agent) stays visible to them.
+  for (const sh of v.ships) if (sh.owner !== playerId && !sh.dialSeenBy?.includes(playerId)) sh.dial = null;
   return v;
 }
 
@@ -297,6 +330,12 @@ export function viewFor(s: GameState, playerId: PlayerId): GameState {
 // ---------------------------------------------------------------------------
 
 export function apply(prev: GameState, cmd: Command): GameState {
+  const s = applyRules(prev, cmd);
+  missionScan(s); // a mission moves on from what just happened
+  return s;
+}
+
+function applyRules(prev: GameState, cmd: Command): GameState {
   // Events are immutable once logged, so the log is shared structurally, not deep-cloned.
   const s = clone({ ...prev, log: [] as GameState['log'] });
   s.log = prev.log.slice();
@@ -349,23 +388,38 @@ export function apply(prev: GameState, cmd: Command): GameState {
   if (cmd.type === 'attack') {
     if (d.kind !== 'attack' || d.playerId !== cmd.playerId) throw new Error('Not expecting an attack');
     const attacker = ship(s, d.shipId);
+    let bonus: Decision | null = null;
     if (cmd.targetId !== null) {
       const want = cmd.weapon && cmd.weapon !== 'primary' ? cmd.weapon : undefined;
       const t = d.targets.find((x) => x.targetId === cmd.targetId && (x.weapon ?? undefined) === want);
       if (!t) throw new Error('Illegal target');
       const defender = ship(s, t.targetId);
+      if (d.bonus) s.log.push({ type: 'upgrade', shipId: attacker.id, upgrade: d.bonus.source, what: 'used' });
       const mark = s.log.length;
       const r = resolveAttack(s, attacker, defender, t);
       const cards = s.log.splice(mark); // damage cards the shot dealt are logged after the shot itself
       s.log.push({ type: 'attack', attackerId: attacker.id, defenderId: defender.id, arc: t.arc, range: t.range, obstructed: t.obstructed, ...r }, ...cards);
       if (defender.hull <= 0) destroy(s, defender);
+      if (!d.bonus && r.shieldDamage + r.hullDamage === 0) bonus = bonusAttack(s, attacker, t.weapon ?? 'primary');
     }
-    s.pending = null;
+    s.pending = bonus;
+    if (bonus) return s;
     s.queueIndex++;
     continueEngagement(s);
     return s;
   }
   throw new Error('Unknown command');
+}
+
+/**
+ * A bonus attack after a miss (Second Gunner): the attacker may fire a different weapon through its turret
+ * arc, at any target it has. Null if it has no such effect or no such shot.
+ */
+function bonusAttack(s: GameState, sh: ShipState, used: string): Decision | null {
+  const fx = effectsOf(sh, 'bonusAttack')[0];
+  if (!fx || sh.destroyed) return null;
+  const targets = legalTargets(s, sh).filter((t) => t.turret && (t.weapon ?? 'primary') !== used);
+  return targets.length ? { kind: 'attack', playerId: sh.owner, shipId: sh.id, targets, bonus: { source: fx.source.id } } : null;
 }
 
 function destroy(s: GameState, sh: ShipState) {
@@ -390,7 +444,7 @@ function startRound(s: GameState) {
   s.round++;
   s.phase = 'planning';
   s.log.push({ type: 'roundStart', round: s.round }, { type: 'phase', phase: 'planning' });
-  for (const sh of s.ships) sh.dial = null;
+  for (const sh of s.ships) { sh.dial = null; delete sh.dialSeenBy; }
   const waiting = s.players.map((p) => p.id).filter((p) => activeShips(s).some((x) => x.owner === p));
   s.pending = { kind: 'planning', waitingOn: waiting };
 }
@@ -463,7 +517,7 @@ function detonate(s: GameState, d: Device, victims: ShipState[]) {
   const effect = UPGRADES[d.upgrade].device!.effect;
   const mark = s.log.length;
   const hits = victims.map((v) => {
-    if (effect === 'ion') { v.ion += 3; return { shipId: v.id, shieldDamage: 0, hullDamage: 0, ion: 3 }; }
+    if (effect === 'ion') { gainIon(s, v, 3); return { shipId: v.id, shieldDamage: 0, hullDamage: 0, ion: 3 }; }
     if (effect === 'proton') return { shipId: v.id, ...sufferDamage(s, v, 0, 1) };
     const roll = rollAttack(s, 2);
     return { shipId: v.id, ...sufferDamage(s, v, roll.filter((f) => f === 'hit').length, roll.filter((f) => f === 'crit').length), roll };
@@ -484,9 +538,29 @@ function triggerMines(s: GameState, sh: ShipState, poses: Pose[]) {
 function beginActivation(s: GameState) {
   s.phase = 'activation';
   s.log.push({ type: 'phase', phase: 'activation' });
+  peekDials(s);
   s.queue = initiativeOrder(s, true);
   s.queueIndex = 0;
   continueActivation(s);
+}
+
+/**
+ * Start of the Activation phase: ships with a dial-peeking upgrade (Intelligence Agent) see the dial of the
+ * nearest enemy in reach. The dial stays visible to their player (viewFor) for the rest of the round.
+ */
+function peekDials(s: GameState) {
+  for (const sh of activeShips(s)) {
+    for (const fx of effectsOf(sh, 'peekDial')) {
+      const near = activeShips(s)
+        .filter((t) => t.owner !== sh.owner && t.dial !== null && !t.dialSeenBy?.includes(sh.owner))
+        .map((t) => ({ t, d: polygonDistance(shipPolygon(sh), shipPolygon(t)).d, r: rangeBetween(sh, t) }))
+        .filter((x) => x.r !== null && x.r <= fx.effect.range)
+        .sort((a, b) => a.d - b.d || a.t.id.localeCompare(b.t.id))[0];
+      if (!near) continue;
+      (near.t.dialSeenBy ??= []).push(sh.owner);
+      s.log.push({ type: 'dialPeeked', shipId: sh.id, targetId: near.t.id, upgrade: fx.source.id });
+    }
+  }
 }
 
 function continueActivation(s: GameState) {
@@ -494,10 +568,10 @@ function continueActivation(s: GameState) {
     const sh = ship(s, s.queue[s.queueIndex]);
     if (sh.destroyed || sh.dial === null) { s.queueIndex++; continue; }
     const ionized = isIonized(sh);
-    const m = ionized ? ION_MANEUVER : maneuverFor(sh, sh.dial);
+    const m = ionized ? ionManeuverFor(maneuverFor(sh, sh.dial)) : maneuverFor(sh, sh.dial);
     if (ionized) {
       sh.ion = 0;
-      s.log.push({ type: 'info', text: `${sh.name} is ionized and drifts 1 straight.` });
+      s.log.push({ type: 'info', text: `${sh.name} is ionized and drifts 1 ${m.bearing === 'straight' ? 'straight' : m.bearing === 'bankLeft' ? 'bank left' : 'bank right'}.` });
     }
     s.log.push({ type: 'dialRevealed', shipId: sh.id, maneuver: m });
     const mv = resolveMovement(s, sh, m);
@@ -521,7 +595,7 @@ function continueActivation(s: GameState) {
     triggerMines(s, sh, [...mv.path, mv.final]);
     if (sh.hull <= 0 || sh.destroyed) { destroy(s, sh); s.queueIndex++; continue; }
 
-    const skip = mv.obstacles.some((oid) => OBSTACLE_RULES[s.obstacles.find((o) => o.id === oid)!.kind].skipAction);
+    const skip = statBonus(sh, 'keepActionOnObstacle') <= 0 && mv.obstacles.some((oid) => OBSTACLE_RULES[s.obstacles.find((o) => o.id === oid)!.kind].skipAction);
     const canAct = !mv.partial && !skip && sh.stress === 0;
     if (canAct) {
       const options = actionOptions(s, sh, ionized);
@@ -552,7 +626,7 @@ function obstacleContact(s: GameState, sh: ShipState, o: Obstacle) {
   s.log.push(ev);
   const hit = rule.hitOn.includes(face) ? 1 : 0, crit = rule.critOn.includes(face) ? 1 : 0;
   if (hit || crit) Object.assign(ev, sufferDamage(s, sh, hit, crit));
-  if (rule.ionOn.includes(face)) { sh.ion++; ev.ion = 1; }
+  if (rule.ionOn.includes(face)) { ev.ion = 1; gainIon(s, sh, 1); }
 }
 
 /** Effects that reward fully executing a red maneuver (Elusive, Hotshot). */
@@ -644,8 +718,8 @@ function beforeEngage(s: GameState, sh: ShipState) {
     if (roll === 'hit') cardDamage(s, sh, ev, 1);
   }
   if (hasCard(sh, 'disabledPowerRegulator')) {
-    sh.ion++;
     s.log.push({ type: 'damageCard', shipId: sh.id, card: 'disabledPowerRegulator', what: 'triggered', ion: 1 });
+    gainIon(s, sh, 1);
   }
   if (sh.hull <= 0) destroy(s, sh);
 }
@@ -695,6 +769,11 @@ function endPhase(s: GameState) {
     sh.jam = 0;
   }
   s.engagementInitiative = null;
+  if (s.mission) {
+    // A mission ends on its objectives (or its last round), not on the last player standing.
+    if (!missionRoundEnd(s)) startRound(s);
+    return;
+  }
   const alive = s.players.filter((p) => activeShips(s).some((x) => x.owner === p.id));
   if (alive.length <= 1 || s.round >= s.maxRounds) {
     s.phase = 'over';

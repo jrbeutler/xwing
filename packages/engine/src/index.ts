@@ -9,3 +9,7 @@ export * from './squad';
 export * from './game';
 export * from './rng';
 export { decide as aiDecide, scoreManeuver, suggestManeuvers, type Suggestion } from './ai';
+export * from './rules';
+export * from './mission';
+export * from './training';
+export * from './campaign';

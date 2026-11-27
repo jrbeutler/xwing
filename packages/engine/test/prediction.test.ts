@@ -23,10 +23,13 @@ describe('enemy maneuver prediction', () => {
     for (let k = 1; k < ps.length; k++) expect(ps[k].w).toBeLessThanOrEqual(ps[k - 1].w);
   });
 
-  it('knows an ionized ship will drift 1 straight', () => {
+  it('knows an ionized ship will drift a blue 1-straight or 1-bank, without knowing which way', () => {
     const g = setup({ x: 450, y: 750, h: -Math.PI / 2 });
     g.ships[1].ion = 1;
-    expect(predictEnemies(g, 'a').get('b-0')).toEqual([{ pose: maneuverFinalPose(g.ships[1].pose, 40, ION_MANEUVER), w: 1 }]);
+    const drift = (bearing: 'straight' | 'bankLeft' | 'bankRight') => maneuverFinalPose(g.ships[1].pose, 40, { ...ION_MANEUVER, bearing });
+    expect(predictEnemies(g, 'a').get('b-0')).toEqual([
+      { pose: drift('straight'), w: 1 / 3 }, { pose: drift('bankLeft'), w: 1 / 3 }, { pose: drift('bankRight'), w: 1 / 3 },
+    ]);
   });
 
   it('never predicts a red maneuver for a stressed ship', () => {

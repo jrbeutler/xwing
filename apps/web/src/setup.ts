@@ -20,6 +20,7 @@ export interface BattleSetup { budget: number; versus: Versus; player: Squad; op
 const BUDGETS = [50, 75, 100, 150];
 const SLOT_LABEL: Record<SlotType, string> = {
   talent: 'Talent', modification: 'Modification', missile: 'Missile', torpedo: 'Torpedo', turret: 'Turret', device: 'Bomb',
+  cannon: 'Cannon', crew: 'Crew', gunner: 'Gunner', droid: 'Droid', sensor: 'Sensor',
 };
 const CLASS_LABEL: Record<ShipClass, string> = { fighter: 'Fighter', bomber: 'Bomber', freighter: 'Freighter' };
 const CLASSES: ShipClass[] = ['fighter', 'bomber', 'freighter'];
@@ -88,7 +89,8 @@ function actionLine(s: SquadShip) {
 type Side = 'you' | 'them';
 
 /** `keep`: reopen with this setup (e.g. back from deployment) instead of the last saved squad and a new opponent. */
-export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup) {
+/** `onMenu`: back to the start menu (shown as a Menu button when given). */
+export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup, onMenu?: () => void) {
   const last = load<{ budget?: number; squad?: Squad }>(LAST_KEY, {});
   let budget = keep?.budget ?? (BUDGETS.includes(last.budget ?? 0) ? last.budget! : DEFAULT_BUDGET);
   const lastVersus = load<string>(VERSUS_KEY, 'ai');
@@ -159,7 +161,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
     root.innerHTML = `
       <div class="setup-inner">
         <header class="setup-head">
-          <h1>New battle</h1>
+          <h1>${onMenu ? '<button class="opt mini" id="su-menu" aria-label="Main menu">☰</button> ' : ''}New battle</h1>
           <div class="head-opts">
             <div class="seg" role="radiogroup" aria-label="Opponent">
               ${(['ai', 'human', 'online'] as const).map((v) => `<button role="radio" aria-checked="${versus === v}" class="${versus === v ? 'on' : ''}" data-versus="${v}">${{ ai: 'vs AI', human: '2 players', online: 'Online' }[v]}</button>`).join('')}
@@ -290,6 +292,8 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
 
   const wire = () => {
     const $ = <T extends HTMLElement>(id: string) => root.querySelector<T>(`#${id}`);
+    const menu = $<HTMLButtonElement>('su-menu');
+    if (menu && onMenu) menu.onclick = () => { root.remove(); onMenu(); };
     $<HTMLSelectElement>('su-budget')!.onchange = (e) => { budget = Number((e.target as HTMLSelectElement).value); refreshAi(true); render(); };
     each<HTMLButtonElement>('[data-versus]', (b) => { b.onclick = () => {
       versus = b.dataset.versus as Versus;

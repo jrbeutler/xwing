@@ -234,7 +234,7 @@ describe('triggered cards', () => {
     expect(cardEvents(events)).toContainEqual(expect.objectContaining({ card: 'woundedPilot', what: 'triggered' }));
   });
 
-  it('Disabled Power Regulator ionizes the ship; its next move is a 1-straight, then the card goes', () => {
+  it('Disabled Power Regulator ionizes the ship; its next move is an ion maneuver, then the card goes', () => {
     const g0 = duel();
     const sh = g0.ships[0];
     sh.crits = ['disabledPowerRegulator'];
@@ -242,8 +242,8 @@ describe('triggered cards', () => {
     expect(g.ships[0].ion).toBe(1);
     const before = g.ships[0].pose;
     let opts: any[] = [];
-    ({ g } = playRound(g, { [sh.id]: dialIndex(sh, 'bankLeft', 2) }, (o) => { opts = o; return { type: 'none' }; }));
-    expect(g.ships[0].pose.h).toBeCloseTo(before.h); // flew straight, not the bank
+    ({ g } = playRound(g, { [sh.id]: dialIndex(sh, 'straight', 2) }, (o) => { opts = o; return { type: 'none' }; }));
+    expect(g.ships[0].pose.h).toBeCloseTo(before.h); // the dial's direction (straight), at speed 1
     expect(g.ships[0].pose.y - before.y).toBeCloseTo(40 + 40, 0); // speed 1 plus a small base length
     expect(g.ships[0].crits).toEqual([]);
     expect(new Set(opts.map((o) => o.type))).toEqual(new Set(['none', 'focus']));

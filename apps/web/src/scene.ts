@@ -90,6 +90,8 @@ class ParticleField {
   private next = 0;
   private active = false;
   readonly scale = { value: 400 };
+  /** Share of spawned particles that are kept (lowered on slow devices; see BattleScene.setLowQuality). */
+  density = 1;
   constructor(private cap: number, additive: boolean) {
     const f = () => new Float32Array(cap);
     this.pos = new Float32Array(cap * 3); this.col = new Float32Array(cap * 3); this.vel = new Float32Array(cap * 3);
@@ -122,6 +124,7 @@ class ParticleField {
   }
   /** One particle: `s0`→`s1` size over `life` seconds, peak opacity `a`, velocity slowed by `drag` per second. */
   spawn(at: THREE.Vector3, vel: THREE.Vector3, life: number, s0: number, s1: number, a: number, color: THREE.Color, drag = 0.6) {
+    if (this.density < 1 && Math.random() > this.density) return;
     const i = this.next;
     this.next = (this.next + 1) % this.cap;
     this.pos.set([at.x, at.y, at.z], i * 3);
@@ -336,8 +339,11 @@ export class BattleScene {
 
     addEventListener('resize', () => this.resize());
     this.resize();
+    if (new URLSearchParams(location.search).get('quality') === 'low') this.setLowQuality();
     const loop = () => {
-      const dt = Math.min(0.05, this.clock.getDelta());
+      const raw = this.clock.getDelta();
+      const dt = Math.min(0.05, raw);
+      this.watchFrameRate(raw);
       this.controls.update();
       this.animateIdle(this.clock.elapsedTime, dt);
       this.smoke.update(dt);
@@ -409,6 +415,32 @@ export class BattleScene {
   }
 
   /** Fit the renderer to its container (call after the screen changes shape, e.g. a phone rotating). */
+  /** Effects run lighter: set automatically when frames are slow (or with ?quality=low). */
+  lowQuality = false;
+  private frameAvg = 1 / 60;
+  private slowFor = 0;
+
+  /**
+   * Watch the frame rate: after a few seconds below about 40 fps (once the scene has settled), switch to
+   * low quality for the rest of the session. Long gaps (a hidden tab, a stall) are ignored.
+   */
+  private watchFrameRate(raw: number) {
+    if (this.lowQuality || raw > 1) return;
+    this.frameAvg = this.frameAvg * 0.95 + raw * 0.05;
+    this.slowFor = this.clock.elapsedTime > 4 && this.frameAvg > 1 / 40 ? this.slowFor + raw : 0;
+    if (this.slowFor > 2.5) this.setLowQuality();
+  }
+
+  /** Halve the particles and render at a lower resolution (bloom and effects are fill-heavy on phones). */
+  setLowQuality() {
+    if (this.lowQuality) return;
+    this.lowQuality = true;
+    this.smoke.density = this.embers.density = 0.5;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+    this.resize();
+    console.info('Effects: switched to low quality (slow frames).');
+  }
+
   resize() {
     const w = this.host.clientWidth, h = this.host.clientHeight;
     this.renderer.setSize(w, h);
@@ -433,6 +465,7 @@ export class BattleScene {
       o.scale.setScalar(arming ? 18 : 12);
     });
     this.animateLocks(t);
+    for (const g of this.missionGroup.children) if (g.userData.pulse) g.scale.setScalar(this.reducedMotion ? 1 : 1 + 0.06 * Math.sin(t * 3));
     if (!this.reducedMotion) arcTime.value = t;
     for (const v of this.ships.values()) {
       if (!this.reducedMotion) {
@@ -699,6 +732,56 @@ export class BattleScene {
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([toV3(0, edgeY, 0.6), toV3(BOARD_SIZE, edgeY, 0.6)]),
       new THREE.LineBasicMaterial({ color: 0x7cf0c5, transparent: true, opacity: 0.8 }));
     this.deployZone.add(strip, line);
+  }
+
+  // ---------------- mission markings (gates, zones) ----------------
+  private missionGroup = new THREE.Group();
+
+  /**
+   * Draw a mission's gates and zones. Gates: a ring on the table with a numbered beacon; `next` is lit
+   * and pulses, `done` ones fade to green. Zones: a lit strip with its name.
+   */
+  setMissionMarks(markers: { id: string; label: string; x: number; y: number; r: number }[], zones: { label: string; x0: number; y0: number; x1: number; y1: number }[], next?: string, done: string[] = []) {
+    clearGroup(this.missionGroup);
+    if (!this.missionGroup.parent) this.scene.add(this.missionGroup);
+    for (const z of zones) {
+      const w = z.x1 - z.x0, d = z.y1 - z.y0;
+      const strip = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.12, depthWrite: false }));
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.copy(toV3(z.x0 + w / 2, z.y0 + d / 2, 0.45));
+      strip.raycast = () => {};
+      const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([
+        toV3(z.x0, z.y0, 0.7), toV3(z.x1, z.y0, 0.7), toV3(z.x1, z.y1, 0.7), toV3(z.x0, z.y1, 0.7),
+      ]), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.7 }));
+      const el = document.createElement('div');
+      el.className = 'zone-label';
+      el.textContent = z.label;
+      const label = new CSS2DObject(el);
+      label.position.copy(toV3(z.x0 + w / 2, z.y0 + d / 2, 4));
+      this.missionGroup.add(strip, edge, label);
+    }
+    for (const mk of markers) {
+      const state = done.includes(mk.id) ? 'done' : mk.id === next ? 'next' : 'later';
+      const color = state === 'done' ? 0x7cf0c5 : state === 'next' ? 0xffd166 : 0x8fa6c8;
+      const g = new THREE.Group();
+      g.position.copy(toV3(mk.x, mk.y, 0));
+      const ring = new THREE.Mesh(new THREE.RingGeometry(mk.r * 0.86, mk.r, 48), new THREE.MeshBasicMaterial({
+        color: state === 'next' ? hot(color, 1.6) : new THREE.Color(color), transparent: true, opacity: state === 'later' ? 0.45 : 0.9, side: THREE.DoubleSide, depthWrite: false,
+      }));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.8;
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, FLY_HEIGHT + 10, 8), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: state === 'later' ? 0.25 : 0.6, depthWrite: false }));
+      beam.position.y = (FLY_HEIGHT + 10) / 2;
+      const el = document.createElement('div');
+      el.className = `gate-label ${state}`;
+      el.textContent = mk.label;
+      const label = new CSS2DObject(el);
+      label.position.y = FLY_HEIGHT + 16;
+      g.add(ring, beam, label);
+      g.userData.pulse = state === 'next';
+      g.traverse((o) => { o.raycast = () => {}; });
+      this.missionGroup.add(g);
+    }
   }
 
   // ---------------- devices (bombs and mines) ----------------

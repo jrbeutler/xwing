@@ -5,11 +5,13 @@ import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
 import { UPGRADES } from './content';
-import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, isIonized, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
+import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, ionManeuverFor, isIonized, devicePolygon, inBounds, legalDial, maneuverFor, pendingFor } from './game';
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
-import { charged, effectsOf } from './effects';
+import { actionBar, charged, effectsOf } from './effects';
+import { inZone, touchesMarker } from './mission';
+import { isSpecialManeuver } from './rules';
 import type { ActionChoice, ActionType, ArcName, ObstacleKind, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
 
 /**
@@ -55,7 +57,7 @@ const straightAhead = (e: ShipState): Prediction[] => {
  * How the AI predicts enemy maneuvers. 'modeled': it puts itself in each enemy's seat, scores that enemy's
  * legal maneuvers with scoreManeuver (assuming our ships fly straight ahead), and keeps the `top` best,
  * weighted by exp((score - best) / temperature). 'straight': everyone flies 100 mm straight ahead.
- * Ionized enemies are known to drift 1 straight; stressed ones cannot pick red maneuvers. Mutable for experiments.
+ * Ionized enemies drift a blue 1-straight or 1-bank (which way is hidden); stressed ones cannot pick red maneuvers. Mutable for experiments.
  */
 export const PREDICTION = { mode: 'modeled' as 'modeled' | 'straight', top: 3, temperature: 8 };
 
@@ -67,7 +69,11 @@ export function predictEnemies(s: GameState, playerId: PlayerId): Map<string, Pr
 function predictShip(s: GameState, e: ShipState): Prediction[] {
   if (PREDICTION.mode === 'straight') return straightAhead(e);
   const size = shipSize(e);
-  if (isIonized(e)) return [{ pose: maneuverFinalPose(e.pose, size, ION_MANEUVER), w: 1 }];
+  // Ionized: a blue 1-bank or 1-straight, toward whichever side its hidden dial points; each as likely.
+  if (isIonized(e)) {
+    const drifts: Maneuver[] = [ION_MANEUVER, { ...ION_MANEUVER, bearing: 'bankLeft' }, { ...ION_MANEUVER, bearing: 'bankRight' }];
+    return drifts.map((m) => ({ pose: maneuverFinalPose(e.pose, size, m), w: 1 / 3 }));
+  }
   const naive = new Map(activeShips(s).filter((x) => x.owner !== e.owner).map((x) => [x.id, straightAhead(x)]));
   const scored = legalDial(s, e).map((i) => ({ i, sc: scoreManeuver(s, e, i, () => 0, naive) }))
     .filter((x) => x.sc > -1000).sort((a, b) => b.sc - a.sc).slice(0, PREDICTION.top);
@@ -82,7 +88,8 @@ function predictShip(s: GameState, e: ShipState): Prediction[] {
  * without it every enemy is assumed to fly straight ahead.
  */
 export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, jitter: () => number, predictions?: Map<string, Prediction[]>): number {
-  const m = maneuverFor(sh, dialIndex); // as damage cards make it fly
+  // As damage cards and upgrades make it fly, or the ion maneuver its dial points to if it is ionized.
+  const m = isIonized(sh) ? ionManeuverFor(maneuverFor(sh, dialIndex)) : maneuverFor(sh, dialIndex);
   const size = shipSize(sh);
   const pose = maneuverFinalPose(sh.pose, size, m);
   const poly = basePolygon(pose, size);
@@ -98,6 +105,8 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   if (s.devices.some((d) => d.kind === 'mine' && polygonsOverlap(poly, devicePolygon(d)))) score -= 45;
   const edge = Math.min(pose.x, pose.y, BOARD_SIZE - pose.x, BOARD_SIZE - pose.y);
   if (edge < 80) score -= (80 - edge) * 0.5;
+  // Don't end where every move the ship could pick next round runs off the table: it would have to flee.
+  if (edge < 200 && cornered(pose, size, legalDial(s, sh).map((i) => maneuverFor(sh, i)))) score -= 300;
   const role = roleOf(sh);
   const turret = hasTurretPrimary(sh);
   let nearest = Infinity;
@@ -127,6 +136,7 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   }
   if (m.difficulty === 'red') score -= 8;
   if (m.difficulty === 'blue' && sh.stress > 0) score += 10;
+  score += objectivePull(s, sh, m, pose);
   return score + jitter() * 6;
 }
 
@@ -147,6 +157,10 @@ const ESCAPES: Maneuver[] = [
   { bearing: 'bankLeft', speed: 2, difficulty: 'white' },
   { bearing: 'bankRight', speed: 2, difficulty: 'white' },
 ];
+
+/** Whether every one of `moves` from `pose` runs off the table (the ship would have to flee next round). */
+const cornered = (pose: Pose, size: number, moves: Maneuver[]) =>
+  moves.every((m) => !inBounds(basePolygon(maneuverFinalPose(pose, size, m), size)));
 
 /** Penalty for the obstacles a maneuver from `from` flies through or onto (each counted once, by kind). */
 function obstacleCost(s: GameState, from: Pose, size: number, m: Maneuver): number {
@@ -287,7 +301,7 @@ function repositionValue(s: GameState, sh: ShipState, o: Reposition): number {
   const moved: GameState = { ...s, ships: s.ships.map((x) => (x.id === sh.id ? me : x)) };
   let v = bestShotWeighted(moved, me, W.unmoved) - bestShotWeighted(s, sh, W.unmoved)
     + W.defense * (threatsTo(s, sh, W.unmoved)(sh) - threatsTo(moved, me, W.unmoved)(me));
-  const def = shipType(sh).actions.find((a) => a.type === o.type);
+  const def = actionBar(sh).find((a) => a.type === o.type);
   if (def?.red) v -= W.stress;
   // The linked action it opens (e.g. a red Evade after a roll), valued from the new position.
   if (def?.linked) {
@@ -316,7 +330,7 @@ function coordinateChoice(s: GameState, sh: ShipState, options: ActionChoice[]):
     const t = s.ships.find((x) => x.id === o.targetId)!;
     const best = tokenChoice(s, t, coordinatedOptions(s, t));
     if (!best) return 0;
-    const red = shipType(t).actions.find((a) => a.type === best.o.type)?.red;
+    const red = actionBar(t).find((a) => a.type === best.o.type)?.red;
     return best.v - (red ? TOKEN_WEIGHTS.stress : 0);
   };
   const best = coords.map((o) => ({ o, v: worth(o) })).sort((a, b) => b.v - a.v)[0];
@@ -369,6 +383,59 @@ function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoic
 }
 
 /** The best-scoring legal maneuver for each of `playerId`'s ships against the predicted enemy positions. */
+/**
+ * Missions: the player's ships are drawn toward their open objectives: the next marker of a flight course
+ * (a big bonus for flying through it), or the zone they must reach. This is what "Suggest moves" and the
+ * mission tests use; enemy ships ignore objectives.
+ */
+const OBJECTIVE_PULL = { perMm: 0.3, marker: 60, zone: 60, hunt: 0.08 };
+function objectivePull(s: GameState, sh: ShipState, m: Maneuver, pose: Pose): number {
+  const mission = s.mission;
+  if (!mission || sh.owner !== mission.player) return 0;
+  let v = 0;
+  for (const o of mission.objectives) {
+    if (o.status !== 'open' || (o.tag && !sh.tags?.includes(o.tag))) continue;
+    if (o.kind === 'course') {
+      const mk = mission.markers.find((x) => x.id === o.markers[o.progress]);
+      if (!mk) continue;
+      const { path } = maneuverPath(sh.pose, shipSize(sh), m);
+      if ([...path, pose].some((p) => touchesMarker(sh, p, mk))) v += OBJECTIVE_PULL.marker;
+      else v -= Math.max(0, Math.hypot(pose.x - mk.x, pose.y - mk.y) - mk.r) * OBJECTIVE_PULL.perMm;
+    }
+    if (o.kind === 'destroy') {
+      // Close in on the nearest target beyond range 2 (targets that never shoot back give the usual scoring little to go on).
+      const d = Math.min(...activeShips(s).filter((x) => x.owner !== sh.owner && (!o.tag || x.tags?.includes(o.tag))).map((x) => Math.hypot(x.pose.x - pose.x, x.pose.y - pose.y)));
+      if (Number.isFinite(d)) v -= Math.max(0, d - RANGE_RULES.edges[1]) * OBJECTIVE_PULL.hunt;
+    }
+    if (o.kind === 'reach') {
+      const z = mission.zones.find((x) => x.id === o.zone);
+      if (!z) continue;
+      if (inZone(z, pose)) v += OBJECTIVE_PULL.zone;
+      else v -= Math.hypot(Math.max(z.x0 - pose.x, 0, pose.x - z.x1), Math.max(z.y0 - pose.y, 0, pose.y - z.y1)) * OBJECTIVE_PULL.perMm;
+    }
+  }
+  return v;
+}
+
+/** A training drone's move: a gentle, slow maneuver that keeps it well inside the table. */
+function droneDials(s: GameState, playerId: PlayerId, jitter: () => number): Record<string, number> {
+  const dials: Record<string, number> = {};
+  for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
+    let best = -Infinity, bestIdx = legalDial(s, sh)[0];
+    for (const i of legalDial(s, sh)) {
+      const m = maneuverFor(sh, i);
+      if (m.speed > 2 || m.difficulty === 'red' || isSpecialManeuver(m)) continue;
+      const p = maneuverFinalPose(sh.pose, shipSize(sh), m);
+      const edge = Math.min(p.x, p.y, BOARD_SIZE - p.x, BOARD_SIZE - p.y);
+      // Wander, but stay well clear of the edges (and never get cornered there).
+      const sc = Math.min(edge, 200) + jitter() * 60 - (cornered(p, shipSize(sh), legalDial(s, sh).map((k) => maneuverFor(sh, k))) ? 1000 : 0);
+      if (sc > best) { best = sc; bestIdx = i; }
+    }
+    dials[sh.id] = bestIdx;
+  }
+  return dials;
+}
+
 function planDials(s: GameState, playerId: PlayerId, jitter: () => number, predictions: Map<string, Prediction[]>): Record<string, number> {
   const dials: Record<string, number> = {};
   for (const sh of activeShips(s).filter((x) => x.owner === playerId)) {
@@ -450,6 +517,14 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
   // Use a private RNG copy so AI choices never consume game dice.
   const local = { rng: (s.rng ^ 0x9e3779b9 ^ (s.round * 7919)) | 0 };
   const jitter = () => nextFloat(local);
+
+  // Mission drones: wander gently, never act, never shoot.
+  if (s.mission?.ai[playerId] === 'drone') {
+    if (d.kind === 'planning') return { type: 'setDials', playerId, dials: droneDials(s, playerId, jitter) };
+    if (d.kind === 'action') return { type: 'action', playerId, choice: { type: 'none' } };
+    if (d.kind === 'attack') return { type: 'attack', playerId, targetId: null };
+    return { type: 'drop', playerId, choice: { type: 'none' } };
+  }
 
   if (d.kind === 'planning') {
     return { type: 'setDials', playerId, dials: planDials(s, playerId, jitter, predictEnemies(s, playerId)) };

@@ -1,10 +1,11 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
-  legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
+  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
+import { campaignBriefing, markDone, nextMission, officerName, openBriefing, openCampaign, openStart, recordCampaign } from './campaign';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
 import { openLobby, type LobbyUi } from './lobby';
@@ -68,6 +69,18 @@ const setSpeed = (v: number) => {
 speedBtn.onclick = () => setSpeed(scene.speed === 1 ? 2 : 1);
 try { setSpeed(localStorage.getItem('xw-speed') === '2' ? 2 : 1); } catch { setSpeed(1); }
 
+/** Back to the start menu (from a battle, after a confirmation). */
+const menuBtn = document.createElement('button');
+menuBtn.id = 'menubtn';
+menuBtn.textContent = '☰ Menu';
+menuBtn.setAttribute('aria-label', 'Main menu');
+menuBtn.onclick = () => {
+  const playing = stage !== 'setup' && state && state.phase !== 'over';
+  if (playing && !confirm(mission ? 'Leave this mission?' : 'Leave this battle?')) return;
+  showStart();
+};
+document.getElementById('hud')!.prepend(menuBtn);
+
 /** Whose turn it is, when two people share the device. */
 const seatEl = document.createElement('span');
 seatEl.id = 'seat';
@@ -75,6 +88,10 @@ seatEl.hidden = true;
 document.getElementById('hud')!.appendChild(seatEl);
 
 let state: GameState;
+/** The mission being played (training or campaign), or null in a skirmish. */
+let mission: MissionDef | null = null;
+/** The board mission being flown, when `mission` is from the campaign after training (flown once, no retry). */
+let campaignMission: CampaignMission | null = null;
 /** Where we are: building squads, placing ships, or fighting. */
 let stage: 'setup' | 'deploy' | 'battle' = 'setup';
 let lastSetup: BattleSetup | null = null;
@@ -97,12 +114,128 @@ function newGame(keep?: BattleSetup) {
   leaveOnline();
   hideFinale();
   hideHandoff();
+  leaveMission();
   stage = 'setup';
   seatEl.hidden = true;
   mode = null;
   scene.setDeployZone(null);
   hideRecap();
-  openSetup(startDeployment, keep);
+  openSetup(startDeployment, keep, showStart);
+}
+
+// ---------------------------------------------------------------------------
+// The way in: the start menu, the campaign's missions and their briefings (campaign.ts draws the screens).
+// ---------------------------------------------------------------------------
+function showStart() {
+  leaveOnline();
+  hideFinale();
+  hideHandoff();
+  hideRecap();
+  document.getElementById('setup')?.remove();
+  openStart({ campaign: showCampaign, skirmish: () => newGame() });
+}
+
+function showCampaign() {
+  hideFinale();
+  openCampaign({ train: briefMission, fly: flyMission, back: showStart });
+}
+
+/** A training mission's briefing. */
+const briefMission = (m: MissionDef) =>
+  openBriefing(m, { kicker: `Flight school · Mission ${m.number}` }, { begin: () => startMission(m), back: showCampaign });
+
+/** A board mission's briefing: as earlier results shape it. */
+function flyMission(cm: CampaignMission) {
+  const { def, extras } = campaignBriefing(cm);
+  openBriefing(def, extras, { begin: () => startMission(def, cm), back: showCampaign });
+}
+
+/** Play a mission: its ships are already placed, so the battle starts straight away (no squad or deployment). */
+function startMission(m: MissionDef, cm: CampaignMission | null = null) {
+  leaveOnline();
+  hideFinale();
+  hideHandoff();
+  hideRecap();
+  mission = m;
+  campaignMission = cm;
+  versus = 'ai';
+  // Missions turn the move hints on (the AI's suggestion for each ship, drawn to the objectives).
+  lastSetup = { budget: 0, versus: 'ai', player: { ships: [] }, opponent: { ships: [] }, hints: { you: true, them: false } };
+  state = missionGame(m, (Math.random() * 1e9) | 0, { officer: officerName() });
+  shown = 0;
+  plan = {};
+  logEl.innerHTML = '';
+  roundShots = [];
+  disp = structuredClone(state.ships);
+  finaleFor = null;
+  scene.clearShips();
+  scene.setObstacles(state.obstacles);
+  scene.syncShips(state.ships);
+  scene.setDevices([]);
+  scene.setDeployZone(null);
+  scene.setRings({});
+  objectives = structuredClone(state.mission!.objectives);
+  renderMissionHud();
+  setSeat(P1, true);
+  scene.resetView(0);
+  stage = 'battle';
+  mode = null;
+  pump();
+}
+
+/** Back to a skirmish or the menu: clear what a mission put on screen. */
+function leaveMission() {
+  mission = null;
+  campaignMission = null;
+  objectives = [];
+  coachQueue.length = 0;
+  coach.hidden = true;
+  renderMissionHud();
+}
+
+/** The objectives as shown so far (they move on as events are presented, not ahead of the animations). */
+let objectives: ObjectiveState[] = [];
+const missionHud = document.createElement('div');
+missionHud.id = 'mission-hud';
+missionHud.hidden = true;
+document.body.appendChild(missionHud);
+
+function renderMissionHud() {
+  const m = state?.mission;
+  missionHud.hidden = !mission || !m;
+  if (!mission || !m) { scene.setMissionMarks([], []); return; }
+  const mark = (o: ObjectiveState) => (o.status === 'done' ? '✓ ' : o.status === 'failed' ? '✗ ' : '');
+  const progress = (o: ObjectiveState) => (o.status === 'open' && o.of > 1 && o.kind !== 'survive' ? `<span class="mh-progress">${o.progress}/${o.of}</span>` : '');
+  missionHud.innerHTML = `<div class="mh-title">${campaignMission ? 'Operation' : 'Mission'} ${mission.number}: ${mission.title}</div>
+    <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul>`;
+  // Gates: the next one in each open course is lit; the ones flown through fade.
+  const done: string[] = [];
+  let next: string | undefined;
+  for (const o of objectives) {
+    if (o.kind !== 'course') continue;
+    done.push(...o.markers.slice(0, o.progress));
+    if (o.status === 'open') next ??= o.markers[o.progress];
+  }
+  scene.setMissionMarks(m.markers, m.zones, next, done);
+}
+
+/** Coach tips and scripted lines: a card in the corner, one at a time, until dismissed. */
+const coach = document.createElement('div');
+coach.id = 'coach';
+coach.hidden = true;
+coach.setAttribute('role', 'status');
+document.body.appendChild(coach);
+const coachQueue: { title: string; text: string }[] = [];
+function showCoach(title: string, text: string) {
+  coachQueue.push({ title, text });
+  if (coach.hidden) nextCoach();
+}
+function nextCoach() {
+  const m = coachQueue.shift();
+  if (!m) { coach.hidden = true; return; }
+  coach.innerHTML = `<b>${m.title}</b><p>${m.text}</p><button class="opt mini" id="coach-ok">${coachQueue.length ? 'Next tip' : 'Got it'}</button>`;
+  coach.hidden = false;
+  coach.querySelector<HTMLButtonElement>('#coach-ok')!.onclick = nextCoach;
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +993,28 @@ async function animate(e: GameEvent) {
     case 'damageCard':
       await showDamageCard(e);
       return;
+    case 'objective': {
+      const o = objectives.find((x) => x.id === e.id);
+      if (o) { o.status = e.status; o.progress = e.progress; o.of = e.of; }
+      renderMissionHud();
+      if (o && e.status === 'done') showBanner(`<span class="who">Objective complete</span><b>${o.label.toUpperCase()}</b>`, 'hit', 1800);
+      else if (o && e.status === 'failed') showBanner(`<span class="who">Objective failed</span><b>${o.label.toUpperCase()}</b>`, 'crit incoming', 2200);
+      else if (o && o.kind === 'course') showBanner(`<span class="who">${o.label}</span><b>GATE ${e.progress} OF ${e.of}</b>`, 'hit', 1100);
+      await scene.wait(o?.kind === 'course' ? 500 : 900);
+      return;
+    }
+    case 'message':
+      showCoach(e.title, e.text);
+      return;
+    case 'dialPeeked': {
+      // The peeking player sees the maneuver; the other player only that their dial was seen.
+      const target = shipById(e.targetId), mine = shipById(e.shipId).owner === me;
+      const dial = mine ? state.ships.find((x) => x.id === e.targetId)?.dial : null;
+      const what = dial !== null && dial !== undefined ? maneuverLabel(maneuverFor(target, dial)).toUpperCase() : 'DIAL SEEN';
+      void scene.floatText(e.shipId, (effectSource(e.upgrade)?.name ?? 'INTEL').toUpperCase(), 'talent-float');
+      await scene.floatText(e.targetId, mine ? `INTEL: ${what}` : 'DIAL SEEN', 'talent-float');
+      return;
+    }
     case 'deviceDropped':
       scene.highlight(e.shipId);
       await scene.dropDevice(e.shipId, e.device);
@@ -951,11 +1106,16 @@ async function showDamageCard(e: Extract<GameEvent, { type: 'damageCard' }>) {
   } else if (e.what === 'triggered') {
     const dmg = (e.hullDamage ?? 0) + (e.shieldDamage ?? 0);
     const extra = dmg ? ` −${dmg}` : e.stress ? ' +stress' : e.ion ? ' ION' : '';
-    await scene.floatText(e.shipId, `${c.tag}${e.roll ? ` (${e.roll})` : ''}${extra}`, 'crit-float');
+    await scene.floatText(e.shipId, `${c.tag}${e.roll ? ` (${faceWord(e.roll)})` : ''}${extra}`, 'crit-float');
   } else if (e.what === 'repaired') {
     await scene.floatText(e.shipId, `REPAIRED ${c.tag}`, 'repair-float');
   }
 }
+
+/** How a single shot landed, for the log: the engine's die faces in plain words. */
+const faceWord = (f: string) => (f === 'crit' ? 'critical hit' : f === 'hit' ? 'hit' : 'miss');
+/** "1 shot" / "3 shots". */
+const shots = (n: number) => `${n} shot${n === 1 ? '' : 's'}`;
 
 /** Plain-language outcome of an attack (no dice). */
 function attackOutcome(e: AttackEvent) {
@@ -1159,7 +1319,7 @@ function describe(e: GameEvent): string | null {
       : `${nameHtml(e.shipId)} performs ${actionText(e.action)}${e.linked ? ' (linked)' : ''}${e.coordinatedBy ? ` (coordinated by ${nameHtml(e.coordinatedBy)})` : ''}`;
     case 'obstacleHit': {
       const dmg = e.shieldDamage + e.hullDamage;
-      const parts = [`rolls ${e.result}`, e.stress ? `${e.stress} stress` : '', dmg ? `${dmg} damage` : '', e.ion ? '1 ion' : ''].filter(Boolean);
+      const parts = [faceWord(e.result), e.stress ? `${e.stress} stress` : '', dmg ? `${dmg} damage` : '', e.ion ? '1 ion' : ''].filter(Boolean);
       const skip = OBSTACLE_RULES[e.kind].skipAction ? '; no action' : '';
       return `${nameHtml(e.shipId)} hits ${/^[AEIOU]/.test(OBSTACLE_RULES[e.kind].name) ? 'an' : 'a'} ${OBSTACLE_RULES[e.kind].name.toLowerCase()} (${parts.join(', ')}${skip})`;
     }
@@ -1167,7 +1327,7 @@ function describe(e: GameEvent): string | null {
       const o = attackOutcome(e);
       const talents = [...(e.diceBy ?? []), ...e.spent.map((t) => t.split(':')[1])].filter((t) => effectSource(t)).map((t) => effectSource(t)!.name);
       if (e.spent.some((t) => t.endsWith(':calculate'))) talents.push('calculate');
-      if (e.reinforced) talents.push('reinforced: 1 result cancelled');
+      if (e.reinforced) talents.push('reinforced: 1 hit blocked');
       // Tokens the dice policy kept on purpose: focus held for defense, a lock saved for later.
       const kept = (e.kept ?? []).map((t) => (t === 'attacker:focus' ? 'holds focus' : 'keeps lock'));
       return `${nameHtml(e.attackerId)} fires ${e.weapon ? `${UPGRADES[e.weapon].name} ` : ''}at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}${kept.length ? `; ${kept.join(', ')}` : ''}): ` +
@@ -1179,7 +1339,7 @@ function describe(e: GameEvent): string | null {
       if (e.what === 'dealt') return `⚠ ${nameHtml(e.shipId)} takes critical damage: <b>${c.title}</b> — ${c.text}`;
       if (e.what === 'repaired') return `${nameHtml(e.shipId)} repairs ${c.title}`;
       if (e.what === 'triggered') {
-        const parts = [e.roll ? `rolls ${e.roll}` : '', dmg ? `${dmg} damage` : '', e.stress ? `${e.stress} stress` : '', e.ion ? 'ionized' : ''].filter(Boolean);
+        const parts = [e.roll ? faceWord(e.roll) : '', dmg ? `${dmg} damage` : '', e.stress ? `${e.stress} stress` : '', e.ion ? 'ionized' : ''].filter(Boolean);
         return `${nameHtml(e.shipId)}: ${c.title}${parts.length ? ` (${parts.join(', ')})` : ''}`;
       }
       return null;
@@ -1198,7 +1358,7 @@ function describe(e: GameEvent): string | null {
     case 'deviceDetonated': {
       const name = UPGRADES[e.device.upgrade].name;
       if (!e.ships.length) return `${name} detonates: nobody in range`;
-      return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (rolled ${h.roll.join(', ')})` : ''}`).join('; ');
+      return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (${h.roll.map(faceWord).join(', ')})` : ''}`).join('; ');
     }
     case 'jam': {
       const what = { focus: 'its Focus', evade: 'its Evade', calculate: 'its Calculate', reinforce: 'its Reinforce', lock: 'its lock', jammed: '' }[e.effect];
@@ -1206,9 +1366,21 @@ function describe(e: GameEvent): string | null {
         ? `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>jammed</b> (its next Focus or Evade is lost)`
         : `${nameHtml(e.shipId)} jams ${nameHtml(e.targetId)}: <b>loses ${what}</b>`;
     }
+    case 'dialPeeked': {
+      const dial = shipById(e.shipId).owner === me ? state.ships.find((x) => x.id === e.targetId)?.dial : null;
+      const seen = dial !== null && dial !== undefined ? `: <b>${maneuverLabel(maneuverFor(shipById(e.targetId), dial))}</b>` : '';
+      return `${nameHtml(e.shipId)}'s ${effectSource(e.upgrade)?.name ?? 'crew'} sees ${nameHtml(e.targetId)}'s dial${seen}`;
+    }
+    case 'objective': {
+      const o = state.mission?.objectives.find((x) => x.id === e.id);
+      const what = o?.label ?? e.id;
+      return e.status === 'done' ? `<b>✓ Objective complete: ${what}</b>` : e.status === 'failed' ? `<b>✗ Objective failed: ${what}</b>` : `${what}: ${e.progress}/${e.of}`;
+    }
+    case 'message': return `💬 <b>${e.title}</b>: ${e.text}`;
     case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost[0].toUpperCase() + e.lost.slice(1)} is lost`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
-    case 'gameOver': return `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
+    case 'gameOver': return e.mission ? `<b>${e.mission === 'win' ? 'Mission complete' : 'Mission failed'}</b>`
+      : `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
     default: return null;
   }
@@ -1259,6 +1431,22 @@ function renderDecision() {
   if (versus === 'online' && d && state.phase !== 'over' && (awaitingHost || !(d.kind === 'planning' ? d.waitingOn.includes(me) : d.playerId === me))) {
     return renderOpponentTurn(d);
   }
+  if ((state.phase === 'over' || !d) && mission) {
+    scene.highlight(null);
+    const won = state.mission?.result === 'win';
+    const onward = nextLabel(won);
+    detail.innerHTML = `<h2>${won ? 'Mission complete' : 'Mission failed'}</h2>
+      <p class="hint">${mission.title}, round ${state.round}.</p>
+      <div class="row"><button class="go" id="ms-next">${onward}</button>
+      ${campaignMission ? '' : '<button class="opt mini" id="ms-retry">Retry</button>'}<button class="opt mini" id="ms-results">Debrief</button></div>`;
+    document.getElementById('ms-next')!.onclick = afterMission;
+    document.getElementById('ms-retry')?.addEventListener('click', () => briefMission(mission!));
+    document.getElementById('ms-results')!.onclick = () => showFinale();
+    setBar({ status: `<b>${won ? 'Mission complete' : 'Mission failed'}</b>`, buttons: [
+      ...(campaignMission ? [] : [{ label: 'Retry', onClick: () => briefMission(mission!) }]), { label: onward, cls: 'primary', onClick: afterMission }] });
+    if (finaleFor !== state) { finaleFor = state; showFinale(true); }
+    return;
+  }
   if (state.phase === 'over' || !d) {
     scene.highlight(null);
     const title = resultTitle();
@@ -1284,7 +1472,7 @@ function renderDecision() {
   scene.setPlanned([]);
   scene.setMarkers([]);
   if (d.kind === 'action') return renderAction(d.shipId, d.options, d.linked, d.coordinated?.by);
-  if (d.kind === 'attack') return renderAttack(d.shipId, d.targets);
+  if (d.kind === 'attack') return renderAttack(d.shipId, d.targets, d.bonus?.source);
   if (d.kind === 'system') return renderSystem(d.shipId, d.options);
 }
 
@@ -1323,7 +1511,59 @@ function resultTitle() {
   return state.winner === me ? 'Victory' : 'Defeat';
 }
 
+/** Where the button after a mission goes: the next lesson, graduation, or the mission board. */
+function nextLabel(won: boolean) {
+  if (campaignMission) return 'Mission board';
+  if (won && mission && nextMission(mission)) return 'Next mission';
+  return won && mission?.id === 'training-8' ? 'Graduate' : 'Campaign';
+}
+
+/** After a mission: the next one's briefing if it was won and there is one, else the campaign. */
+function afterMission() {
+  const next = mission && state.mission?.result === 'win' ? nextMission(mission) : undefined;
+  hideFinale();
+  if (next) briefMission(next);
+  else showCampaign();
+}
+
+/** The end of a mission: complete or failed, how each objective went, and where to go next. */
+function showDebrief(first: boolean) {
+  const m = mission!, won = state.mission?.result === 'win', cm = campaignMission;
+  if (first && cm) recordCampaign(cm.id, won ? 'win' : 'loss');
+  else if (won && first) markDone(m.id);
+  const next = won && !cm ? nextMission(m) : undefined;
+  const title = won ? 'Mission complete' : 'Mission failed';
+  // Letters animate one by one; words stay whole when the title wraps.
+  let n = 0;
+  const letters = title.toUpperCase().split(' ').map((w) => `<span class="word">${[...w].map((c) => `<span style="--i:${n++}">${c}</span>`).join('')}</span>`).join(' ');
+  const objs = state.mission!.objectives;
+  const why = cm ? cm.outcome[won ? 'win' : 'loss'].text
+    : won ? (next ? `Next: ${next.title} (${next.teaches.toLowerCase()}).` : 'Training complete. Report for graduation.')
+    : objs.some((o) => o.status === 'failed') ? 'An objective failed.' : !state.ships.some((x) => x.owner === P1 && !x.destroyed) ? 'Your ships were lost.'
+      : `Out of time: the mission had ${state.mission!.maxRounds} rounds.`;
+  finale.className = `${won ? 'victory' : 'defeat'} mission`;
+  finale.innerHTML = `
+    <div class="finale-rays" aria-hidden="true"></div>
+    <div class="finale-card" role="dialog" aria-modal="true" aria-labelledby="finale-title">
+      <div class="finale-kicker">${cm ? 'Operation' : 'Flight school · Mission'} ${m.number} · round ${state.round}</div>
+      <h1 id="finale-title" aria-label="${title}">${letters}</h1>
+      <p class="finale-why">${why}</p>
+      <ul class="objective-list" style="text-align:left">${objs.map((o) => `<li class="${o.status}">${o.status === 'done' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.label}</li>`).join('')}</ul>
+      <div class="finale-buttons"><button class="opt" id="fn-board">View table</button>${cm ? '' : '<button class="opt" id="fn-retry">Retry</button>'}
+        <button class="go" id="fn-next">${nextLabel(won)}</button></div>
+    </div>`;
+  finale.hidden = false;
+  void finale.offsetWidth;
+  finale.classList.add('show');
+  finale.querySelector<HTMLButtonElement>('#fn-next')!.onclick = afterMission;
+  finale.querySelector<HTMLButtonElement>('#fn-retry')?.addEventListener('click', () => { hideFinale(); briefMission(m); });
+  finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
+  finale.querySelector<HTMLButtonElement>('#fn-next')!.focus();
+  if (won && first) scene.celebrate(P1);
+}
+
 function showFinale(first = false) {
+  if (mission) return showDebrief(first);
   const two = versus === 'human';
   // Two players: told from the winner's side (it's their celebration), and named rather than "you".
   const hero = two && state.winner && state.winner !== 'draw' ? state.winner : me;
@@ -1513,7 +1753,9 @@ function refreshBoard() {
   } else showOddsFrom(s, s.pose, true);
   if (!candidate) {
     scene.clearGhost();
-    if (cand) cand.innerHTML = `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
+    if (cand) cand.innerHTML = isIonized(s)
+      ? `<p class="hint">Ionized: only the direction counts. Pick Left, Straight or Right below.</p>`
+      : `<p class="hint">Move the pointer toward a dot to steer ${s.name}.</p>`;
     return;
   }
   const i = candidate.group[candidate.flip];
@@ -1940,14 +2182,38 @@ function planningBar() {
   setBar({ status, ships, buttons });
 }
 
+type Drift = 'bankLeft' | 'straight' | 'bankRight';
+const DRIFT_LABEL: Record<Drift, string> = { bankLeft: 'bank left', straight: 'straight', bankRight: 'bank right' };
+/** Which way an ionized ship drifts with this dial setting. */
+const driftOf = (s: ShipState, dial: number | undefined): Drift =>
+  dial === undefined ? 'straight' : ionManeuverFor(maneuverFor(s, dial)).bearing as Drift;
+/** A legal dial setting that makes an ionized ship drift `way` (the dial only sets the direction). */
+const driftDial = (s: ShipState, way: Drift) => legalDial(state, s).find((i) => driftOf(s, i) === way);
+/** Left / straight / right buttons for an ionized ship's drift. */
+function driftButtons(s: ShipState): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'row';
+  for (const way of ['bankLeft', 'straight', 'bankRight'] as const) {
+    const i = driftDial(s, way);
+    if (i === undefined) continue;
+    const b = document.createElement('button');
+    b.className = 'opt mini' + (driftOf(s, plan[s.id]) === way ? ' confirm' : '');
+    b.textContent = way === 'bankLeft' ? '↖ Left' : way === 'straight' ? '↑ Straight' : 'Right ↗';
+    b.onclick = (e) => { e.stopPropagation(); plan[s.id] = i; render(); };
+    row.appendChild(b);
+  }
+  return row;
+}
+
 function renderPlanning() {
   const mine = myShips();
-  // An ionized ship ignores its dial (it drifts 1 straight), so plan it automatically.
-  for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = legalDial(state, s)[0];
+  // An ionized ship only uses its dial's direction (it drifts a blue 1-bank or 1-straight that way): it starts
+  // on straight, and the drift buttons on its card change it.
+  for (const s of mine) if (isIonized(s) && plan[s.id] === undefined) plan[s.id] = driftDial(s, 'straight') ?? legalDial(state, s)[0];
   detail.innerHTML = `<h2>Planning</h2><p class="hint">Click a ship, then move the pointer: the ghost snaps to each maneuver it can fly.
     Click a dot to choose that move; it stays shown so you can look it over and compare. <b>Set move</b> (Enter) sets it.
-    Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.
-    Blue clears stress, red adds it.</p>${obstacleLegend()}`;
+    ${rulesOf(state).specialManeuvers ? 'Special moves (K-turn, loops, rolls) are the buttons under the ship. A ringed dot hides one; <b>F</b> or Flip switches to it.' : ''}
+    ${rulesOf(state).redManeuvers ? 'Blue clears stress, red adds it.' : 'Blue maneuvers are easy, white ones normal.'}</p>${obstacleLegend()}`;
   for (const s of mine) {
     const t = SHIP_TYPES[s.typeId];
     const card = document.createElement('div');
@@ -1958,7 +2224,7 @@ function renderPlanning() {
       ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
       ${isIonized(s) ? '' : hintLine(s)}
-      <div class="planned">${isIonized(s) ? '<span class="ion">⚡ Ionized: drifts 1 straight, Focus only</span>'
+      <div class="planned">${isIonized(s) ? `<span class="ion">⚡ Ionized: drifts 1 ${DRIFT_LABEL[driftOf(s, plan[s.id])]} (blue), Focus only</span>`
         : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
     card.querySelector<HTMLButtonElement>('[data-use-hint]')?.addEventListener('click', () => useSuggestion(s.id));
@@ -1967,7 +2233,8 @@ function renderPlanning() {
       cand.id = 'cand';
       card.appendChild(cand);
     }
-    card.appendChild(dialFallback(s));
+    if (isIonized(s)) card.appendChild(driftButtons(s));
+    else card.appendChild(dialFallback(s));
     detail.appendChild(card);
   }
   const go = document.createElement('button');
@@ -2038,10 +2305,10 @@ const ACTION_SNAP = 45;
 /** `linked`: this is the linked action offered after another one (only its options, maybe red). */
 /** What each action does, for the action ring's help popup (hover with a mouse, hold with a finger). */
 const ACTION_HELP: Record<string, string> = {
-  focus: 'Gain a focus token. When you attack, every focus result becomes a hit; when you defend, every focus result becomes an evade. It is spent for you when it helps, and lasts until the end of the round.',
-  evade: 'Gain an evade token. When you defend, it adds an evade result, cancelling one hit. Lasts until the end of the round.',
-  calculate: 'Gain a calculate token. It changes <b>one</b> focus result: to a hit when you attack, or an evade when you defend. Weaker than Focus (one die instead of all of them), but cheap insurance. Lasts until the end of the round.',
-  lock: 'Lock onto an enemy (any range, no arc needed). Attacking that ship, you reroll your blanks (and focus results if you have no focus to spend). Most missiles and torpedoes can only fire at a locked ship. A lock lasts until you use it.',
+  focus: 'Gain a focus token. About 1 in 4 shots or dodges is a close call: Focus turns every one into a hit when you attack (your shots hit 75% of the time, not 50%) or an evade when you defend (63%, not 38%). It is spent for you when it helps, and lasts until the end of the round.',
+  evade: 'Gain an evade token. The next time you are shot, it cancels one hit for certain. Lasts until the end of the round.',
+  calculate: 'Gain a calculate token. It turns <b>one</b> close call into a hit when you attack, or an evade when you defend. Weaker than Focus (one shot or dodge instead of all of them), but cheap insurance. Lasts until the end of the round.',
+  lock: 'Lock onto an enemy (any range, no arc needed). Attacking that ship, your missed shots get a second try (close calls too, if you have no focus to spend). Most missiles and torpedoes can only fire at a locked ship. A lock lasts until you use it.',
   jam: 'Jam an enemy at range 1-2 in your firing arc: it loses its focus, evade, calculate or reinforce token, or else its lock. If it has none, it gets a jam token that cancels the next token it gains.',
   coordinate: 'Pick a friendly ship at range 0-2 that isn\'t stressed: it takes an action right now (and still gets its own later).',
   barrelRoll: 'Slide sideways by one base width, forward, level or back, keeping your facing. A quick way into an enemy\'s path or out of its arc. Then pick a teal spot.',
@@ -2107,7 +2374,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
         { key: `back|${only}|${cand ? JSON.stringify(cand) : ''}`, caption: `${cand ? actionText(cand) : what} · Esc to go back` });
       return;
     }
-    const redOf = (t: ActionType) => !!SHIP_TYPES[s.typeId].actions.find((a) => a.type === t)?.red || !!linked?.red;
+    const redOf = (t: ActionType) => !!actionBar(s).find((a) => a.type === t)?.red || !!linked?.red;
     const helpOf = (t: ActionType) => ACTION_HELP[t] + (redOf(t) ? RED_NOTE : '');
     const narrow = (t: 'lock' | 'jam' | 'coordinate' | 'barrelRoll' | 'boost', icon: string, label: string, hint: string): RadialItem =>
       ({ icon, label, title: hint.split(':')[0], help: helpOf(t), onClick: () => { only = t; cand = null; show(); } });
@@ -2227,7 +2494,7 @@ type Target = TargetInfo;
 const weaponName = (t: Pick<Target, 'weapon'>) => (isPrimary(t) ? 'Primary' : UPGRADES[t.weapon!].name);
 const targetText = (t: Target, attacker?: ShipState) =>
   `${shipById(t.targetId).name}: ${isPrimary(t) ? '' : `${weaponName(t)}, `}range ${t.range}, ` +
-  `${attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
+  `${shots(attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack)}${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
 
 /** What each kind of obstacle on this board does, for the planning panel (all of them block line of sight). */
 function obstacleLegend(): string {
@@ -2237,7 +2504,7 @@ function obstacleLegend(): string {
   return `<details class="legend"><summary>Obstacles: ${kinds.map((k) => `<span style="color:${swatch[k]}">${OBSTACLE_RULES[k].name}</span>`).join(' · ')}</summary>
     <p class="hint">Flying through or onto one:</p>
     ${kinds.map((k) => `<p class="hint"><b style="color:${swatch[k]}">${OBSTACLE_RULES[k].name}</b>: ${OBSTACLE_RULES[k].text}</p>`).join('')}
-    <p class="hint">All of them obstruct attacks drawn through them (+1 defense die).</p></details>`;
+    <p class="hint">All of them obstruct attacks drawn through them (+1 dodge for the target).</p></details>`;
 }
 
 /** The pilot's ability, with its charges if it has any, e.g. "Steady Nerves 0/1" (hover for the text). */
@@ -2340,7 +2607,7 @@ function renderSystem(shipId: string, options: DropChoice[]) {
 }
 
 /** Radial-menu icon and short label for a weapon ('primary' or an ordnance upgrade id). */
-const weaponIcon = (w: string, turretPrimary = false) => (w === 'primary' ? (turretPrimary ? ICONS.turret : ICONS.lasers) : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : ICONS.missile);
+const weaponIcon = (w: string, turretPrimary = false) => (w === 'primary' ? (turretPrimary ? ICONS.turret : ICONS.lasers) : UPGRADES[w].slot === 'torpedo' ? ICONS.torpedo : UPGRADES[w].slot === 'turret' ? ICONS.turret : UPGRADES[w].slot === 'cannon' ? ICONS.lasers : ICONS.missile);
 const WEAPON_SHORT: Record<string, string> = {
   primary: 'Lasers', 'proton-torpedoes': 'Proton', 'ion-torpedoes': 'Ion torp', 'concussion-missiles': 'Missiles', 'rocket-pods': 'Rockets',
   'dorsal-turret': 'Turret', 'ion-turret': 'Ion cann.',
@@ -2379,7 +2646,7 @@ function relBearing(from: Pose, to: Pose) {
  * best shot; cycle through every enemy that weapon can hit (arrows / Tab, or the gunsight's buttons),
  * compare the odds, and fire. Esc / Back returns to the table and the ring.
  */
-function renderAttack(shipId: string, targets: Target[]) {
+function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
   const s = shipById(shipId);
   const weaponIds = ['primary', ...s.upgrades.filter((u) => UPGRADES[u.id].weapon).map((u) => u.id)];
   const turretPrimary = SHIP_TYPES[s.typeId].primaries.some((p) => p.arc === 'turret');
@@ -2447,7 +2714,7 @@ function renderAttack(shipId: string, targets: Target[]) {
         <div class="gs-name"><span class="p2c">${e.name}</span>${isBest ? '<span class="gs-best">Best shot</span>' : ''}<span class="gs-count">${i + 1} / ${n}</span></div>
         <div class="gs-odds"><span class="gs-pct ${cls}">${pct(o.hit)}</span><span>hit chance</span></div>
         <div class="gs-stats">${o.expected.toFixed(1)} dmg${o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : ''}${o.ion >= 0.05 ? ` · <span class="ion">${o.ion.toFixed(1)} ion</span>` : ''}</div>
-        <div class="gs-meta">${wname} · range ${c.range} · ${attackDiceFor(s, c, e)} dice${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
+        <div class="gs-meta">${wname} · range ${c.range} · ${shots(attackDiceFor(s, c, e))}${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
           · hull ${e.hull} · shields ${e.shields}</div>
       </div>${nav('next', 'Next target', '&#8250;')}</div>
       ${altHtml ? `<div class="gs-alts"><span>Also on this ship:</span>${altHtml}</div>` : ''}
@@ -2480,7 +2747,7 @@ function renderAttack(shipId: string, targets: Target[]) {
         return {
           icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, disabled: !ok,
           title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
-          help: w === 'primary' ? 'Your main guns. Range 1 rolls a die fewer, range 2 one more (the sweet spot), range 4 gives the defender an extra die. Then pick a ringed enemy; each shows your odds.'
+          help: w === 'primary' ? 'Your main guns. Range 1 fires one shot fewer, range 2 one more (the sweet spot), range 4 gives the defender an extra dodge. Then pick a ringed enemy; each shows your odds.'
             : `${UPGRADES[w].text}${ok ? ' Then pick a ringed enemy; each shows your odds.' : `<br><span class="red">${why(w)}</span>`}`,
           onClick: () => pickWeapon(w),
         };
@@ -2528,17 +2795,21 @@ function renderAttack(shipId: string, targets: Target[]) {
     },
   };
 
-  detail.innerHTML = `<h2>Attack: ${s.name}</h2><p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
+  const bonusNote = bonusBy
+    ? `<p class="hint"><b>${effectSource(bonusBy)?.name ?? 'Bonus attack'}:</b> that attack missed, so you may fire again with a different weapon through your turret arc. Or hold fire.</p>`
+    : '';
+  detail.innerHTML = `<h2>${bonusBy ? 'Bonus attack' : 'Attack'}: ${s.name}</h2>${bonusNote}<p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
     The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
-    the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) loses an attack die, range 2 is the sweet spot (an extra attack die), range 3 is plain, and range 4 gives the defender an extra die;
-    obstruction adds a defense die. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;
+    the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) fires one shot fewer, range 2 is the sweet spot (an extra shot), range 3 is plain, and range 4 gives the defender an extra dodge;
+    at range 0 (touching) you cannot spend tokens or re-fire missed shots, and nothing can take dodges from the defender;
+    obstruction gives the defender an extra dodge. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
     const charges = s.upgrades.find((u) => u.id === t.weapon)?.charges;
     const b = document.createElement('button');
     b.className = 'opt';
     b.innerHTML = `<b>${e.name}</b> · ${weaponName(t)}${isPrimary(t) ? '' : ` (${charges} left)`}: range ${t.range}, ${t.arc} arc, ` +
-      `${attackDiceFor(s, t, e)} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
+      `${shots(attackDiceFor(s, t, e))}${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
       `<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
     // While aiming, hovering a line swings the sights to it.
     b.onmouseenter = () => { if (weapon) { weapon = t.weapon ?? 'primary'; candId = t.targetId; show(); } };
@@ -2554,7 +2825,9 @@ function renderAttack(shipId: string, targets: Target[]) {
 }
 
 updateLayout();
-newGame();
+// An invite link goes straight to the online lobby; otherwise the start menu.
+if (inviteCode) newGame();
+else showStart();
 
 // Debug/test hook (also handy in the browser console).
 (window as unknown as { __xw: unknown }).__xw = {
@@ -2563,6 +2836,8 @@ newGame();
   /** The player this device is acting for, and a way to send its commands (as the UI would). */
   get me() { return me; },
   send: (cmd: Command) => send(cmd),
+  /** The move hints for the player planning now (for test scripts that fly missions). */
+  suggest: () => suggestManeuvers(viewFor(state, me), me),
   /** Legal dial indices for one of the ships (for test scripts that plan moves). */
   legalDial: (id: string) => legalDial(state, shipById(id)),
   get stage() { return stage; },

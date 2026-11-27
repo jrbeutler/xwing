@@ -4,8 +4,10 @@
 //
 // Dice effects (dice counts, rerolls, cancelling evades) are interpreted twice, by resolveAttack and by
 // attackOdds in combat.ts; both read them through the helpers below so they cannot drift apart.
-import { PILOTS, UPGRADES } from './content';
-import type { ActionType, AttackCondition, Effect, GameState, GreenToken, ShipState, TriggerEvent, UpgradeState } from './types';
+import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
+import { discardCard, worstCard } from './damage';
+import type { Maneuver } from './maneuvers';
+import type { ActionDef, ActionType, AttackCondition, Effect, GameState, GreenToken, ShipState, TriggerEvent, UpgradeState } from './types';
 
 /**
  * What an effect source is, by its id in play: an upgrade, or a pilot ability (whose id is the pilot's).
@@ -33,6 +35,24 @@ export function effectsOf<K extends Kind>(sh: Pick<ShipState, 'upgrades'> & { ab
     }
   }
   return out;
+}
+
+/**
+ * The ship's action bar: its hull's actions, then any its upgrades add (Tactical Officer's Coordinate,
+ * Targeting Computer's Calculate) that the hull does not already have.
+ */
+export function actionBar(sh: Pick<ShipState, 'typeId' | 'upgrades' | 'ability'>): ActionDef[] {
+  const bar = [...SHIP_TYPES[sh.typeId].actions];
+  for (const a of effectsOf(sh, 'action')) if (!bar.some((x) => x.type === a.effect.action.type)) bar.push(a.effect.action);
+  return bar;
+}
+
+/** A dial entry as the ship's upgrades make it fly (e.g. a Nav Droid's red banks and turns flown white). */
+export function easedManeuver(sh: Pick<ShipState, 'upgrades' | 'ability'>, m: Maneuver): Maneuver {
+  for (const a of effectsOf(sh, 'maneuverDifficulty')) {
+    if (m.difficulty === a.effect.from && a.effect.bearings.includes(m.bearing)) return { ...m, difficulty: a.effect.to };
+  }
+  return m;
 }
 
 /** Most charges the effect's upgrade can hold. */
@@ -63,9 +83,16 @@ export const matches = (cond: AttackCondition | undefined, facts: AttackFacts) =
     k === 'range' ? facts.range >= cond.range![0] && facts.range <= cond.range![1] : cond[k] === facts[k]);
 
 /** Effects of `kind` on `sh` that apply to this attack: condition met and charge available. */
-export function attackEffects<K extends 'rerollAttack' | 'rerollDefense' | 'cancelEvade'>(sh: ShipState, kind: K, facts: AttackFacts) {
+export function attackEffects<K extends 'rerollAttack' | 'rerollDefense' | 'cancelEvade' | 'changeAttack'>(sh: ShipState, kind: K, facts: AttackFacts) {
   return effectsOf(sh, kind).filter((a) => matches((a.effect as { if?: AttackCondition }).if, facts) && charged(a));
 }
+
+/**
+ * Range 0 (official rules): a primary attack cannot add attack dice, and the attacker cannot reduce the
+ * defender's dice. Whether a dice effect is blocked by that.
+ */
+const blockedAtRange0 = (e: OfKind<'dice'>, when: 'attacking' | 'defending', facts: AttackFacts) =>
+  facts.range === 0 && ((e.dice === 'attack' && e.delta > 0 && facts.primary) || (e.dice === 'defense' && e.delta < 0 && when === 'attacking'));
 
 /**
  * Net change to the attack or defense dice of an attack from both ships' `dice` effects: the attacker's
@@ -76,7 +103,7 @@ export function diceDelta(dice: 'attack' | 'defense', facts: AttackFacts, attack
   for (const [sh, when] of [[attacker, 'attacking'], [defender, 'defending']] as const) {
     if (!sh) continue;
     for (const a of effectsOf(sh, 'dice')) {
-      if (a.effect.when === when && a.effect.dice === dice && matches(a.effect.if, facts) && charged(a)) d += a.effect.delta;
+      if (a.effect.when === when && a.effect.dice === dice && matches(a.effect.if, facts) && charged(a) && !blockedAtRange0(a.effect, when, facts)) d += a.effect.delta;
     }
   }
   return d;
@@ -88,7 +115,7 @@ export function diceSources(facts: AttackFacts, attacker?: ShipState, defender?:
   for (const [sh, when] of [[attacker, 'attacking'], [defender, 'defending']] as const) {
     if (!sh) continue;
     for (const a of effectsOf(sh, 'dice')) {
-      if (a.effect.when === when && matches(a.effect.if, facts) && charged(a) && !out.includes(a.source.id)) out.push(a.source.id);
+      if (a.effect.when === when && matches(a.effect.if, facts) && charged(a) && !blockedAtRange0(a.effect, when, facts) && !out.includes(a.source.id)) out.push(a.source.id);
     }
   }
   return out;
@@ -115,6 +142,7 @@ export function runTriggers(s: GameState, sh: ShipState, on: TriggerEvent, ctx: 
     if (e.on !== on || !charged(a)) continue;
     if (e.if?.shieldsBelowMax && !(sh.shields < sh.maxShields)) continue;
     if (e.if?.chargesBelowMax && !(a.source.charges < maxCharges(a.source))) continue;
+    if (e.if?.hasDamageCard && !sh.crits.length) continue;
     if (e.if?.actions && !(ctx.action && e.if.actions.includes(ctx.action))) continue;
     if (e.if?.attack && !(ctx.facts && matches(e.if.attack, ctx.facts))) continue;
     if (e.do.some((op) => op.op === 'stressDefender') && !(ctx.defender && ctx.defender.hull > 0)) continue;
@@ -128,6 +156,10 @@ export function runTriggers(s: GameState, sh: ShipState, on: TriggerEvent, ctx: 
       if (op.op === 'recoverShield' && sh.shields < sh.maxShields) { ev.shields = (ev.shields ?? 0) + 1; sh.shields++; }
       if (op.op === 'recoverCharge' && a.source.charges < maxCharges(a.source)) a.source.charges++;
       if (op.op === 'loseCharges') a.source.charges = 0;
+      if (op.op === 'repairCard') {
+        const card = worstCard(sh);
+        if (card) { discardCard(s, sh, card); s.log.push({ type: 'damageCard', shipId: sh.id, card, what: 'repaired' }); }
+      }
     }
   }
 }

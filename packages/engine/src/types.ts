@@ -1,5 +1,5 @@
 import type { Pose, Polygon } from './geometry';
-import type { BaseSize, Maneuver } from './maneuvers';
+import type { BaseSize, Bearing, Difficulty, Maneuver } from './maneuvers';
 import type { DamageCardId } from './damage';
 
 export type PlayerId = string;
@@ -14,7 +14,18 @@ export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | '
 export interface ActionDef { type: ActionType; red?: boolean; linked?: { type: ActionType; red?: boolean } }
 
 /** Kinds of upgrade slot a ship can have (power-ups go in matching slots). */
-export type SlotType = 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device';
+export type SlotType =
+  | 'talent' | 'modification' | 'missile' | 'torpedo' | 'turret' | 'device'
+  /** Front-arc secondary guns without charges. */
+  | 'cannon'
+  /** A second person aboard (medium ships): new actions and tricks. */
+  | 'crew'
+  /** A gunner: second chances with the ship's guns. */
+  | 'gunner'
+  /** A small ship's droid: repairs and flight help. */
+  | 'droid'
+  /** Locks and information. */
+  | 'sensor';
 
 /** Ship classes. Pilots specialise in one; flying another class costs them initiative. */
 export type ShipClass = 'fighter' | 'bomber' | 'freighter';
@@ -51,10 +62,12 @@ export interface UpgradeDef {
  *   outsideDefenderArcs: the attacker is outside every firing arc of the defender
  *   defenderStressed: the defender has at least 1 stress
  *   range: [min, max] range bands the attack's range must fall in
+ *   weapon: fired with this upgrade (its id)
  */
 export interface AttackCondition {
   primary?: boolean; turret?: boolean; bullseye?: boolean; frontArc?: boolean; outsideDefenderArcs?: boolean; defenderStressed?: boolean;
   range?: [number, number];
+  weapon?: string;
 }
 
 /** Moments in the round that trigger effects. */
@@ -80,7 +93,9 @@ export type EffectOp =
   /** Recover 1 charge on the effect's own upgrade. */
   | { op: 'recoverCharge' }
   /** Lose every charge on the effect's own upgrade. */
-  | { op: 'loseCharges' };
+  | { op: 'loseCharges' }
+  /** Repair the ship's worst face-up damage card (any card, repairable or not). */
+  | { op: 'repairCard' };
 
 /**
  * An effect of an upgrade or a pilot ability. `cost: 'charge'` spends one of its source's charges each time it
@@ -98,11 +113,32 @@ export type Effect =
   /** On `on`, if the conditions hold, log the upgrade as `log` and apply `do` in order. */
   | {
       kind: 'trigger'; on: TriggerEvent; do: EffectOp[]; log: 'used' | 'recovered' | 'spent';
-      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean; actions?: ActionType[]; attack?: AttackCondition };
+      if?: { shieldsBelowMax?: boolean; chargesBelowMax?: boolean; hasDamageCard?: boolean; actions?: ActionType[]; attack?: AttackCondition };
       cost?: 'charge'; needsCharge?: boolean;
     }
   /** A flat bonus to a number the rules look up. */
-  | { kind: 'stat'; stat: 'jamRange' | 'deviceCharges'; delta: number };
+  | { kind: 'stat'; stat: StatName; delta: number }
+  /** Adds an action to the ship's action bar (if it does not have it already). */
+  | { kind: 'action'; action: ActionDef }
+  /** While attacking: change up to `dice` focus results to hits, without spending anything. */
+  | { kind: 'changeAttack'; dice: number; if?: AttackCondition }
+  /**
+   * After an attack that deals no damage, the ship may make a bonus attack with a different weapon through
+   * its turret arc (once per Engagement phase).
+   */
+  | { kind: 'bonusAttack' }
+  /** Dial entries with these bearings and difficulty `from` are flown as `to` instead. */
+  | { kind: 'maneuverDifficulty'; bearings: Bearing[]; from: Difficulty; to: Difficulty }
+  /** At the start of the Activation phase, see the dial of the nearest enemy at range 1 to `range`. */
+  | { kind: 'peekDial'; range: number };
+
+/**
+ * Numbers and switches the rules look up (sum of `stat` effects). jamRange: +range bands for Jam.
+ * deviceCharges: extra charges on each bomb and mine. repairAny (1 = on): the Repair action can fix any
+ * face-up card. keepActionOnObstacle (1 = on): touching an obstacle never costs the ship its action.
+ * coordinateRange: +range bands for Coordinate. keepLock (1 = on): rerolling with a lock does not spend it.
+ */
+export type StatName = 'jamRange' | 'deviceCharges' | 'repairAny' | 'keepActionOnObstacle' | 'coordinateRange' | 'keepLock';
 
 export interface DeviceDef {
   /** Bombs detonate at the end of the Activation phase; mines when a ship moves through or onto them. */
@@ -126,6 +162,8 @@ export interface WeaponDef {
   effect?: 'proton' | 'ion';
   /** 'turret': fires through the ship's turret arc (which the Rotate action turns); default: front arc. */
   arc?: 'turret';
+  /** Only at a target in the ship's bullseye. */
+  bullseyeOnly?: boolean;
   /**
    * How clients draw its shots. Default: ion weapons 'ion' (torpedoes stay 'torpedo'), torpedoes 'torpedo',
    * missiles 'missile', turrets 'laser'.
@@ -209,7 +247,7 @@ export interface ShipState {
   reinforce: 'front' | 'rear' | null;
   /** Disarmed (after a Reload): cannot attack this round. Cleared in the End phase. */
   disarmed: boolean;
-  /** Ion tokens: an ionized ship flies a white 1-straight instead of its dial. */
+  /** Ion tokens: an ionized ship flies a blue 1-bank or 1-straight toward its dial's direction instead (ionManeuverFor). */
   ion: number;
   /** Which way the ship's turret arc faces (ships with a turret upgrade). */
   turretArc: ArcName;
@@ -217,6 +255,10 @@ export interface ShipState {
   crits: DamageCardId[];
   /** Index into the ship type's dial; hidden from opponents during planning. */
   dial: number | null;
+  /** Players who may see this ship's dial this round although it is not theirs (an upgrade peeked at it). */
+  dialSeenBy?: PlayerId[];
+  /** Mission tags (e.g. 'freighter', 'drone') that objectives and triggers refer to. */
+  tags?: string[];
   destroyed: boolean;
   /** Destroyed ships linger until their initiative step ends (simultaneous fire). */
   removed: boolean;
@@ -283,7 +325,8 @@ export type Decision =
       /** This ship is acting because the ship `by` coordinated it (not its own activation). */
       coordinated?: { by: string };
     }
-  | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[] }
+  /** `bonus`: a bonus attack (e.g. a gunner's after a miss), not the ship's own attack for the round. */
+  | { kind: 'attack'; playerId: PlayerId; shipId: string; targets: TargetInfo[]; bonus?: { source: string } }
   | { kind: 'system'; playerId: PlayerId; shipId: string; options: DropChoice[] };
 
 /** Tokens a ship gains from actions and loses in the End phase (jam takes them away). */
@@ -338,8 +381,14 @@ export type GameEvent =
       /** What it did to each ship caught by it (damage cards it dealt follow as damageCard events). */
       ships: { shipId: string; shieldDamage: number; hullDamage: number; ion?: number; roll?: AttackFace[] }[];
     }
+  /** A ship's upgrade showed it another ship's dial (the view of that ship's player keeps the dial). */
+  | { type: 'dialPeeked'; shipId: string; targetId: string; upgrade: string }
   | { type: 'destroyed'; shipId: string }
-  | { type: 'gameOver'; winner: PlayerId | 'draw' }
+  | { type: 'gameOver'; winner: PlayerId | 'draw'; mission?: 'win' | 'loss' }
+  /** A mission objective moved on: progress (e.g. 3 of 5 markers), done, or failed. */
+  | { type: 'objective'; id: string; status: ObjectiveStatus; progress: number; of: number }
+  /** A mission message for the player (a coach tip or a scripted line). */
+  | { type: 'message'; title: string; text: string }
   | { type: 'info'; text: string };
 
 export type Phase = 'planning' | 'system' | 'activation' | 'engagement' | 'end' | 'over';
@@ -367,6 +416,85 @@ export interface GameState {
   pending: Decision | null;
   log: GameEvent[];
   winner: PlayerId | 'draw' | null;
+  /** A mission game: its rules, objectives and progress (absent in a skirmish). */
+  mission?: MissionState;
+}
+
+// ---------------------------------------------------------------------------
+// Missions (docs/MISSIONS.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which rules are on in a mission (training missions switch them on one at a time). Anything off is not
+ * offered: actions not listed are missing from the action options, red or special maneuvers from the dial.
+ */
+export interface Ruleset {
+  /** Ships may attack. */
+  attacks: boolean;
+  /** Actions that may be performed (Coordinate, Jam, Repair, Rotate... must be listed to be offered). */
+  actions: ActionType[];
+  /** Linked actions are offered after their first action. */
+  linkedActions: boolean;
+  /** Red maneuvers can be set. */
+  redManeuvers: boolean;
+  /** K-turns, loops, rolls, stops and reverse maneuvers can be set. */
+  specialManeuvers: boolean;
+  /** Crits that reach the hull deal face-up damage cards (off: they are plain hull damage). */
+  damageCards: boolean;
+}
+
+/** A rectangle of the table (board mm), e.g. the far edge to escape through. */
+export interface Zone { id: string; label: string; x0: number; y0: number; x1: number; y1: number }
+/** A round marker on the table (board mm), e.g. a gate of a flight course. */
+export interface Marker { id: string; label: string; x: number; y: number; r: number }
+
+/**
+ * A mission objective. All but `protect` must be done to win; a failed `protect` loses the mission.
+ *   destroy: every enemy ship (with `tag`, if given) is destroyed.
+ *   survive: the player still has a ship (a `tag`ged one, if given) at the end of round `rounds`.
+ *   reach: `count` of the player's ships (with `tag`) end a move with their centre in `zone`.
+ *   course: a player ship flies through `markers` in order (its base touching each).
+ *   protect: no player ship with `tag` is destroyed.
+ */
+export type Objective = { id: string; label: string } & (
+  | { kind: 'destroy'; tag?: string }
+  | { kind: 'survive'; rounds: number; tag?: string }
+  | { kind: 'reach'; zone: string; tag?: string; count?: number }
+  | { kind: 'course'; markers: string[]; tag?: string }
+  | { kind: 'protect'; tag: string }
+);
+export type ObjectiveStatus = 'open' | 'done' | 'failed';
+export type ObjectiveState = Objective & { status: ObjectiveStatus; progress: number; of: number };
+
+/**
+ * A scripted mission event: on a round starting, an objective done, a tagged ship destroyed, or the first
+ * time something happens to one of the player's ships, show a message (coach tips).
+ */
+export interface Trigger {
+  on: { roundStart: number } | { objectiveDone: string } | { shipDestroyed: string } | { first: 'stress' | 'damageCard' | 'obstacleHit' | 'attack' | 'hit' | 'lock' };
+  message: { title: string; text: string };
+}
+
+/** How the AI flies a side in a mission: 'drone' wanders in gentle moves and never acts or shoots. */
+export type AiProfile = 'standard' | 'drone';
+
+/** A mission as it is played: what createGame needs, and the progress it keeps. */
+export interface MissionState {
+  id: string;
+  /** The player the mission is for (the other side is the AI). */
+  player: PlayerId;
+  ruleset: Ruleset;
+  objectives: ObjectiveState[];
+  triggers: Trigger[];
+  /** Indices of triggers that have fired (each fires once). */
+  fired: number[];
+  zones: Zone[];
+  markers: Marker[];
+  ai: Record<PlayerId, AiProfile>;
+  maxRounds: number;
+  result: 'win' | 'loss' | null;
+  /** How far into the log the mission has read (missionScan). */
+  scanned: number;
 }
 
 export type Command =

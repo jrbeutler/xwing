@@ -56,15 +56,20 @@ own charges), listed before the ship's upgrades; `effectSource(id)` names any so
 
 | Kind | What it does | Used by |
 |---|---|---|
-| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating; Mara Venn, Tobin Reyes, Kira Solace, Bram Holloway |
+| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating, Autocannon; Mara Venn, Tobin Reyes, Kira Solace, Bram Holloway |
 | `rerollAttack` | Reroll up to N attack dice (blanks first, then focus results) | Marksman, Steady Gunner, Ordnance Specialist |
 | `rerollDefense` | Reroll up to N defense dice | Elusive |
 | `cancelEvade` | Cancel 1 of the defender's evade results | Crack Shot |
-| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`, `actionPerformed`, `attackHit`), if conditions hold (shields/charges below max, which action, an `AttackCondition`), run ops (`gainFocus`, `gainCalculate`, `stressDefender`, `recoverShield`, `recoverCharge`, `loseCharges`) | Hotshot, Elusive, Damage Control, Stealth Coating; Syl Ketch, Ilse Kord, Wren Tal, Drav Okono, Tessa Varn, Corin Hale |
-| `stat` | Flat bonus to a looked-up number (`jamRange`, `deviceCharges`) | Signal Jammer, Payload Expert |
+| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`, `actionPerformed`, `attackHit`), if conditions hold (shields/charges below max, a face-up damage card, which action, an `AttackCondition`), run ops (`gainFocus`, `gainCalculate`, `stressDefender`, `recoverShield`, `recoverCharge`, `loseCharges`, `repairCard`) | Hotshot, Elusive, Damage Control, Stealth Coating, Combat Medic, Repair Droid; Syl Ketch, Ilse Kord, Wren Tal, Drav Okono, Tessa Varn, Corin Hale |
+| `stat` | Flat bonus to a looked-up number or a switch (`jamRange`, `deviceCharges`, `coordinateRange`, `repairAny`, `keepActionOnObstacle`, `keepLock`) | Signal Jammer, Payload Expert, Tactical Officer, Patch Droid, Collision Scanner, Fire-Control System |
+| `action` | Adds an action to the ship's action bar (`actionBar`) | Tactical Officer (Coordinate), Targeting Computer (Calculate) |
+| `changeAttack` | Change up to N focus results to hits, free (before tokens; mirrored in `attackOdds`) | Gunnery Chief |
+| `bonusAttack` | After an attack that deals no damage, one bonus attack with a different weapon through the turret arc (a `bonus` attack decision) | Second Gunner |
+| `maneuverDifficulty` | Dial entries of some bearings and one difficulty are flown at another (`maneuverFor`) | Nav Droid |
+| `peekDial` | At the start of Activation, see the nearest enemy's dial within N bands (`dialSeenBy`; `viewFor` keeps it) | Intelligence Agent |
 
 Attack effects can be limited with an `AttackCondition` (primary, turret, bullseye, front arc, attacker
-outside the defender's arcs, defender stressed, a range of bands). `cost: 'charge'` spends one of the
+outside the defender's arcs, defender stressed, a range of bands, the weapon fired). `cost: 'charge'` spends one of the
 source's charges per use; `needsCharge` only requires one; `recurring` sources get 1 charge back in each
 End phase ("once per round"). Attack events list the sources whose dice effects changed the dice (`diceBy`). Dice effects are read by both `resolveAttack` and `attackOdds` through the same helpers,
 and `test/effects.test.ts` checks the two against each other for effects the shipped content doesn't use yet
@@ -105,24 +110,44 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
-- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, and a scenario format (missions) that would lay out obstacles by design.
+- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, tech/illicit/title/configuration slots, and a scenario format (missions) that would lay out obstacles by design.
+- Upgrade slots by ship: Kestrel cannon, torpedo, droid, modification; Wasp sensor, modification; Javelin missile, droid, sensor, modification; Anvil turret, torpedo, missile, 2 device, droid, gunner, modification; Bulwark cannon, missile, turret, crew, gunner, sensor, 2 modification; Wayfarer missile, torpedo, turret, 2 device, crew, gunner, sensor, 2 modification.
+- The AI flies the new upgrades (they work automatically or through options it already weighs) but does not use what an Intelligence Agent shows it.
 - The AI checks the whole path of a maneuver for obstacles (the rules count flying through the same as landing on one), weighted asteroid > debris > gas, and looks one move ahead: it avoids ending nose-up to an obstacle when a short straight and both gentle banks would all hit one next round (`OBSTACLE_AVOID` in `ai.ts`). AI-vs-AI games average about half an obstacle contact per game (down from about 10). It does not predict bumps, so it may skip a move that a collision would have stopped short of an obstacle.
 - Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
 - The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, and takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`).
-- Barrel roll uses 3 fixed positions (forward/centre/back), not continuous placement.
+- Barrel roll uses 3 positions (forward/centre/back), which is the official rule (the hashmark is aligned to the front, middle or back of the template).
 - Tallon-style roll uses the centred position only.
 - Obstruction is checked along the closest-points line only.
 
-### Measurements to verify against physical components
+### Measurements
 
-All live in `packages/engine/src/maneuvers.ts`:
-- `BANK_RADIUS` (80/130/180 mm centre-line) and `TURN_RADIUS` (35/62.5/90 mm).
-- Template width (20 mm), bullseye width, range band edges (`RANGE_RULES.edges`; devices and the setup area still use 100 mm), base sizes (40/60/80 mm).
+All live in `packages/engine/src/maneuvers.ts`. Checked against a third-party replica template set (no
+official dimension sheet was found): template width 20 mm and straights 40 mm per speed match; bank
+centre-line radii 80/130/180 mm match (inside/outside 70-90, 120-140, 170-190); turn radii 35/62.5/90 mm match
+within 0.5 mm (35, 63, 90). Base sizes (40/60/80 mm) and the bullseye width are not yet checked.
 
-**Rules verification:** the rules here are written from general knowledge of the
-2.0/2.5 core rules. Before relying on them for balance, check each table row against
-the current official Rules Reference, especially stress and red maneuvers, range-0
-attacks, and partial-maneuver details.
+### Rules verification (against the official 2.5 rulebook, Atomic Mass Games, 2023)
+
+Checked and matching: stress (no red maneuvers or actions while stressed, red actions add one, blue
+maneuvers remove one); fleeing; obstruction (+1 defense die); one lock at a time; simultaneous fire; ion
+thresholds (1/2/3 by size), Focus-only while ionized, ion tokens cleared after the ion maneuver; barrel roll
+positions; range 0 attacks (a primary attack at range 0 adds no attack dice and the attacker cannot modify its
+dice; the attacker cannot reduce, cancel or modify the defender's dice; `attackerMayModify`, `diceDelta`).
+Fixed to match: the ion maneuver is a blue speed-1 bank or straight in the dial's direction (was a
+white 1-straight), and becoming ionized breaks the ship's lock and stops it locking.
+
+Different from the official rules (house rules, or not built yet). The first two are deliberate:
+- Range: four bands and their dice modifiers (official: three 10 cm bands, +1 attack die at range 1,
+  +1 defense die at range 3); locks reach every band (official: range 0-3).
+- Bumps: skip the action and gain 1 stress (official: bumping a friendly ship rolls an attack die for 1
+  damage; bumping an enemy allows a red Focus or Calculate; either way the action is skipped).
+- Obstacles (official): an asteroid deals 1 damage plus a die roll for a second; a debris cloud gives a stress
+  and rolls for damage; a gas cloud breaks locks, gives a strain token and rolls for 1 or 3 ion tokens; ships at
+  range 0 of an obstacle cannot attack, and at range 0 of a gas cloud cannot lock or be locked. Ours are lighter
+  versions (`OBSTACLE_RULES`).
+- Coordinate reaches range 1-2 officially; ours includes range 0.
+- Strain tokens are not implemented.
 
 ## Placeholder content
 
@@ -166,7 +191,7 @@ Enemy positions are predicted (`predictEnemies`, `PREDICTION` in `ai.ts`): the A
 seat, scores that enemy's legal maneuvers with the same scoring (assuming our ships fly straight ahead), and
 keeps the best 3, weighted by exp((score − best) / 8); every candidate of ours is scored against each likely
 enemy position by its weight. It uses only what a player can see: stressed enemies can't pick red maneuvers,
-ionized ones drift 1 straight, damage cards change how a maneuver flies. In AI-vs-AI games the most likely
+ionized ones drift a blue 1-bank or 1-straight (each way counted as equally likely), damage cards change how a maneuver flies. In AI-vs-AI games the most likely
 guess lands a median 38 mm from where the enemy actually ends (within 50 mm 66% of the time), against 84 mm
 (25%) for the old guess of 100 mm straight ahead; that is the AI predicting itself, so humans will be harder to
 read. Over 300 mirrored games it beat the straight-ahead AI 173–120 (7 draws). A planning decision takes about
@@ -191,7 +216,7 @@ The AI already decides from `viewFor` (the redacted view), the same view a netwo
 1. ✅ **Movement and combat vertical slice**: engine + tests + 3D web client vs AI.
 2. **Rules depth**: interactive dice mods, damage deck, more actions, more obstacle types, pilot abilities as data-driven effect hooks.
 3. **Multiplayer**: ✅ local pass-and-play (two players on one device, hand-over screens hide each player's planning). ✅ Online between friends with no server (`apps/web/src/online.ts`, `lobby.ts`): the host's browser runs the game and the guest connects to it over WebRTC (PeerJS; the public PeerJS service only brokers the connection). The guest sends commands, the host checks them with `apply` and sends back `viewFor(state, guest)` plus the new log events (`sync`); both deploy at once and press Ready; the host saves the game in localStorage after every change and can resume it after a reload, and the guest rejoins with a seat token (or reconnects by itself). Not cheat-proof: the host has the whole state. Next: `apps/server` (WebSocket rooms, server-authoritative state) so neither player holds the game; the lobby and protocol carry over, with the server taking the host's role.
-4. **Missions**: scenario files (deployment zones, objectives, reinforcements, turn limits), mission scripting hooks.
+4. **Missions**: planned in docs/MISSIONS.md (mission data files, objectives, triggers, rulesets for training, a training track, then a campaign with permadeath and later fleet battles).
 5. **Campaign**: pilot XP and traits, injuries and permadeath, hangar and upgrades, carrier facilities, star map with rising threat, save/load.
 6. **Own universe**: replace the placeholder content, art direction, audio.
 7. **Unreal client**: against the server protocol, then decide on a C++ port or a sidecar for offline play.
