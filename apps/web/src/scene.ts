@@ -17,6 +17,8 @@ const FLY_HEIGHT = 18;
 /** Effect colours that mean the same thing whoever fires: ion is electric blue, jamming violet. */
 const ION = 0x7fd8ff, JAM = 0xc58bff;
 /** Flight time of one shot, and the gap between shots in a volley, per kind of weapon (ms at 1×). */
+/** Camera angles for an attack: the gunner's view over the attacker's shoulder, or one of the cinematic ones. */
+export type AttackAngle = 'gunner' | 'reverse' | 'side' | 'low';
 export const SHOT_TIMING: Record<ShotLook, { flight: number; gap: number }> = {
   laser: { flight: 170, gap: 110 }, ion: { flight: 300, gap: 170 }, rockets: { flight: 330, gap: 75 },
   missile: { flight: 640, gap: 240 }, torpedo: { flight: 820, gap: 320 },
@@ -965,9 +967,10 @@ export class BattleScene {
    * Gunner's-eye view: drop in just behind and above the attacker, looking down its line of fire at the
    * defender. The orbit limits that keep the normal view overhead are lifted until restoreView().
    */
-  attackView(attackerId: string, defenderId: string, ms = 600) {
+  attackView(attackerId: string, defenderId: string, ms = 600, angle: AttackAngle = 'gunner') {
     const a = this.ships.get(attackerId), d = this.ships.get(defenderId);
     if (!a || !d) return;
+    if (angle !== 'gunner') return this.cinematicView(a, d, ms, angle);
     if (!this.savedView) {
       this.savedView = {
         target: this.controls.target.clone(), position: this.camera.position.clone(),
@@ -991,6 +994,76 @@ export class BattleScene {
     if (this.aimFrom && this.aimFrom !== a) this.aimFrom.label.visible = true;
     this.aimFrom = a;
     a.label.visible = false;
+  }
+
+  /**
+   * The other attack angles, for variety while the shots fly (the camera keeps drifting slowly until
+   * restoreView(), like a film camera on a dolly):
+   * - `reverse`: from behind the defender, over its shoulder, watching the fire come in;
+   * - `side`: side-on to the line of fire, both ships in frame, tracking along it;
+   * - `low`: low beside the attacker, its hull large in the foreground, the target beyond.
+   */
+  private cinematicView(a: ShipView, d: ShipView, ms: number, angle: Exclude<AttackAngle, 'gunner'>) {
+    if (!this.savedView) {
+      this.savedView = {
+        target: this.controls.target.clone(), position: this.camera.position.clone(),
+        minDistance: this.controls.minDistance, maxPolarAngle: this.controls.maxPolarAngle, enabled: this.controls.enabled,
+      };
+    }
+    this.controls.minDistance = 0;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.enabled = false;
+    const from = a.root.position.clone().setY(FLY_HEIGHT), to = d.root.position.clone().setY(FLY_HEIGHT);
+    const dist = to.distanceTo(from);
+    const dir = to.clone().sub(from).setY(0).normalize();
+    // Which side to film from: the one facing the player's own table edge, so left and right read as usual.
+    const across = new THREE.Vector3(-dir.z, 0, dir.x);
+    if (across.z * this.facing < 0) across.negate();
+    // Distance at which a span of `w` fits across the screen (narrow on an upright phone).
+    const fit = (w: number) => {
+      const v = THREE.MathUtils.degToRad(this.camera.fov) / 2;
+      const h = Math.atan(Math.tan(v) * this.camera.aspect);
+      return (w / 2) / Math.tan(h);
+    };
+    let target: THREE.Vector3, pos: THREE.Vector3, drift: THREE.Vector3, hide: ShipView;
+    if (angle === 'reverse') {
+      const lift = Math.max(0, 220 - dist) * 0.4;
+      pos = to.clone().addScaledVector(dir, d.reach * 1.5 + 25).addScaledVector(across, d.reach * 0.7)
+        .setY(Math.max(d.top, FLY_HEIGHT) + 16 + lift);
+      target = from.clone().lerp(to, 0.2);
+      drift = across.clone().multiplyScalar(-30);
+      hide = d;
+    } else if (angle === 'side') {
+      const mid = from.clone().lerp(to, 0.5);
+      const back = Math.max(fit(dist + a.reach + d.reach + 30), 110);
+      pos = mid.clone().addScaledVector(across, back).setY(FLY_HEIGHT + 12 + back * 0.1);
+      target = mid.setY(FLY_HEIGHT);
+      drift = dir.clone().multiplyScalar(dist * 0.18);
+      hide = a;
+    } else {
+      // An upright phone has little width: come in more from behind than from the side.
+      const narrow = this.camera.aspect < 1;
+      pos = from.clone().addScaledVector(dir, -(a.reach * (narrow ? 2.4 : 1.7) + 20)).addScaledVector(across, a.reach * (narrow ? 0.55 : 1.1) + 12)
+        .setY(Math.max(6, FLY_HEIGHT * 0.6));
+      target = from.clone().lerp(to, 0.6);
+      drift = new THREE.Vector3(0, 14, 0).addScaledVector(dir, -12);
+      hide = a;
+    }
+    this.flyTo(target, pos, ms);
+    if (this.aimFrom && this.aimFrom !== hide) this.aimFrom.label.visible = true;
+    this.aimFrom = hide;
+    hide.label.visible = false;
+    if (this.reducedMotion) return;
+    // Once in place, keep drifting until the next camera move takes over.
+    const id = this.camTween;
+    void this.wait(ms).then(() => {
+      if (id !== this.camTween) return;
+      const p0 = this.camera.position.clone();
+      void this.tween(4000, (t) => {
+        if (id !== this.camTween) return;
+        this.camera.position.copy(p0).addScaledVector(drift, t);
+      });
+    });
   }
 
   /** True while the camera is in attackView(), so the normal framing leaves it alone. */

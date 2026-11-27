@@ -3,7 +3,7 @@ import {
   legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
-import { BattleScene, SHOT_TIMING } from './scene';
+import { BattleScene, SHOT_TIMING, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -957,6 +957,23 @@ function shotLook(weapon?: string): ShotLook {
   return 'laser';
 }
 
+/** The last attack angle used, so two shots in a row are not filmed from the same cinematic angle. */
+let lastAngle: AttackAngle = 'gunner';
+
+/**
+ * How to film an attack (null: stay on the table view). The player's own shots: the gunner's view half the
+ * time (less for slow ordnance, which is worth watching side-on), otherwise a cinematic angle. Enemy shots:
+ * a third of the time, a cinematic angle, often from behind the player's ship as the fire comes in.
+ */
+function attackAngle(own: boolean, look: ShotLook): AttackAngle | null {
+  if (!own && Math.random() > 0.35) return null;
+  const slow = look === 'missile' || look === 'torpedo';
+  if (own && Math.random() < (slow ? 0.3 : 0.5)) return (lastAngle = 'gunner');
+  const pool: AttackAngle[] = own ? ['reverse', 'side', 'low', ...(slow ? ['side' as const] : [])] : ['reverse', 'reverse', 'side', 'low'];
+  const choices = pool.filter((x) => x !== lastAngle);
+  return (lastAngle = choices[Math.floor(Math.random() * choices.length)] ?? 'side');
+}
+
 async function showAttack(e: AttackEvent) {
   const a = shipById(e.attackerId), d = shipById(e.defenderId);
   const incoming = d.owner === me;
@@ -966,13 +983,14 @@ async function showAttack(e: AttackEvent) {
   const ionShot = !!e.weapon && UPGRADES[e.weapon].weapon?.effect === 'ion';
   const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
 
-  // 1. Who shoots whom. The player's own shots are seen from behind the attacker, down its line of fire.
+  // 1. Who shoots whom. The player's own shots are filmed: usually from behind the attacker, down its line
+  // of fire, sometimes from a cinematic angle. Enemy shots are now and then filmed too.
   // With two players every shot is someone's own.
-  const gunCam = isHuman(a.owner);
+  const angle = attackAngle(isHuman(a.owner), look);
   scene.setRings({ [a.id]: GREEN, [d.id]: RED });
   scene.setOdds({});
-  if (gunCam) {
-    scene.attackView(a.id, d.id, 650);
+  if (angle) {
+    scene.attackView(a.id, d.id, 650, angle);
     await scene.wait(750);
   } else {
     scene.showArcs([a.id]);
@@ -1059,7 +1077,7 @@ async function showAttack(e: AttackEvent) {
   roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);
   await scene.wait(1100);
   scene.showArcs([]);
-  if (gunCam) {
+  if (angle) {
     scene.restoreView(600);
     await scene.wait(600);
   }
