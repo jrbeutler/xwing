@@ -1,11 +1,15 @@
 # Missions, training and campaign: plan
 
-Status: the mission framework and the eight training missions are built (build steps 1 and 2 below); the
-campaign layer and fleet battles are not. Decisions so far:
+Status: the mission framework, the eight training missions and a first campaign arc (mission boards, flags; no
+roster yet) are built; the roster, experience, permadeath and fleet battles are not. Decisions so far:
 - **Fighters in fleet battles** are abstract squadron tokens to start (the fleet layer is later).
 - **Permadeath**: pilots and ships lost in a mission are gone.
 - **Single player** first; the design keeps co-op possible (two players sharing one roster against the AI).
-- **No story yet**: a simple training track proves the mission format; story comes later.
+- **Training an officer**: the player names an officer at enrolment and flies as them in every mission (their
+  ship carries the name). Training is flight school under Commander Ress; graduation makes them a lieutenant.
+- **Mission boards**: after training, each operation offers 2-4 missions and the player flies one. The others go
+  away, and a campaign mission is flown once: win or lose, no retry. Results set flags that shape later boards.
+- **Roster later**: campaign missions use fixed forces, like training; the persistent squadron comes next.
 
 ## Layers
 
@@ -140,6 +144,26 @@ one game (the host's browser runs it); campaign state would live with the host, 
 - In tests each mission is played to a result with the AI flying both sides: the course and the drones are
   won nearly every time; the fights are won roughly a quarter to two thirds of the time by the AI, so a player
   using the hints should do better.
+
+## As built (step 3, first part): the campaign arc
+
+- Engine: `campaign.ts` holds four operations (`OPERATIONS`) of 2-4 `CampaignMission`s each: a mission plus a
+  board summary, difficulty (1-3), stakes, `needs` / `needsAny` flags to appear, an `outcome` per result (flags
+  set, debrief text), and `extras`: ships added to either side, or enemies left out, when an earlier result set a
+  flag. Pure functions: `missionBoard`, `recordMission` (sets flags, moves to the next operation),
+  `missionAsFlown` (applies extras), `campaignOver`. `missionGame(def, seed, { officer })` names the ship tagged
+  `officer` (one in every mission, training included).
+- The arc: **First Command** (supply run, raider hunt, listening post) → **Pressure** (depot strike if the buoys
+  found it, take back stolen parts if the supply run failed, hold the relay, sweep the lanes) → **Counterstrike**
+  (run the blockade, rescue a downed pilot, a duel with the Syndicate ace if the raiders got bold) → **Showdown**
+  (final assault or defend the outpost, with allies and enemies set by everything before).
+- Tests walk every path through the campaign (each board has 2-4 missions, every mission is reachable), check no
+  ship starts on an obstacle, and play every mission (with and without its extras) to a result with the AI on
+  both sides.
+- Client: enrolment (name the officer), flight school with in-character intros, graduation, the operation's board
+  (cards with difficulty, stakes, and notes on what earlier results changed), briefings marked final, a debrief
+  with the outcome text and the way back to the board, and the end of the campaign with its history. Progress
+  stays in localStorage (`xw-campaign`); old training progress carries over.
 
 ## Build order
 

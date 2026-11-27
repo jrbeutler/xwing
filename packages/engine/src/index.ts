@@ -12,3 +12,4 @@ export { decide as aiDecide, scoreManeuver, suggestManeuvers, type Suggestion } 
 export * from './rules';
 export * from './mission';
 export * from './training';
+export * from './campaign';

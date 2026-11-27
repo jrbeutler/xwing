@@ -451,6 +451,25 @@ html.compact #log.open { cursor: pointer; }
 .briefing-card p { margin: 0 0 10px; line-height: 1.5; }
 .briefing-card h3 { margin: 12px 0 4px; }
 .objective-list { margin: 0 0 10px; padding-left: 20px; }
+.quote { margin: 0 0 12px; padding: 8px 12px; border-left: 3px solid var(--accent); font-style: italic; line-height: 1.5; background: rgba(124, 240, 197, .06); border-radius: 0 8px 8px 0; }
+.quote .hint { font-style: normal; white-space: nowrap; }
+.quote .hint::before { content: '— '; }
+.name-input { width: 100%; box-sizing: border-box; margin: 4px 0 12px; padding: 10px 12px; font: inherit; font-size: 16px; color: var(--text);
+  background: #0d1526; border: 1px solid var(--line); border-radius: 8px; }
+.name-input:focus { outline: none; border-color: var(--accent); }
+.briefing-card .note, .board-card .note { color: var(--p1); }
+.briefing-card .warn { color: #ffcf6b; }
+.board { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.board-card { display: flex; flex-direction: column; gap: 6px; padding: 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.board-card:hover, .board-card:focus-within { border-color: var(--accent); }
+.board-card p { margin: 0; line-height: 1.45; }
+.board-card button { align-self: flex-start; margin-top: auto; }
+.board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.board-head b { font-size: 17px; }
+.pips { color: #ffcf6b; letter-spacing: 2px; font-size: 12px; flex: none; }
+.history { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.history .won { color: var(--accent); }
+.history .lost { color: var(--red); }
 .objective-list li.done { color: var(--accent); }
 .objective-list li.failed { color: var(--red); text-decoration: line-through; }
 #mission-hud { position: fixed; z-index: 4; left: calc(16px + env(safe-area-inset-left, 0px)); top: calc(56px + env(safe-area-inset-top, 0px));

@@ -14,6 +14,8 @@ export interface MissionDef {
   teaches: string;
   /** The briefing shown before the battle: the one new idea, in plain words. */
   briefing: string[];
+  /** A line in character above the briefing (the instructor in training, command in the campaign). */
+  intro?: string;
   ruleset: Ruleset;
   obstacles: Obstacle[];
   zones?: Zone[];
@@ -32,12 +34,17 @@ export const MISSION_PLAYERS = [
   { id: 'p2', name: 'Opposition', faction: 'syndicate' },
 ] as const;
 
-/** A game of a mission: the player is `p1`, the AI `p2`. */
-export function missionGame(def: MissionDef, seed: number): GameState {
+/** The player's own ship in every mission carries this tag; it flies under the officer's name. */
+export const OFFICER_TAG = 'officer';
+
+/** A game of a mission: the player is `p1`, the AI `p2`. `officer` names the player's officer's ship. */
+export function missionGame(def: MissionDef, seed: number, opts: { officer?: string } = {}): GameState {
+  const name = opts.officer?.trim();
+  const player = def.player.map((e) => (name && e.tags?.includes(OFFICER_TAG) ? { ...e, name } : e));
   return createGame({
     seed,
     players: [{ ...MISSION_PLAYERS[0] }, { ...MISSION_PLAYERS[1] }],
-    squads: { p1: def.player, p2: def.enemy },
+    squads: { p1: player, p2: def.enemy },
     obstacles: def.obstacles,
     maxRounds: def.maxRounds,
     mission: {
@@ -51,6 +58,8 @@ const N = Math.PI / 2, S = -Math.PI / 2;
 const at = (x: number, y: number, h: number) => ({ x, y, h });
 const cadet = (x: number, y = 60, name = 'Cadet', extra: Partial<SquadEntry> = {}): SquadEntry =>
   ({ pilotId: 'vale-nine', shipType: 'kestrel', pose: at(x, y, N), name, ...extra });
+/** The player's own ship: flown under the officer's name. */
+const officer = (e: SquadEntry): SquadEntry => ({ ...e, tags: [...(e.tags ?? []), OFFICER_TAG] });
 const tip = (on: Trigger['on'], title: string, text: string): Trigger => ({ on, message: { title, text } });
 
 /** The rules switched on step by step. */
@@ -67,6 +76,7 @@ const asteroids = (seed: number, n: number) => generateObstacles({ rng: seed }, 
 export const TRAINING: MissionDef[] = [
   {
     id: 'training-1', number: 1, title: 'Flight Course', teaches: 'The dial and maneuvers',
+    intro: "Welcome to flight school, cadet. I'm Commander Ress. Before anyone hands you a gun, show me you can fly.",
     briefing: [
       'Every round starts with Planning: you secretly set a maneuver on each ship\'s dial, then all ships move.',
       'Blue maneuvers are easy, white ones normal. The number is the speed: how far the ship flies.',
@@ -78,7 +88,7 @@ export const TRAINING: MissionDef[] = [
       { id: 'g3', label: '3', x: 640, y: 600, r: 26 }, { id: 'g4', label: '4', x: 450, y: 680, r: 26 },
       { id: 'g5', label: '5', x: 270, y: 520, r: 26 },
     ],
-    player: [cadet(457)], enemy: [],
+    player: [officer(cadet(457))], enemy: [],
     objectives: [{ id: 'course', label: 'Fly through the gates in order', kind: 'course', markers: ['g1', 'g2', 'g3', 'g4', 'g5'] }],
     triggers: [
       tip({ roundStart: 1 }, 'Your dial', 'Select your ship and pick one of the dots in front of it: the ghost shows where that maneuver ends. Then set the move. The 💡 hint suggests one.'),
@@ -89,13 +99,14 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-2', number: 2, title: 'Target Drones', teaches: 'Firing arcs, range and attacking',
+    intro: "Good flying. Now we see if you can hit anything. These drones don't shoot back. The enemy will.",
     briefing: [
       'After everyone moves, ships attack in the Engagement phase. You can shoot ships inside your firing arc (the cone in front of your ship) out to range 4.',
       'Range matters: range 2 is the sweet spot (an extra shot), range 1 costs you a shot, at range 4 the target gets an extra dodge.',
       'Destroy the three drones. They fly slowly and never shoot back.',
     ],
     ruleset: ATTACKS, obstacles: [],
-    player: [cadet(457)],
+    player: [officer(cadet(457))],
     // Slow, unshielded, agility-1 hulls: easy targets.
     enemy: [300, 457, 620].map((x, i) => ({ pilotId: 'rook-twelve', shipType: 'anvil', pose: at(x, i === 1 ? 620 : 540, S), name: `Drone ${i + 1}`, hull: 2, shields: 0, tags: ['drone'] })),
     enemyAi: 'drone',
@@ -108,6 +119,7 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-3', number: 3, title: 'First Duel', teaches: 'Focus and Evade',
+    intro: "Today someone shoots back. Your sparring partner has flown this course a hundred times. Don't take it personally.",
     briefing: [
       'After moving, each ship may perform one action. Two actions to start:',
       'Focus: about 1 in 4 shots or dodges is a close call. Focus turns every close call into a hit or an evade, so your shots hit 75% of the time instead of 50%.',
@@ -116,7 +128,7 @@ export const TRAINING: MissionDef[] = [
     ],
     ruleset: TOKENS, obstacles: [],
     // Both fly Wasps, which have Evade (the Kestrel does not).
-    player: [{ pilotId: 'grunt-seven', shipType: 'wasp', pose: at(457, 60, N), name: 'Cadet' }],
+    player: [officer({ pilotId: 'grunt-seven', shipType: 'wasp', pose: at(457, 60, N), name: 'Cadet' })],
     enemy: [{ pilotId: 'grunt-seven', shipType: 'wasp', pose: at(457, 854, S), name: 'Sparring Partner' }],
     objectives: [{ id: 'duel', label: 'Destroy the sparring partner', kind: 'destroy' }],
     triggers: [
@@ -126,13 +138,14 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-4', number: 4, title: 'Wingmen', teaches: 'Lock and initiative',
+    intro: 'An officer never flies alone. You have a wingmate now: keep them alive and they will return the favour.',
     briefing: [
       'Ships move in initiative order, lowest first, and attack highest first. Ties go to you this time.',
       'Lock: pick an enemy. When you attack it, your missed shots get a second try, which spends the lock. It lasts until you use it.',
       'Two against two. Destroy both enemy ships.',
     ],
     ruleset: LOCKS, obstacles: [],
-    player: [cadet(380, 60, 'Cadet Kestrel'), { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(540, 60, N), name: 'Cadet Wasp' }],
+    player: [officer(cadet(380, 60, 'Cadet Kestrel')), { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(540, 60, N), name: 'Wingmate' }],
     enemy: [{ pilotId: 'vale-nine', shipType: 'kestrel', pose: at(380, 854, S), name: 'Red Kestrel' }, { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(540, 854, S), name: 'Red Wasp' }],
     objectives: [{ id: 'wing', label: 'Destroy both enemy ships', kind: 'destroy' }],
     triggers: [tip({ first: 'lock' }, 'Locked on', 'The crosshair stays on that ship until you use the lock. A ship holds one lock at a time.')],
@@ -140,13 +153,14 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-5', number: 5, title: 'Rock Field', teaches: 'Obstacles',
+    intro: 'Space is not empty, cadet. Rocks kill more rookies than the enemy does.',
     briefing: [
       'Asteroids are dangerous: flying through or onto one has a 50% chance to damage you, and you lose your action.',
       'They also block shots: an attack through an asteroid gives the defender an extra dodge.',
       'Fight through the field. Destroy both enemy ships.',
     ],
     ruleset: LOCKS, obstacles: asteroids(5505, 5),
-    player: [cadet(380, 60, 'Cadet Kestrel'), { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(540, 60, N), name: 'Cadet Wasp' }],
+    player: [officer(cadet(380, 60, 'Cadet Kestrel')), { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(540, 60, N), name: 'Wingmate' }],
     enemy: [{ pilotId: 'vale-nine', shipType: 'kestrel', pose: at(380, 854, S), name: 'Red Kestrel' }, { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(540, 854, S), name: 'Red Wasp' }],
     objectives: [{ id: 'rocks', label: 'Destroy both enemy ships', kind: 'destroy' }],
     triggers: [tip({ first: 'obstacleHit' }, 'Rock!', 'The maneuver ghost turns orange when a move would touch an asteroid. Check it before you set the dial.')],
@@ -154,6 +168,7 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-6', number: 6, title: 'Break Contact', teaches: 'Barrel roll, boost and stress',
+    intro: 'Sometimes the right call is to leave. Knowing when is what separates officers from pilots.',
     briefing: [
       'Barrel roll slides your ship sideways; boost pushes it a little further forward. Both dodge out of an enemy\'s arc.',
       'Red maneuvers and red actions give you a stress token. A stressed ship cannot act or fly red; a blue maneuver clears a stress.',
@@ -162,7 +177,7 @@ export const TRAINING: MissionDef[] = [
     ],
     ruleset: REPOSITION, obstacles: [], zones: [FAR_EDGE],
     player: [
-      { pilotId: 'lance-four', shipType: 'javelin', pose: at(380, 210, N), name: 'Runner 1', tags: ['runner'] },
+      officer({ pilotId: 'lance-four', shipType: 'javelin', pose: at(380, 210, N), name: 'Runner 1', tags: ['runner'] }),
       { pilotId: 'lance-four', shipType: 'javelin', pose: at(540, 210, N), name: 'Runner 2', tags: ['runner'] },
     ],
     enemy: [
@@ -175,13 +190,14 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-7', number: 7, title: 'Attrition', teaches: 'Critical damage',
+    intro: "Ships break. Pilots who keep fighting with broken ships come home. Let's see how you handle damage.",
     briefing: [
       'A critical hit (about 1 shot in 8) that reaches the hull deals a damage card: a lasting problem such as a fire or a damaged engine.',
       'Some cards can be fixed with the Repair action. The card\'s effect is listed on the ship.',
       'Two against three. Destroy the enemy squadron.',
     ],
     ruleset: DAMAGE, obstacles: asteroids(7707, 3),
-    player: [cadet(380, 60, 'Cadet One'), cadet(540, 60, 'Cadet Two')],
+    player: [officer(cadet(380, 60, 'Cadet One')), cadet(540, 60, 'Wingmate')],
     enemy: [300, 457, 620].map((x, i) => ({ pilotId: 'grunt-seven', shipType: 'wasp', pose: at(x, 854, S), name: `Raider ${i + 1}` })),
     objectives: [{ id: 'squadron', label: 'Destroy the enemy squadron', kind: 'destroy' }],
     triggers: [tip({ first: 'damageCard' }, 'Damage card', 'Hover the red tag on the ship\'s label to read what it does. Repairable cards show a Repair button in the action ring.')],
@@ -189,6 +205,7 @@ export const TRAINING: MissionDef[] = [
   },
   {
     id: 'training-8', number: 8, title: 'Escort', teaches: 'Upgrades and points',
+    intro: 'Final exam. A real cargo, a real escort, and you in command of it. Bring that freighter home and you graduate.',
     briefing: [
       'Ships carry upgrades that cost squad points: here, extra shields and armour (modifications).',
       'In a battle you build your own squad within a points budget. Later missions add weapons, crew and more.',
@@ -197,7 +214,7 @@ export const TRAINING: MissionDef[] = [
     ruleset: escortRules(), obstacles: asteroids(8808, 3), zones: [FAR_EDGE],
     player: [
       { pilotId: 'scout-two', shipType: 'wayfarer', pose: at(457, 70, N), name: 'Lumen', tags: ['freighter'] },
-      cadet(310, 60, 'Escort One', { upgrades: ['shield-booster'] }),
+      officer(cadet(310, 60, 'Escort One', { upgrades: ['shield-booster'] })),
       cadet(604, 60, 'Escort Two', { upgrades: ['hull-plating'] }),
     ],
     enemy: [

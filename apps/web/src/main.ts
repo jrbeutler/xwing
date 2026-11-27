@@ -1,11 +1,11 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
-import { markDone, nextMission, openBriefing, openCampaign, openStart } from './campaign';
+import { campaignBriefing, markDone, nextMission, officerName, openBriefing, openCampaign, openStart, recordCampaign } from './campaign';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
 import { openLobby, type LobbyUi } from './lobby';
@@ -88,8 +88,10 @@ seatEl.hidden = true;
 document.getElementById('hud')!.appendChild(seatEl);
 
 let state: GameState;
-/** The mission being played (campaign), or null in a skirmish. */
+/** The mission being played (training or campaign), or null in a skirmish. */
 let mission: MissionDef | null = null;
+/** The board mission being flown, when `mission` is from the campaign after training (flown once, no retry). */
+let campaignMission: CampaignMission | null = null;
 /** Where we are: building squads, placing ships, or fighting. */
 let stage: 'setup' | 'deploy' | 'battle' = 'setup';
 let lastSetup: BattleSetup | null = null;
@@ -135,22 +137,31 @@ function showStart() {
 
 function showCampaign() {
   hideFinale();
-  openCampaign({ play: briefMission, back: showStart });
+  openCampaign({ train: briefMission, fly: flyMission, back: showStart });
 }
 
-const briefMission = (m: MissionDef) => openBriefing(m, { begin: () => startMission(m), back: showCampaign });
+/** A training mission's briefing. */
+const briefMission = (m: MissionDef) =>
+  openBriefing(m, { kicker: `Flight school · Mission ${m.number}` }, { begin: () => startMission(m), back: showCampaign });
+
+/** A board mission's briefing: as earlier results shape it. */
+function flyMission(cm: CampaignMission) {
+  const { def, extras } = campaignBriefing(cm);
+  openBriefing(def, extras, { begin: () => startMission(def, cm), back: showCampaign });
+}
 
 /** Play a mission: its ships are already placed, so the battle starts straight away (no squad or deployment). */
-function startMission(m: MissionDef) {
+function startMission(m: MissionDef, cm: CampaignMission | null = null) {
   leaveOnline();
   hideFinale();
   hideHandoff();
   hideRecap();
   mission = m;
+  campaignMission = cm;
   versus = 'ai';
   // Missions turn the move hints on (the AI's suggestion for each ship, drawn to the objectives).
   lastSetup = { budget: 0, versus: 'ai', player: { ships: [] }, opponent: { ships: [] }, hints: { you: true, them: false } };
-  state = missionGame(m, (Math.random() * 1e9) | 0);
+  state = missionGame(m, (Math.random() * 1e9) | 0, { officer: officerName() });
   shown = 0;
   plan = {};
   logEl.innerHTML = '';
@@ -175,6 +186,7 @@ function startMission(m: MissionDef) {
 /** Back to a skirmish or the menu: clear what a mission put on screen. */
 function leaveMission() {
   mission = null;
+  campaignMission = null;
   objectives = [];
   coachQueue.length = 0;
   coach.hidden = true;
@@ -194,7 +206,7 @@ function renderMissionHud() {
   if (!mission || !m) { scene.setMissionMarks([], []); return; }
   const mark = (o: ObjectiveState) => (o.status === 'done' ? '✓ ' : o.status === 'failed' ? '✗ ' : '');
   const progress = (o: ObjectiveState) => (o.status === 'open' && o.of > 1 && o.kind !== 'survive' ? `<span class="mh-progress">${o.progress}/${o.of}</span>` : '');
-  missionHud.innerHTML = `<div class="mh-title">Mission ${mission.number}: ${mission.title}</div>
+  missionHud.innerHTML = `<div class="mh-title">${campaignMission ? 'Operation' : 'Mission'} ${mission.number}: ${mission.title}</div>
     <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul>`;
   // Gates: the next one in each open course is lit; the ones flown through fade.
   const done: string[] = [];
@@ -1422,15 +1434,16 @@ function renderDecision() {
   if ((state.phase === 'over' || !d) && mission) {
     scene.highlight(null);
     const won = state.mission?.result === 'win';
+    const onward = nextLabel(won);
     detail.innerHTML = `<h2>${won ? 'Mission complete' : 'Mission failed'}</h2>
       <p class="hint">${mission.title}, round ${state.round}.</p>
-      <div class="row"><button class="go" id="ms-next">${won && nextMission(mission) ? 'Next mission' : 'Campaign'}</button>
-      <button class="opt mini" id="ms-retry">Retry</button><button class="opt mini" id="ms-results">Debrief</button></div>`;
+      <div class="row"><button class="go" id="ms-next">${onward}</button>
+      ${campaignMission ? '' : '<button class="opt mini" id="ms-retry">Retry</button>'}<button class="opt mini" id="ms-results">Debrief</button></div>`;
     document.getElementById('ms-next')!.onclick = afterMission;
-    document.getElementById('ms-retry')!.onclick = () => briefMission(mission!);
+    document.getElementById('ms-retry')?.addEventListener('click', () => briefMission(mission!));
     document.getElementById('ms-results')!.onclick = () => showFinale();
     setBar({ status: `<b>${won ? 'Mission complete' : 'Mission failed'}</b>`, buttons: [
-      { label: 'Retry', onClick: () => briefMission(mission!) }, { label: won && nextMission(mission) ? 'Next' : 'Campaign', cls: 'primary', onClick: afterMission }] });
+      ...(campaignMission ? [] : [{ label: 'Retry', onClick: () => briefMission(mission!) }]), { label: onward, cls: 'primary', onClick: afterMission }] });
     if (finaleFor !== state) { finaleFor = state; showFinale(true); }
     return;
   }
@@ -1498,7 +1511,14 @@ function resultTitle() {
   return state.winner === me ? 'Victory' : 'Defeat';
 }
 
-/** After a mission: the next one's briefing if it was won and there is one, else the campaign list. */
+/** Where the button after a mission goes: the next lesson, graduation, or the mission board. */
+function nextLabel(won: boolean) {
+  if (campaignMission) return 'Mission board';
+  if (won && mission && nextMission(mission)) return 'Next mission';
+  return won && mission?.id === 'training-8' ? 'Graduate' : 'Campaign';
+}
+
+/** After a mission: the next one's briefing if it was won and there is one, else the campaign. */
 function afterMission() {
   const next = mission && state.mission?.result === 'win' ? nextMission(mission) : undefined;
   hideFinale();
@@ -1508,33 +1528,35 @@ function afterMission() {
 
 /** The end of a mission: complete or failed, how each objective went, and where to go next. */
 function showDebrief(first: boolean) {
-  const m = mission!, won = state.mission?.result === 'win';
-  if (won && first) markDone(m.id);
-  const next = won ? nextMission(m) : undefined;
+  const m = mission!, won = state.mission?.result === 'win', cm = campaignMission;
+  if (first && cm) recordCampaign(cm.id, won ? 'win' : 'loss');
+  else if (won && first) markDone(m.id);
+  const next = won && !cm ? nextMission(m) : undefined;
   const title = won ? 'Mission complete' : 'Mission failed';
   // Letters animate one by one; words stay whole when the title wraps.
   let n = 0;
   const letters = title.toUpperCase().split(' ').map((w) => `<span class="word">${[...w].map((c) => `<span style="--i:${n++}">${c}</span>`).join('')}</span>`).join(' ');
   const objs = state.mission!.objectives;
-  const why = won ? (next ? `Next: ${next.title} (${next.teaches.toLowerCase()}).` : 'Training complete: every rule is unlocked for skirmishes.')
+  const why = cm ? cm.outcome[won ? 'win' : 'loss'].text
+    : won ? (next ? `Next: ${next.title} (${next.teaches.toLowerCase()}).` : 'Training complete. Report for graduation.')
     : objs.some((o) => o.status === 'failed') ? 'An objective failed.' : !state.ships.some((x) => x.owner === P1 && !x.destroyed) ? 'Your ships were lost.'
       : `Out of time: the mission had ${state.mission!.maxRounds} rounds.`;
   finale.className = `${won ? 'victory' : 'defeat'} mission`;
   finale.innerHTML = `
     <div class="finale-rays" aria-hidden="true"></div>
     <div class="finale-card" role="dialog" aria-modal="true" aria-labelledby="finale-title">
-      <div class="finale-kicker">Training · Mission ${m.number} · round ${state.round}</div>
+      <div class="finale-kicker">${cm ? 'Operation' : 'Flight school · Mission'} ${m.number} · round ${state.round}</div>
       <h1 id="finale-title" aria-label="${title}">${letters}</h1>
       <p class="finale-why">${why}</p>
       <ul class="objective-list" style="text-align:left">${objs.map((o) => `<li class="${o.status}">${o.status === 'done' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.label}</li>`).join('')}</ul>
-      <div class="finale-buttons"><button class="opt" id="fn-board">View board</button><button class="opt" id="fn-retry">Retry</button>
-        <button class="go" id="fn-next">${next ? 'Next mission' : 'Campaign'}</button></div>
+      <div class="finale-buttons"><button class="opt" id="fn-board">View table</button>${cm ? '' : '<button class="opt" id="fn-retry">Retry</button>'}
+        <button class="go" id="fn-next">${nextLabel(won)}</button></div>
     </div>`;
   finale.hidden = false;
   void finale.offsetWidth;
   finale.classList.add('show');
   finale.querySelector<HTMLButtonElement>('#fn-next')!.onclick = afterMission;
-  finale.querySelector<HTMLButtonElement>('#fn-retry')!.onclick = () => { hideFinale(); briefMission(m); };
+  finale.querySelector<HTMLButtonElement>('#fn-retry')?.addEventListener('click', () => { hideFinale(); briefMission(m); });
   finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
   finale.querySelector<HTMLButtonElement>('#fn-next')!.focus();
   if (won && first) scene.celebrate(P1);
