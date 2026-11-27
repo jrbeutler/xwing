@@ -755,7 +755,11 @@ async function animate(e: GameEvent) {
       await scene.animatePath(e.shipId, e.path, e.final, 500 + e.path.length * 15);
       const d = dispShip(e.shipId);
       if (d) d.pose = e.final;
-      if (e.partial) await scene.floatText(e.shipId, 'BUMP', 'p2c');
+      if (e.fled) { fled.add(e.shipId); await scene.flee(e.shipId); return; }
+      if (e.partial) {
+        if (e.bumped.length) void scene.bump(e.shipId, e.bumped);
+        await scene.floatText(e.shipId, 'BUMP', 'p2c');
+      }
       return;
     }
     case 'stress': {
@@ -767,9 +771,12 @@ async function animate(e: GameEvent) {
       const d = dispShip(e.shipId);
       if (e.action.type === 'barrelRoll' || e.action.type === 'boost') {
         const from = d?.pose ?? e.action.to;
-        await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 400);
+        if (e.action.type === 'barrelRoll') await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 560, 'roll', e.action.dir === 'left' ? -1 : 1);
+        else await scene.animatePath(e.shipId, [from, e.action.to], e.action.to, 480, 'boost');
         if (d) d.pose = e.action.to;
       }
+      if (e.action.type === 'lock') await scene.lockOn(e.shipId, e.action.targetId);
+      if (e.action.type === 'repair') await scene.weld(e.shipId);
       if (e.action.type === 'rotateArc') {
         if (d) d.turretArc = e.action.to;
         await scene.setTurret(e.shipId, e.action.to, 450);
@@ -788,14 +795,17 @@ async function animate(e: GameEvent) {
         }
         relabel(e.shipId);
       }
+      const glow = TOKEN_GLOW[e.action.type];
+      if (glow) await scene.tokenGlow(e.shipId, glow);
       if (e.action.type === 'coordinate') {
-        const from = d?.pose ?? shipById(e.shipId).pose, to = dispShip(e.action.targetId)?.pose ?? shipById(e.action.targetId).pose;
-        scene.showLine(from, to, ACTION_COLOR.coordinate, `${shipById(e.shipId).name} coordinates ${shipById(e.action.targetId).name}`);
-        await scene.floatText(e.action.targetId, 'COORDINATED', 'talent-float');
-        scene.clearOverlay();
+        void scene.floatText(e.action.targetId, 'COORDINATED', 'talent-float');
+        await scene.coordinate(e.shipId, e.action.targetId);
       }
       if (e.action.type === 'reinforce') await scene.floatText(e.shipId, `REINFORCE ${e.action.side.toUpperCase()}`, 'talent-float');
-      if (e.action.type === 'reload') await scene.floatText(e.shipId, `RELOAD ${UPGRADES[e.action.upgrade].name.toUpperCase()}`, 'talent-float');
+      if (e.action.type === 'reload') {
+        void scene.floatText(e.shipId, `RELOAD ${UPGRADES[e.action.upgrade].name.toUpperCase()}`, 'talent-float');
+        await scene.reloadFlash(e.shipId);
+      }
       return;
     }
     case 'attack':
@@ -839,6 +849,7 @@ async function animate(e: GameEvent) {
         d.ion += e.ion ?? 0;
         relabel(e.shipId);
       }
+      void scene.obstacleHit(e.shipId, e.kind);
       if (e.shieldDamage) void scene.shieldFlash(e.shipId);
       if (e.hullDamage) { void scene.sparks(e.shipId); void scene.shake(e.shipId); }
       const dmg = e.shieldDamage + e.hullDamage;
@@ -855,11 +866,10 @@ async function animate(e: GameEvent) {
       { const u = dispShip(e.shipId)?.upgrades.find((x) => x.id === e.device.upgrade); if (u) u.charges--; }
       return;
     case 'deviceDetonated': {
-      const ion = UPGRADES[e.device.upgrade].device?.effect === 'ion';
       showBanner(`<span class="who">${UPGRADES[e.device.upgrade].name}</span><b>${e.device.kind === 'mine' ? 'MINE!' : 'DETONATION'}</b>` +
         `<span class="detail">${e.ships.length ? e.ships.map((h) => shipById(h.shipId).name).join(', ') : 'nobody caught'}</span>`,
         e.ships.some((h) => shipById(h.shipId).owner === me) ? 'crit incoming' : 'crit');
-      await scene.detonate(e.device, ion);
+      await scene.detonate(e.device, UPGRADES[e.device.upgrade].device?.effect ?? 'proton', e.ships.map((h) => h.shipId));
       for (const h of e.ships) {
         const d = dispShip(h.shipId);
         if (d) { d.shields -= h.shieldDamage; d.hull -= h.hullDamage; d.ion += h.ion ?? 0; relabel(h.shipId); }
@@ -892,6 +902,12 @@ async function animate(e: GameEvent) {
     }
     case 'destroyed': {
       const name = shipById(e.shipId).name;
+      if (fled.delete(e.shipId)) { // it already burned off the table
+        showBanner(`<span class="who">${name}</span><b>FLED</b>`, shipById(e.shipId).owner === me ? 'incoming' : 'miss');
+        scene.removeShip(e.shipId);
+        await scene.wait(600);
+        return;
+      }
       roundShots.push(`<b>${nameHtml(e.shipId)} destroyed</b>`);
       showBanner(`<span class="who">${name}</span><b>DESTROYED</b>`, shipById(e.shipId).owner === me ? 'incoming big' : 'big');
       await scene.explode(e.shipId);
@@ -902,6 +918,11 @@ async function animate(e: GameEvent) {
 }
 
 type AttackEvent = Extract<GameEvent, { type: 'attack' }>;
+
+/** Ships that flew off the table this move: their 'destroyed' event shows no explosion. */
+const fled = new Set<string>();
+/** Tokens an action gives that make the ship glow, in the token's colour. */
+const TOKEN_GLOW: Partial<Record<string, number>> = { focus: 0x6fe3a0, evade: 0x8fd3ff, calculate: 0xc9a7ff };
 
 /** A damage card dealt, triggered, repaired or discarded: update the board and say what it does. */
 async function showDamageCard(e: Extract<GameEvent, { type: 'damageCard' }>) {

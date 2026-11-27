@@ -227,6 +227,8 @@ export interface ShipView {
   hullBox: THREE.Box3;
   /** Lasting damage effects (fire, smoke, a sputtering engine...), when the ship has any. */
   damage?: DamageLook;
+  /** Reinforce: a translucent shield over the braced half, for the round. */
+  reinforce?: { side: 'front' | 'rear'; mesh: THREE.Mesh; born: number };
 }
 
 export class BattleScene {
@@ -423,7 +425,14 @@ export class BattleScene {
     this.sky.rotation.y += dt * 0.004;
     // Device tokens blink.
     const blink = 0.35 + 0.65 * Math.max(0, Math.sin(t * 5));
-    this.deviceGroup.traverse((o) => { if (o.userData.blink) ((o as THREE.Sprite).material as THREE.SpriteMaterial).opacity = blink; });
+    this.deviceGroup.traverse((o) => {
+      if (!o.userData.blink) return;
+      // Just dropped: the light flashes fast while the device arms, then settles into its slow blink.
+      const arming = o.userData.armedAt !== undefined && t - o.userData.armedAt < 1.3;
+      ((o as THREE.Sprite).material as THREE.SpriteMaterial).opacity = arming ? (Math.sin(t * 38) > 0 ? 1 : 0.1) : blink;
+      o.scale.setScalar(arming ? 18 : 12);
+    });
+    this.animateLocks(t);
     if (!this.reducedMotion) arcTime.value = t;
     for (const v of this.ships.values()) {
       if (!this.reducedMotion) {
@@ -436,6 +445,13 @@ export class BattleScene {
       });
       this.animateIonAura(v, t);
       this.animateDamage(v, t, dt);
+      if (v.reinforce) {
+        // Bright as it goes up, then a steady faint shimmer.
+        const age = t - v.reinforce.born;
+        const u = (v.reinforce.mesh.material as THREE.ShaderMaterial).uniforms;
+        u.uA.value = 0.35 + 1.4 * Math.max(0, 1 - age / 0.8) + (this.reducedMotion ? 0 : 0.05 * Math.sin(t * 3 + v.phase));
+        u.uT.value = t;
+      }
     }
   }
 
@@ -629,6 +645,8 @@ export class BattleScene {
   updateLabel(v: ShipView, s: ShipState) {
     this.setIonAura(v, s.ion > 0 && !s.destroyed);
     this.setDamageLook(v, s);
+    this.setLock(s.id, s.destroyed ? null : s.lock);
+    this.setReinforce(v, s.destroyed ? null : s.reinforce);
     const tokens = [
       s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '',
       s.calculate ? `<span title="Calculate">▣${s.calculate > 1 ? s.calculate : ''}</span>` : '',
@@ -649,6 +667,7 @@ export class BattleScene {
   }
 
   highlight(shipId: string | null) {
+    this.selected = shipId;
     this.setRings(shipId ? { [shipId]: 0x7cf0c5 } : {});
   }
 
@@ -777,41 +796,154 @@ export class BattleScene {
     g.rotation.y = d.pose.h;
     this.deviceGroup.add(g);
     this.deviceViews.set(d.id, g);
-    await this.tween(500, (t) => {
+    // It detaches with a puff and settles on the table on a little thruster.
+    const thruster = this.glow(from, hot(0x9fd8ff, 2.4), 10, 0.8);
+    this.smoke.spawn(from, new THREE.Vector3(0, 6, 0), 0.8, 6, 18, 0.4, this.tmpC.setHex(0x9aa0aa));
+    await this.tween(560, (t) => {
       const e = 1 - (1 - t) * (1 - t);
       g.position.lerpVectors(from, to, e);
       g.position.y = from.y * (1 - e) + Math.sin(t * Math.PI) * 6;
+      thruster.position.copy(g.position).y -= 1;
+      thruster.scale.setScalar(10 * (0.8 + Math.random() * 0.4));
+      thruster.material.opacity = 0.8 * (1 - t * 0.6);
     });
+    this.drop(thruster);
     g.position.copy(to);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      this.smoke.spawn(to.clone().setY(2), new THREE.Vector3(Math.cos(a) * 30, 3, Math.sin(a) * 30), 0.9, 4, 14, 0.35, this.tmpC.setHex(0x8a8f99), 2.5);
+    }
+    g.traverse((o) => { if (o.userData.blink) o.userData.armedAt = this.clock.elapsedTime; });
   }
 
-  /** A device going off: flash, a blast ring out to range 1 (blue for ion), and the token is gone. */
-  async detonate(d: { id: string; pose: Pose }, ion = false) {
+  /**
+   * A device going off. Proton bomb: a fireball, a shockwave racing along the table and flying debris. Ion
+   * bomb: an expanding storm of ion lightning, and the ships caught in it crackle. Proximity mine: it pops
+   * up and lunges at the ship that set it off. `victims` are the ships it caught.
+   */
+  async detonate(d: { id: string; pose: Pose }, effect: 'proton' | 'ion' | 'proximity' = 'proton', victims: string[] = []) {
     const g = this.deviceViews.get(d.id);
-    if (g) { this.deviceGroup.remove(g); this.deviceViews.delete(d.id); }
     const at = toV3(d.pose.x, d.pose.y, 10);
-    const color = ion ? 0x7fd8ff : 0xff9944;
-    const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(ion ? 0xd8f4ff : 0xfff0d0, 3), blending: THREE.AdditiveBlending, depthWrite: false }));
-    flash.position.copy(at);
-    this.scene.add(flash);
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 64), this.additive(hot(color, 2.2)));
+    if (effect === 'proximity') return this.mineLunge(g, at, victims[0]);
+    if (g) { this.deviceGroup.remove(g); this.deviceViews.delete(d.id); }
+    if (effect === 'ion') return this.ionStorm(at, victims);
+    const flash = this.glow(at, hot(0xfff0d0, 3), 20);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 64), this.additive(hot(0xff9944, 2.2)));
     ring.rotation.x = -Math.PI / 2;
     ring.position.copy(at).setY(2);
     this.scene.add(ring);
-    const debris = this.burst(at, hot(color, 2.5), 50, 110, 6);
-    this.flash(at, color, 3000, 700);
+    const sparks = this.burst(at, hot(0xffb060, 2.5), 60, 120, 6);
+    this.flash(at, 0xff9944, 3500, 800);
+    void this.fireball(at, 2.4);
+    this.fragments(at, [0x6a6e76, 0x2c2c30, 0x9aa0a8], 18, 110);
+    for (let i = 0; i < 10; i++) { // a ring of smoke rolling out along the table
+      const a = (i / 10) * Math.PI * 2;
+      this.smoke.spawn(at.clone().setY(4), new THREE.Vector3(Math.cos(a) * 70, 6, Math.sin(a) * 70), 1.8, 10, 40, 0.45, this.tmpC.setHex(0x55575e), 1.6);
+    }
     await this.tween(800, (t) => {
       const e = 1 - Math.pow(1 - t, 3);
-      flash.scale.setScalar(20 + 80 * Math.min(1, t * 3));
+      flash.scale.setScalar(20 + 90 * Math.min(1, t * 3));
       flash.material.opacity = Math.max(0, 1 - t * 2.5);
       ring.scale.setScalar(10 + 105 * e); // out to about range 1 from the token
       (ring.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t * 1.3);
-      debris.update(t);
+      sparks.update(t);
     });
-    this.scene.remove(flash, ring);
-    flash.material.dispose();
-    ring.geometry.dispose();
-    debris.dispose();
+    this.drop(flash, ring);
+    sparks.dispose();
+  }
+
+  /** Ion bomb: a bubble of ion storm swells out to range 1, full of lightning; caught ships crackle. */
+  private async ionStorm(at: THREE.Vector3, victims: string[]) {
+    const R = 115;
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { uA: { value: 1 }, uColor: { value: hot(ION, 1.8) } },
+      vertexShader: 'varying vec3 vN; varying vec3 vV; void main() { vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }',
+      fragmentShader: 'uniform float uA; uniform vec3 uColor; varying vec3 vN; varying vec3 vV; void main() { float rim = pow(clamp(1.0 - abs(dot(vN, vV)), 0.0, 1.0), 2.0); gl_FragColor = vec4(uColor * (0.08 + rim * 0.7) * uA, 1.0); }',
+    });
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), mat);
+    dome.position.copy(at).setY(0);
+    this.scene.add(dome);
+    const core = this.glow(at, hot(0xd8f4ff, 3), 30);
+    const bolts = Array.from({ length: 6 }, () => { const r = new ArcRibbon(7, hot(0xeefaff, 3), hot(ION, 2.4), 0.8, 3); this.scene.add(r); return r; });
+    this.flash(at, ION, 3200, 900);
+    victims.forEach((id, i) => {
+      const v = this.ships.get(id);
+      if (v) setTimeout(() => void this.crackle(v.root.position.clone().setY(FLY_HEIGHT + 4), 26, 900), (250 + i * 120) / this.speed);
+    });
+    let last = -1;
+    await this.tween(1000, (t) => {
+      const e = 1 - Math.pow(1 - t, 3), r = 8 + R * e;
+      dome.scale.set(r, r * 0.55, r);
+      mat.uniforms.uA.value = t < 0.7 ? 1 : (1 - t) / 0.3;
+      core.scale.setScalar(30 + 60 * e); core.material.opacity = Math.max(0, 1 - t * 1.8);
+      const step = Math.floor(t * 16);
+      if (step !== last) {
+        last = step;
+        for (const b of bolts) {
+          const p = (): THREE.Vector3 => { const q = new THREE.Vector3().randomDirection().multiplyScalar(r * (0.3 + Math.random() * 0.7)); q.y = Math.abs(q.y) * 0.5 + 4; return q.add(at.clone().setY(0)); };
+          b.set(jagged(p(), p(), 7, r * 0.12));
+        }
+      }
+      bolts.forEach((b) => { b.opacity = (1 - t) * (Math.random() < 0.75 ? 1 : 0.25); });
+    });
+    bolts.forEach((b) => b.dispose());
+    this.drop(dome, core);
+  }
+
+  /** Proximity mine: it pops up off the table, lunges at the ship that set it off, and blows. */
+  private async mineLunge(g: THREE.Group | undefined, at: THREE.Vector3, shipId?: string) {
+    const v = shipId ? this.ships.get(shipId) : undefined;
+    const target = v ? v.root.position.clone().setY(FLY_HEIGHT) : at;
+    if (g) {
+      const start = g.position.clone();
+      const top = start.clone().setY(start.y + 26);
+      await this.tween(260, (t) => { g.position.lerpVectors(start, top, 1 - (1 - t) * (1 - t)); g.rotation.y += 0.3; });
+      const thrust = this.glow(top, hot(0xffb020, 3), 14);
+      await this.tween(200, (t) => {
+        g.position.lerpVectors(top, target, t * t);
+        thrust.position.copy(g.position);
+        this.smoke.spawn(g.position, new THREE.Vector3(), 0.6, 3, 10, 0.4, this.tmpC.setHex(0x7a7d85));
+      });
+      this.drop(thrust);
+      this.deviceGroup.remove(g);
+      for (const [id, x] of this.deviceViews) if (x === g) this.deviceViews.delete(id);
+    }
+    void this.fireball(target, 1.5);
+    this.flash(target, 0xffaa55, 2000, 600);
+    await this.wait(350);
+  }
+
+  /** Small solid fragments (rock or metal) thrown from `at` that fall, bounce off the table and fade. */
+  private fragments(at: THREE.Vector3, colors: number[], n: number, speed: number, size = 2.5) {
+    const geo = new THREE.TetrahedronGeometry(1);
+    const mats = colors.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, metalness: 0.3, flatShading: true, transparent: true }));
+    const parts = Array.from({ length: n }, (_, i) => {
+      const m = new THREE.Mesh(geo, mats[i % mats.length]);
+      m.position.copy(at);
+      m.scale.setScalar(size * (0.5 + Math.random()));
+      this.scene.add(m);
+      const vel = new THREE.Vector3().randomDirection().multiplyScalar(speed * (0.4 + Math.random() * 0.8));
+      vel.y = Math.abs(vel.y) * 0.8 + speed * 0.2;
+      return { m, vel, spin: new THREE.Vector3().randomDirection().multiplyScalar(10) };
+    });
+    let last = performance.now(), age = 0;
+    const life = 1.6;
+    const step = () => {
+      const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      age += dt;
+      for (const p of parts) {
+        p.vel.y -= 260 * dt;
+        p.m.position.addScaledVector(p.vel, dt);
+        if (p.m.position.y < 1) { p.m.position.y = 1; p.vel.y *= -0.3; p.vel.x *= 0.5; p.vel.z *= 0.5; p.spin.multiplyScalar(0.5); }
+        p.m.rotation.x += p.spin.x * dt; p.m.rotation.y += p.spin.y * dt;
+      }
+      mats.forEach((m) => { m.opacity = Math.min(1, (life - age) / 0.5); });
+      if (age < life) requestAnimationFrame(step);
+      else { parts.forEach((p) => this.scene.remove(p.m)); geo.dispose(); mats.forEach((m) => m.dispose()); }
+    };
+    requestAnimationFrame(step);
   }
 
   /**
@@ -1436,7 +1568,7 @@ export class BattleScene {
   }
 
   private additive(color: THREE.ColorRepresentation, opacity = 1, map?: THREE.Texture) {
-    return new THREE.MeshBasicMaterial({ color, map, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
+    return new THREE.MeshBasicMaterial({ color, ...(map ? { map } : {}), transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
   }
 
   // ---------------- shots (docs/VFX.md, phase 1) ----------------
@@ -1839,6 +1971,286 @@ export class BattleScene {
     }
   }
 
+  // ---------------- actions (docs/VFX.md, phase 4) ----------------
+  private selected: string | null = null;
+  /** Lock reticles, by the id of the ship holding the lock. */
+  private locks = new Map<string, { target: string; g: THREE.Group; born: number }>();
+  private lockLine: THREE.Line | null = null;
+
+  /** Show (or clear, with null) the reticle for `lockerId`'s lock on `targetId`. It closes in when new. */
+  setLock(lockerId: string, targetId: string | null) {
+    const cur = this.locks.get(lockerId);
+    if (cur && cur.target === targetId) return;
+    if (cur) {
+      cur.g.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+      cur.g.removeFromParent();
+      this.locks.delete(lockerId);
+    }
+    if (!targetId || !this.ships.has(targetId)) return;
+    const g = new THREE.Group();
+    const mat = this.additive(hot(0xffd166, 2.2), 0.85);
+    // Four corner brackets and a centre tick.
+    for (const [sx, sy] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) {
+      const h = new THREE.Mesh(new THREE.PlaneGeometry(7, 1.3), mat);
+      h.position.set(sx * 9.5, sy * 13, 0);
+      const vtc = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 7), mat);
+      vtc.position.set(sx * 13, sy * 9.5, 0);
+      g.add(h, vtc);
+    }
+    g.renderOrder = 3;
+    g.traverse((o) => { o.raycast = () => {}; o.renderOrder = 3; });
+    this.scene.add(g);
+    this.locks.set(lockerId, { target: targetId, g, born: this.clock.elapsedTime });
+  }
+
+  private animateLocks(t: number) {
+    const onTarget = new Map<string, number>();
+    for (const [lockerId, l] of this.locks) {
+      const v = this.ships.get(l.target);
+      if (!v || !this.ships.has(lockerId)) { this.setLock(lockerId, null); continue; }
+      const n = onTarget.get(l.target) ?? 0;
+      onTarget.set(l.target, n + 1);
+      const age = t - l.born;
+      const close = Math.min(1, age / 0.45), e = 1 - Math.pow(1 - close, 3);
+      const size = Math.max(1.1, v.reach / 16) * (1 + n * 0.2);
+      l.g.position.copy(v.root.position).setY(FLY_HEIGHT + 6);
+      l.g.quaternion.copy(this.camera.quaternion);
+      l.g.rotateZ((1 - e) * Math.PI * 0.75 + n * Math.PI / 4);
+      l.g.scale.setScalar(size * (1 + (1 - e) * 2.2) * (this.reducedMotion ? 1 : 1 + 0.04 * Math.sin(t * 4)));
+      const m = (l.g.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      m.opacity = close < 1 ? 0.3 + 0.7 * e : 0.55 + (this.reducedMotion ? 0 : 0.15 * Math.sin(t * 4));
+    }
+    // A thin dashed line from the selected ship to the ship it has locked.
+    const l = this.selected ? this.locks.get(this.selected) : undefined;
+    const a = this.selected ? this.ships.get(this.selected) : undefined, b = l && this.ships.get(l.target);
+    if (!a || !b) { if (this.lockLine) this.lockLine.visible = false; return; }
+    if (!this.lockLine) {
+      this.lockLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+        new THREE.LineDashedMaterial({ color: 0xffd166, dashSize: 8, gapSize: 6, transparent: true, opacity: 0.6, depthWrite: false }));
+      this.lockLine.frustumCulled = false;
+      this.lockLine.raycast = () => {};
+      this.scene.add(this.lockLine);
+    }
+    const pos = this.lockLine.geometry.attributes.position as THREE.BufferAttribute;
+    pos.setXYZ(0, a.root.position.x, FLY_HEIGHT + 6, a.root.position.z);
+    pos.setXYZ(1, b.root.position.x, FLY_HEIGHT + 6, b.root.position.z);
+    pos.needsUpdate = true;
+    this.lockLine.computeLineDistances();
+    this.lockLine.visible = true;
+  }
+
+  /** A targeting lock being acquired: a sweep from the locker, and the reticle snaps onto the target. */
+  async lockOn(lockerId: string, targetId: string) {
+    const a = this.gunPoint(lockerId), b = this.ships.get(targetId);
+    if (!a || !b) return;
+    const end = b.root.position.clone().setY(FLY_HEIGHT + 6);
+    const beam = new ArcRibbon(2, hot(0xfff3c4, 2), hot(0xffd166, 1.8), 0.25, 1.1);
+    this.scene.add(beam);
+    this.setLock(lockerId, targetId);
+    await this.tween(450, (t) => {
+      beam.set([a, new THREE.Vector3().lerpVectors(a, end, Math.min(1, t * 2.2))]);
+      beam.opacity = 0.55 * (1 - t);
+    });
+    beam.dispose();
+    void this.impactFlare(end, 0xffd166, 0.7);
+  }
+
+  /** Reinforce: a translucent hex shield over the front or rear half of the ship, for the round. */
+  private setReinforce(v: ShipView, side: 'front' | 'rear' | null) {
+    if ((v.reinforce?.side ?? null) === side) return;
+    if (v.reinforce) {
+      v.reinforce.mesh.removeFromParent();
+      v.reinforce.mesh.geometry.dispose();
+      (v.reinforce.mesh.material as THREE.Material).dispose();
+      v.reinforce = undefined;
+    }
+    if (!side) return;
+    const r = this.shieldRadius(v);
+    // A sphere's phi runs round the up axis: π/2..3π/2 is the +x (front) half.
+    const geo = new THREE.SphereGeometry(r, 32, 16, side === 'front' ? Math.PI / 2 : -Math.PI / 2, Math.PI);
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { uA: { value: 1 }, uT: { value: 0 }, uColor: { value: hot(0x5ab8ff, 1.8) } },
+      vertexShader: 'varying vec3 vN; varying vec3 vV; varying vec3 vP; void main() { vP = position; vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }',
+      fragmentShader: `uniform float uA, uT; uniform vec3 uColor; varying vec3 vN; varying vec3 vV; varying vec3 vP;
+        void main() {
+          float rim = pow(clamp(1.0 - abs(dot(vN, vV)), 0.0, 1.0), 2.2);
+          float hex = smoothstep(0.75, 1.0, abs(sin(vP.x * 0.5 + uT * 0.6) * sin(vP.y * 0.5) * sin(vP.z * 0.5 - uT * 0.4)));
+          float edge = 1.0 - smoothstep(0.0, ${(r * 0.12).toFixed(1)}, abs(vP.x)); // the open edge of the half dome glows
+          gl_FragColor = vec4(uColor * (0.05 + rim * 0.5 + hex * 0.25 + edge * 0.5) * uA * (gl_FrontFacing ? 1.0 : 0.5), 1.0);
+        }`,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = FLY_HEIGHT + 4;
+    mesh.raycast = () => {};
+    v.root.add(mesh);
+    v.reinforce = { side, mesh, born: this.clock.elapsedTime };
+  }
+
+  /** Coordinate: pulses of signal travel from one ship to a friendly one, which lights up. */
+  async coordinate(fromId: string, toId: string) {
+    const a = this.ships.get(fromId), b = this.ships.get(toId);
+    if (!a || !b) return;
+    const p0 = a.root.position.clone().setY(FLY_HEIGHT + 8), p1 = b.root.position.clone().setY(FLY_HEIGHT + 8);
+    const mid = p0.clone().lerp(p1, 0.5).setY(FLY_HEIGHT + 8 + p0.distanceTo(p1) * 0.25);
+    const curve = new THREE.QuadraticBezierCurve3(p0, mid, p1);
+    const color = 0x8fd3ff;
+    const pulses = [0, 1, 2].map(() => this.glow(p0, hot(color, 3), 14));
+    for (const r of [0, 1]) void this.ringPulse(a, color, r * 120);
+    await this.tween(700, (t) => {
+      pulses.forEach((p, i) => {
+        const f = THREE.MathUtils.clamp(t * 1.5 - i * 0.22, 0, 1);
+        p.position.copy(curve.getPoint(f));
+        p.material.opacity = f > 0 && f < 1 ? 1 : 0;
+        if (f > 0 && f < 1 && Math.random() < 0.5) this.embers.spawn(p.position, new THREE.Vector3(), 0.35, 5, 1, 0.6, hot(color, 2));
+      });
+    });
+    this.drop(...pulses);
+    await this.tokenGlow(toId, color);
+  }
+
+  /** A flat ring expanding out from under a ship (signal, token). */
+  private async ringPulse(v: ShipView, color: number, delay = 0) {
+    if (delay) await this.wait(delay);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1, 48), this.additive(hot(color, 2)));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(v.root.position).setY(FLY_HEIGHT);
+    this.scene.add(ring);
+    const r = this.shieldRadius(v);
+    await this.tween(500, (t) => { ring.scale.setScalar(r * (0.4 + t)); (ring.material as THREE.MeshBasicMaterial).opacity = 1 - t; });
+    this.drop(ring);
+  }
+
+  /**
+   * A ship gaining a token glows in the token's colour: a ring sweeps up over the model and motes rise off it.
+   * Focus green, evade cyan, calculate violet (and coordinated ships blue).
+   */
+  async tokenGlow(shipId: string, color: number) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const r = this.shieldRadius(v) * 0.8;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1, 0.035, 6, 48), this.additive(hot(color, 2.4)));
+    ring.rotation.x = Math.PI / 2;
+    this.scene.add(ring);
+    const at = v.root.position.clone().setY(FLY_HEIGHT + 4);
+    const halo = this.glow(at, hot(color, 1.8), r * 1.8, 0);
+    this.flash(at, color, 350, 450);
+    for (let i = 0; i < 12; i++) {
+      const q = at.clone().add(new THREE.Vector3((Math.random() - 0.5) * r, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * r));
+      this.embers.spawn(q, new THREE.Vector3(0, 18 + Math.random() * 14, 0), 0.7 + Math.random() * 0.3, 3.5, 1, 0.9, hot(color, 2.4), 0.5);
+    }
+    await this.tween(650, (t) => {
+      ring.position.copy(at).setY(4 + t * (v.top + 10));
+      ring.scale.setScalar(r * (1 - t * 0.35));
+      (ring.material as THREE.MeshBasicMaterial).opacity = Math.sin(t * Math.PI);
+      halo.material.opacity = 0.55 * Math.sin(t * Math.PI);
+    });
+    this.drop(ring, halo);
+  }
+
+  /** Reload: a loading flash at the launcher (under the nose), with a clunk. */
+  async reloadFlash(shipId: string) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const b = v.hullBox, c = b.getCenter(new THREE.Vector3());
+    const at = v.root.localToWorld(new THREE.Vector3(b.min.x + (b.max.x - b.min.x) * 0.65, b.min.y + 2, c.z));
+    for (const side of [-1, 1]) {
+      const q = at.clone().add(new THREE.Vector3(0, 0, side * 3));
+      for (let i = 0; i < 5; i++) this.embers.spawn(q, new THREE.Vector3((Math.random() - 0.5) * 30, -10 - Math.random() * 20, (Math.random() - 0.5) * 30), 0.35, 2.5, 0.8, 1, hot(0xffd27a, 3), 2);
+    }
+    void this.impactFlare(at, 0xffc070, 1.1);
+    void this.shake(shipId, 180, 1.5);
+    await this.tokenGlow(shipId, 0xffb060);
+  }
+
+  /** Repair: welding sparks flicker across the hull for a moment. */
+  async weld(shipId: string) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const torch = this.glow(v.root.position, hot(0xdff4ff, 3.2), 9);
+    let at = v.root.localToWorld(this.hullPoint(v, 'top'));
+    let last = -1;
+    await this.tween(1000, (t) => {
+      const step = Math.floor(t * 9);
+      if (step !== last) { last = step; at = v.root.localToWorld(this.hullPoint(v, 'top')); }
+      torch.position.copy(at);
+      torch.scale.setScalar(6 + Math.random() * 8);
+      torch.material.opacity = Math.random() < 0.85 ? 1 : 0.2;
+      if (Math.random() < 0.7) {
+        const vel = new THREE.Vector3((Math.random() - 0.5) * 50, 10 + Math.random() * 25, (Math.random() - 0.5) * 50);
+        this.embers.spawn(at, vel, 0.3 + Math.random() * 0.2, 2, 0.6, 1, hot(Math.random() < 0.6 ? 0xffd27a : 0xffffff, 3), 2);
+      }
+    });
+    this.drop(torch);
+  }
+
+  // ---------------- movement and the table (docs/VFX.md, phase 5) ----------------
+
+  /** A bump: the ship jolts against the ships it ran into, with a spark where the bases touch. */
+  async bump(shipId: string, others: string[]) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    for (const id of others) {
+      const o = this.ships.get(id);
+      if (!o) continue;
+      const contact = v.root.position.clone().lerp(o.root.position, 0.5).setY(FLY_HEIGHT);
+      void this.impactFlare(contact, 0xffa040, 0.9);
+      this.flash(contact, 0xffa040, 400, 250);
+      void this.shake(id, 220, 2);
+    }
+    await this.shake(shipId, 280, 3.5);
+  }
+
+  /** Fleeing: the ship burns hard off the edge of the table and is gone. */
+  async flee(shipId: string) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const start = v.root.position.clone();
+    const h = v.root.rotation.y, fwd = new THREE.Vector3(Math.cos(h), 0, -Math.sin(h));
+    await this.tween(950, (t) => {
+      v.root.position.copy(start).addScaledVector(fwd, 320 * t * t);
+      v.root.position.y = start.y + 60 * t * t;
+      v.thrust = 1 + 4 * t;
+      for (const e of v.engines) {
+        this.embers.spawn(e.getWorldPosition(this.tmpA), new THREE.Vector3(), 0.4, 8, 2, 0.9, hot(Math.random() < 0.5 ? 0xffb060 : 0xff6a2a, 2.4), 0);
+      }
+      v.label.visible = t < 0.3;
+    });
+    this.removeShip(shipId);
+  }
+
+  /**
+   * Touching an obstacle: an asteroid impact throws rock chips, a debris field clatters off the hull with
+   * sparks, a gas cloud crackles round the ship.
+   */
+  async obstacleHit(shipId: string, kind: 'asteroid' | 'debris' | 'gas' | string) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
+    const at = v.root.localToWorld(this.hullPoint(v, 'top'));
+    if (kind === 'gas') {
+      for (let i = 0; i < 10; i++) {
+        this.embers.spawn(at.clone().add(new THREE.Vector3((Math.random() - 0.5) * 30, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 30)),
+          new THREE.Vector3(0, 4, 0), 1.2, 10, 30, 0.35, hot(i % 2 ? 0x8f6bff : 0x5fd6c8, 1.4), 1);
+      }
+      await this.crackle(v.root.position.clone().setY(FLY_HEIGHT + 4), Math.max(20, v.reach * 0.6), 700);
+      return;
+    }
+    if (kind === 'asteroid') {
+      this.fragments(at, [0x6b5a4c, 0x3a302a, 0x8c7a68], 14, 70, 3);
+      for (let i = 0; i < 6; i++) this.smoke.spawn(at, new THREE.Vector3().randomDirection().multiplyScalar(20), 1.2, 5, 18, 0.4, this.tmpC.setHex(0x7a6a5c));
+      void this.impactFlare(at, 0xffb070, 0.8);
+      await this.shake(shipId, 320, 4);
+      return;
+    }
+    // Debris: metal scraps clatter off, with sparks.
+    this.fragments(at, [0x8a8f96, 0x2c2a29], 10, 55, 2.2);
+    const pts = this.burst(at, hot(0xffc070, 2.6), 20, 45, 4);
+    this.flash(at, 0xffa040, 500, 250);
+    void this.shake(shipId, 260, 2.5);
+    await this.tween(350, (t) => pts.update(t));
+    pts.dispose();
+  }
+
   // ---------------- lasting damage (docs/VFX.md, phase 2) ----------------
 
   /**
@@ -2134,13 +2546,25 @@ export class BattleScene {
     if (v) this.updateLabel(v, s);
   }
 
-  async animatePath(shipId: string, path: Pose[], final: Pose, ms = 900) {
+  /**
+   * Fly a ship along a path. `style`: 'roll' for a barrel roll (the model rolls over as it slides, toward
+   * `rollDir` -1 left / 1 right), 'boost' for a boost (an engine burn with a flame trail).
+   */
+  async animatePath(shipId: string, path: Pose[], final: Pose, ms = 900, style: 'fly' | 'roll' | 'boost' = 'fly', rollDir = 1) {
     const v = this.ships.get(shipId);
     if (!v) return;
     // A ship bumped at the very start of its move gets a one-pose path: nothing to animate.
     if (path.length < 2) { placeObject(v.root, final); return; }
+    const R = BattleScene.REST;
+    if (style === 'boost') for (const e of v.engines) void this.impactFlare(e.getWorldPosition(new THREE.Vector3()), 0xffb060, 0.8);
     await this.tween(ms, (t) => {
-      v.thrust = 1 + Math.sin(t * Math.PI) * 1.4;
+      v.thrust = 1 + Math.sin(t * Math.PI) * (style === 'boost' ? 3.4 : 1.4);
+      if (style === 'boost') {
+        for (const e of v.engines) {
+          const p = e.getWorldPosition(this.tmpA);
+          this.embers.spawn(p, new THREE.Vector3((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8), 0.35, 7, 2, 0.8, hot(Math.random() < 0.5 ? 0xffb060 : 0xff6a2a, 2.2), 2);
+        }
+      }
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
       const f = e * (path.length - 1);
       const i = Math.min(path.length - 2, Math.floor(f));
@@ -2150,9 +2574,14 @@ export class BattleScene {
       if (dh > Math.PI) dh -= 2 * Math.PI;
       if (dh < -Math.PI) dh += 2 * Math.PI;
       placeObject(v.root, { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, h: a.h + dh * k });
-      v.model.rotation.x = Math.sin(t * Math.PI) * dh * 6; // bank into turns
+      if (style === 'roll' && !this.reducedMotion) {
+        // Rolling left lifts the right wing over the top (negative about the nose axis), and back.
+        v.model.rotation.x = -rollDir * Math.PI * 2 * e;
+        v.model.position.y = R.y + Math.sin(t * Math.PI) * 6;
+      } else v.model.rotation.x = Math.sin(t * Math.PI) * dh * 6; // bank into turns
     });
     v.model.rotation.x = 0;
+    v.model.position.y = R.y;
     v.thrust = 1;
     placeObject(v.root, final);
   }
@@ -2239,9 +2668,17 @@ export class BattleScene {
     this.scene.remove(wave);
     wave.geometry.dispose();
     debris.dispose();
+    this.removeShip(shipId);
+  }
+
+  /** Take a ship's view off the board (after it blew up or fled). */
+  removeShip(shipId: string) {
+    const v = this.ships.get(shipId);
+    if (!v) return;
     this.scene.remove(v.root);
     v.label.element.remove();
     this.ships.delete(shipId);
+    this.setLock(shipId, null);
   }
 
   /**
