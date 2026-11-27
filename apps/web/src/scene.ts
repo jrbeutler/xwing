@@ -1986,15 +1986,17 @@ export class BattleScene {
       cur.g.removeFromParent();
       this.locks.delete(lockerId);
     }
-    if (!targetId || !this.ships.has(targetId)) return;
+    if (!targetId) return; // the target may not be drawn yet (ships are created in order): animateLocks waits for it
     const g = new THREE.Group();
-    const mat = this.additive(hot(0xffd166, 2.2), 0.85);
-    // Four corner brackets and a centre tick.
+    // Thin corner brackets round the ship, in plain (not bloomed) colour so they stay quiet. Unit size:
+    // animateLocks scales them to the target.
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.4, depthWrite: false });
+    const arm = 0.28, thick = 0.035;
     for (const [sx, sy] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) {
-      const h = new THREE.Mesh(new THREE.PlaneGeometry(7, 1.3), mat);
-      h.position.set(sx * 9.5, sy * 13, 0);
-      const vtc = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 7), mat);
-      vtc.position.set(sx * 13, sy * 9.5, 0);
+      const h = new THREE.Mesh(new THREE.PlaneGeometry(arm, thick), mat);
+      h.position.set(sx * (1 - arm / 2), sy * 1, 0);
+      const vtc = new THREE.Mesh(new THREE.PlaneGeometry(thick, arm), mat);
+      vtc.position.set(sx * 1, sy * (1 - arm / 2), 0);
       g.add(h, vtc);
     }
     g.renderOrder = 3;
@@ -2007,18 +2009,23 @@ export class BattleScene {
     const onTarget = new Map<string, number>();
     for (const [lockerId, l] of this.locks) {
       const v = this.ships.get(l.target);
-      if (!v || !this.ships.has(lockerId)) { this.setLock(lockerId, null); continue; }
+      if (!this.ships.has(lockerId)) { this.setLock(lockerId, null); continue; }
+      l.g.visible = !!v;
+      if (!v) continue;
       const n = onTarget.get(l.target) ?? 0;
       onTarget.set(l.target, n + 1);
       const age = t - l.born;
-      const close = Math.min(1, age / 0.45), e = 1 - Math.pow(1 - close, 3);
-      const size = Math.max(1.1, v.reach / 16) * (1 + n * 0.2);
-      l.g.position.copy(v.root.position).setY(FLY_HEIGHT + 6);
+      const close = this.reducedMotion ? 1 : Math.min(1, age / 0.3), e = 1 - Math.pow(1 - close, 3);
+      // Just wider than the model; a second lock on the same ship sits a little outside the first.
+      const size = v.reach * 0.5 * (1 + n * 0.12);
+      l.g.position.copy(v.root.position).setY(FLY_HEIGHT + 4);
       l.g.quaternion.copy(this.camera.quaternion);
-      l.g.rotateZ((1 - e) * Math.PI * 0.75 + n * Math.PI / 4);
-      l.g.scale.setScalar(size * (1 + (1 - e) * 2.2) * (this.reducedMotion ? 1 : 1 + 0.04 * Math.sin(t * 4)));
+      l.g.rotateZ((1 - e) * Math.PI / 4);
+      l.g.scale.setScalar(size * (1 + (1 - e) * 0.5));
+      // Faint while in the background; clear when either ship is selected or the lock is new.
+      const focus = this.selected === lockerId || this.selected === l.target;
       const m = (l.g.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
-      m.opacity = close < 1 ? 0.3 + 0.7 * e : 0.55 + (this.reducedMotion ? 0 : 0.15 * Math.sin(t * 4));
+      m.opacity = close < 1 ? 0.85 * e : focus ? 0.85 : 0.3;
     }
     // A thin dashed line from the selected ship to the ship it has locked.
     const l = this.selected ? this.locks.get(this.selected) : undefined;
@@ -2044,15 +2051,14 @@ export class BattleScene {
     const a = this.gunPoint(lockerId), b = this.ships.get(targetId);
     if (!a || !b) return;
     const end = b.root.position.clone().setY(FLY_HEIGHT + 6);
-    const beam = new ArcRibbon(2, hot(0xfff3c4, 2), hot(0xffd166, 1.8), 0.25, 1.1);
+    const beam = new ArcRibbon(2, 0xfff3c4, 0xffd166, 0.15, 0.5);
     this.scene.add(beam);
     this.setLock(lockerId, targetId);
-    await this.tween(450, (t) => {
-      beam.set([a, new THREE.Vector3().lerpVectors(a, end, Math.min(1, t * 2.2))]);
-      beam.opacity = 0.55 * (1 - t);
+    await this.tween(350, (t) => {
+      beam.set([a, new THREE.Vector3().lerpVectors(a, end, Math.min(1, t * 2.5))]);
+      beam.opacity = 0.35 * (1 - t);
     });
     beam.dispose();
-    void this.impactFlare(end, 0xffd166, 0.7);
   }
 
   /** Reinforce: a translucent hex shield over the front or rear half of the ship, for the round. */
