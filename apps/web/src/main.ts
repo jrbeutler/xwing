@@ -3,7 +3,7 @@ import {
   legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
   viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
-import { BattleScene, SHOT_TIMING, type AttackAngle } from './scene';
+import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -863,7 +863,7 @@ async function animate(e: GameEvent) {
       for (const h of e.ships) {
         const d = dispShip(h.shipId);
         if (d) { d.shields -= h.shieldDamage; d.hull -= h.hullDamage; d.ion += h.ion ?? 0; relabel(h.shipId); }
-        if (h.shieldDamage) void scene.shieldFlash(h.shipId);
+        if (h.shieldDamage) void scene.shieldFlash(h.shipId, scene.shieldPoint(toV3(e.device.pose.x, e.device.pose.y, 10), h.shipId));
         if (h.hullDamage) { void scene.sparks(h.shipId, 0xffa040, 30, true); void scene.shake(h.shipId); }
         const dmg = h.shieldDamage + h.hullDamage;
         void scene.floatText(h.shipId, h.ion ? `ION +${h.ion}` : dmg ? `−${dmg}` : 'NO DAMAGE', h.ion ? 'ion-float' : 'p2c');
@@ -1004,6 +1004,10 @@ async function showAttack(e: AttackEvent) {
   const landed = e.hits + e.crits;
   const total = Math.max(landed, Math.min(5, e.attackFinal.length));
   const order = Array.from({ length: total }, (_, i) => i < landed);
+  // Shots the dice hit with but the defender evaded skim past the hull as the target jinks away.
+  const rolled = e.attackFinal.filter((f) => f === 'hit' || f === 'crit').length;
+  let nearLeft = Math.min(total - landed, Math.max(0, rolled - landed));
+  const jinked = nearLeft > 0;
   for (let i = order.length - 1; i > 0; i--) { const j = (i * 7 + 3) % (i + 1); [order[i], order[j]] = [order[j], order[i]]; }
   const units = e.shieldDamage + e.hullDamage;
   const target = dispShip(d.id);
@@ -1011,15 +1015,20 @@ async function showAttack(e: AttackEvent) {
   const flights: Promise<void>[] = [];
   for (let i = 0; i < order.length; i++) {
     const hit = order[i];
-    const end = scene.boltEnd(a.id, d.id, hit, i);
-    if (!end) continue;
+    const near = !hit && nearLeft-- > 0;
     const n = hit ? hitNo++ : -1;
-    flights.push(scene.shot(look, a.id, end, ionShot ? 0x7fd8ff : color, hit, i).then(() => {
+    // Shots the shields take stop at the shield bubble.
+    const end = hit && n < e.shieldDamage ? scene.shieldPoint(a.id, d.id) : scene.boltEnd(a.id, d.id, hit, i, near);
+    if (!end) continue;
+    const boltColor = ionShot ? 0x7fd8ff : color;
+    if (near) void scene.dodge(d.id, end);
+    flights.push(scene.shot(look, a.id, end, boltColor, hit, i).then(() => {
+      if (near) scene.nearMiss(a.id, d.id, end, boltColor);
       if (!hit) return;
       const crit = n >= e.hits; // crits are applied after hits
       if (n < e.shieldDamage) {
         if (target) target.shields--;
-        void scene.shieldFlash(d.id);
+        void scene.shieldFlash(d.id, end);
       } else if (n < units) {
         if (target) target.hull--;
         void scene.sparks(d.id, crit ? 0xffd27a : 0xffa040, crit ? 40 : 26, crit);
@@ -1071,7 +1080,7 @@ async function showAttack(e: AttackEvent) {
 
   // 3. Result
   const o = attackOutcome(e);
-  if (o.cls === 'miss' && o.word === 'EVADED') void scene.dodge(d.id);
+  if (o.cls === 'miss' && o.word === 'EVADED' && !jinked) void scene.dodge(d.id);
   showBanner(`<span class="who">${a.name} → ${d.name}${e.weapon ? ` · ${UPGRADES[e.weapon].name}` : ''}</span><b>${o.word}</b><span class="detail">${o.detail}</span>`,
     `${o.cls}${incoming ? ' incoming' : ''}`);
   roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);

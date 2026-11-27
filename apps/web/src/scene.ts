@@ -77,6 +77,91 @@ function jagged(a: THREE.Vector3, b: THREE.Vector3, n: number, amp: number, reac
     return p;
   });
 }
+/**
+ * A pool of soft round particles drawn in one call: smoke, flames, vapour. Each particle lives in world
+ * space (so a moving ship leaves a trail), drifts with its own velocity, grows and fades. Sizes are in
+ * world units. Cheap enough for phones: one draw per field, a fixed buffer, oldest particle recycled.
+ */
+class ParticleField {
+  readonly points: THREE.Points;
+  private pos: Float32Array; private col: Float32Array; private size: Float32Array; private alpha: Float32Array;
+  private vel: Float32Array; private age: Float32Array; private life: Float32Array;
+  private s0: Float32Array; private s1: Float32Array; private a0: Float32Array; private drag: Float32Array;
+  private next = 0;
+  private active = false;
+  readonly scale = { value: 400 };
+  constructor(private cap: number, additive: boolean) {
+    const f = () => new Float32Array(cap);
+    this.pos = new Float32Array(cap * 3); this.col = new Float32Array(cap * 3); this.vel = new Float32Array(cap * 3);
+    this.size = f(); this.alpha = f(); this.age = f(); this.life = f(); this.s0 = f(); this.s1 = f(); this.a0 = f(); this.drag = f();
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(this.col, 3));
+    geo.setAttribute('size', new THREE.BufferAttribute(this.size, 1));
+    geo.setAttribute('alpha', new THREE.BufferAttribute(this.alpha, 1));
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+      uniforms: { uMap: { value: glowTexture() }, uScale: this.scale },
+      vertexShader: /* glsl */ `
+        attribute float size; attribute float alpha; attribute vec3 color;
+        uniform float uScale; varying float vA; varying vec3 vC;
+        void main() {
+          vA = alpha; vC = color;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mv;
+          // World-size diameter: projected size of \`size\` units at this depth.
+          gl_PointSize = alpha > 0.0 ? size * projectionMatrix[1][1] * uScale / max(1.0, -mv.z) : 0.0;
+        }`,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D uMap; varying float vA; varying vec3 vC;
+        void main() { gl_FragColor = vec4(vC, vA * texture2D(uMap, gl_PointCoord).a); }`,
+    });
+    this.points = new THREE.Points(geo, mat);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 2;
+  }
+  /** One particle: `s0`→`s1` size over `life` seconds, peak opacity `a`, velocity slowed by `drag` per second. */
+  spawn(at: THREE.Vector3, vel: THREE.Vector3, life: number, s0: number, s1: number, a: number, color: THREE.Color, drag = 0.6) {
+    const i = this.next;
+    this.next = (this.next + 1) % this.cap;
+    this.pos.set([at.x, at.y, at.z], i * 3);
+    this.vel.set([vel.x, vel.y, vel.z], i * 3);
+    this.col.set([color.r, color.g, color.b], i * 3);
+    this.age[i] = 0; this.life[i] = life; this.s0[i] = s0; this.s1[i] = s1; this.a0[i] = a; this.drag[i] = drag;
+    this.size[i] = s0; this.alpha[i] = 0;
+    this.active = true;
+  }
+  update(dt: number) {
+    if (!this.active) return;
+    let alive = 0;
+    for (let i = 0; i < this.cap; i++) {
+      if (this.age[i] >= this.life[i]) { this.alpha[i] = 0; continue; }
+      alive++;
+      const a = (this.age[i] += dt);
+      const f = Math.min(1, a / this.life[i]);
+      const k = Math.max(0, 1 - this.drag[i] * dt);
+      for (let c = 0; c < 3; c++) { this.pos[i * 3 + c] += this.vel[i * 3 + c] * dt; this.vel[i * 3 + c] *= k; }
+      this.size[i] = this.s0[i] + (this.s1[i] - this.s0[i]) * Math.sqrt(f);
+      // A quick fade in (no popping), then out.
+      this.alpha[i] = f >= 1 ? 0 : this.a0[i] * Math.min(1, f * 8) * Math.pow(1 - f, 1.4);
+    }
+    const g = this.points.geometry;
+    for (const n of ['position', 'color', 'size', 'alpha']) g.attributes[n].needsUpdate = true;
+    this.active = alive > 0;
+  }
+}
+
+/** Lasting damage a ship shows on its model (docs/VFX.md, phase 2), from its damage cards and hull. */
+interface DamageLook {
+  fire: boolean; engine: boolean; fuel: boolean; smoke: boolean; electrical: boolean;
+  /** Sprites attached to the ship (the fire's glow). */
+  glows: THREE.Sprite[];
+  /** Spawn timers, seconds until the next particle of each kind. */
+  timers: Record<string, number>;
+  /** Engine sputter: 0 running, >0 seconds left of a cough. */
+  cough: number;
+}
+
 const TURRET_COLOR = 0xffd166;
 /** The part of a ship model tagged as its turret gun (imported models only). */
 const findGun = (model: THREE.Object3D) => {
@@ -138,6 +223,10 @@ export interface ShipView {
   turret?: { holder: THREE.Group; fan: THREE.Group; facing: string; gun?: THREE.Object3D };
   /** Flickering blue aura while the ship has ion tokens. */
   ionAura?: THREE.Group;
+  /** The model's bounds in the ship's own frame (x forward, y up), for placing damage effects on the hull. */
+  hullBox: THREE.Box3;
+  /** Lasting damage effects (fire, smoke, a sputtering engine...), when the ship has any. */
+  damage?: DamageLook;
 }
 
 export class BattleScene {
@@ -160,6 +249,9 @@ export class BattleScene {
   private sky = buildSky();
   private flashes: THREE.PointLight[] = [];
   private clock = new THREE.Clock();
+  /** World-space particles: smoke and vapour (normal blending), flames and embers (additive). */
+  private smoke = new ParticleField(900, false);
+  private embers = new ParticleField(700, true);
 
   constructor(private host: HTMLElement) {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -238,7 +330,7 @@ export class BattleScene {
 
     this.buildBoard();
     void loadShipModels(this.renderer).then(() => this.reskinShips());
-    this.scene.add(this.sky, this.obstacleGroup, this.ghost, this.overlay, this.planned, this.markers, this.chips);
+    this.scene.add(this.sky, this.obstacleGroup, this.ghost, this.overlay, this.planned, this.markers, this.chips, this.smoke.points, this.embers.points);
 
     addEventListener('resize', () => this.resize());
     this.resize();
@@ -246,6 +338,8 @@ export class BattleScene {
       const dt = Math.min(0.05, this.clock.getDelta());
       this.controls.update();
       this.animateIdle(this.clock.elapsedTime, dt);
+      this.smoke.update(dt);
+      this.embers.update(dt);
       this.placeLabels();
       this.composer.render();
       this.labels.render(this.scene, this.camera);
@@ -321,6 +415,7 @@ export class BattleScene {
     this.labels.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.smoke.scale.value = this.embers.scale.value = h * this.renderer.getPixelRatio() * 0.5;
   }
 
   /** Hover bob, engine flicker and the slowly turning sky. */
@@ -340,6 +435,7 @@ export class BattleScene {
         e.scale.setScalar(e.userData.base * f * v.thrust);
       });
       this.animateIonAura(v, t);
+      this.animateDamage(v, t, dt);
     }
   }
 
@@ -444,10 +540,18 @@ export class BattleScene {
     this.scene.add(root);
     const v: ShipView = {
       root, model, label, ring, reach, top: box.max.y, body, engines, thrust: 1, phase: Math.random() * 6.28, typeId: s.typeId, owner: s.owner, arcs,
-      turret,
+      turret, hullBox: this.measureHull(root, model),
     };
     this.ships.set(s.id, v);
     return v;
+  }
+
+  /** The model's bounds in its ship's frame (the root's local space), whatever the root's pose. */
+  private measureHull(root: THREE.Group, model: THREE.Group): THREE.Box3 {
+    root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(model);
+    return box.isEmpty() ? new THREE.Box3(new THREE.Vector3(-15, FLY_HEIGHT, -12), new THREE.Vector3(15, FLY_HEIGHT + 8, 12))
+      : box.applyMatrix4(root.matrixWorld.clone().invert());
   }
 
   /** Swap in the textured model for ships created before it finished loading. */
@@ -459,6 +563,7 @@ export class BattleScene {
       v.model.add(next.body);
       v.body = next.body;
       v.engines = next.engines;
+      v.hullBox = this.measureHull(v.root, v.model);
       if (v.turret) {
         v.turret.gun = findGun(v.model);
         if (v.turret.gun) v.turret.gun.rotation.y = v.turret.holder.rotation.y;
@@ -523,6 +628,7 @@ export class BattleScene {
 
   updateLabel(v: ShipView, s: ShipState) {
     this.setIonAura(v, s.ion > 0 && !s.destroyed);
+    this.setDamageLook(v, s);
     const tokens = [
       s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '',
       s.calculate ? `<span title="Calculate">▣${s.calculate > 1 ? s.calculate : ''}</span>` : '',
@@ -1302,15 +1408,19 @@ export class BattleScene {
     return p.add(new THREE.Vector3(Math.cos(v.root.rotation.y) * 14, 0, -Math.sin(v.root.rotation.y) * 14));
   }
 
-  /** Where a bolt should end: on the target, or streaking past it for a miss. */
-  boltEnd(fromId: string, toId: string, hit: boolean, i: number): THREE.Vector3 | null {
+  /**
+   * Where a bolt should end: on the target, or streaking past it for a miss. `near`: a shot the target
+   * evaded, which skims just past the hull (the target jinks away from it).
+   */
+  boltEnd(fromId: string, toId: string, hit: boolean, i: number, near = false): THREE.Vector3 | null {
     const a = this.gunPoint(fromId), b = this.ships.get(toId);
     if (!a || !b) return null;
     const t = b.root.position.clone().setY(FLY_HEIGHT + 4);
     if (hit) return t.add(new THREE.Vector3((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 10));
     const dir = t.clone().sub(a).normalize();
-    const side = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar((i % 2 ? 1 : -1) * (26 + Math.random() * 14));
-    return t.add(side).add(dir.multiplyScalar(90)).setY(FLY_HEIGHT + 4 + (Math.random() - 0.5) * 10);
+    const off = near ? b.reach * 0.4 + 4 + Math.random() * 4 : 26 + Math.random() * 14;
+    const side = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar((i % 2 ? 1 : -1) * off);
+    return t.add(side).add(dir.multiplyScalar(90)).setY(FLY_HEIGHT + 4 + (Math.random() - 0.5) * (near ? 4 : 10));
   }
 
   private flashIdx = 0;
@@ -1729,27 +1839,186 @@ export class BattleScene {
     }
   }
 
-  /** Blue energy bubble around a ship: its shields took the hit. Bright at the rim, ripples outward. */
-  async shieldFlash(shipId: string) {
+  // ---------------- lasting damage (docs/VFX.md, phase 2) ----------------
+
+  /**
+   * Show a ship's damage on the model: Console Fire burns, a Damaged Engine sputters, a Fuel Leak trails
+   * vapour, electrical cards (Weapons Failure, Damaged Sensor Array, Disabled Power Regulator) throw sparks,
+   * and a ship at half hull or less trails smoke. Set from the label refresh; animated in animateDamage.
+   */
+  private setDamageLook(v: ShipView, s: ShipState) {
+    const has = (c: string) => s.crits.includes(c as ShipState['crits'][number]);
+    const alive = !s.destroyed && s.hull > 0;
+    const want = {
+      fire: alive && has('consoleFire'),
+      engine: alive && has('damagedEngine'),
+      fuel: alive && has('fuelLeak'),
+      electrical: alive && (has('weaponsFailure') || has('damagedSensorArray') || has('disabledPowerRegulator')),
+      smoke: alive && s.hull * 2 <= s.maxHull,
+    };
+    const any = Object.values(want).some(Boolean);
+    if (!any && !v.damage) return;
+    const d = v.damage ??= { fire: false, engine: false, fuel: false, smoke: false, electrical: false, glows: [], timers: {}, cough: 0 };
+    if (want.fire && !d.fire) {
+      // The fire's glow rides on the hull; flames and smoke come off it as particles.
+      for (const c of [0xff7a2a, 0xffc060]) {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(c, 2.6), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+        sp.position.copy(this.hullPoint(v, 'fire'));
+        sp.raycast = () => {};
+        v.root.add(sp);
+        d.glows.push(sp);
+      }
+    } else if (!want.fire && d.fire) {
+      d.glows.forEach((g) => { g.removeFromParent(); g.material.dispose(); });
+      d.glows = [];
+    }
+    Object.assign(d, want);
+    if (!any) v.damage = undefined;
+  }
+
+  /** A point on the hull (in the ship's frame) where a kind of damage shows. */
+  private hullPoint(v: ShipView, where: 'fire' | 'smoke' | 'fuel' | 'top'): THREE.Vector3 {
+    const b = v.hullBox, c = b.getCenter(new THREE.Vector3()), sz = b.getSize(new THREE.Vector3());
+    if (where === 'fire') return new THREE.Vector3(b.min.x + sz.x * 0.55, b.max.y - sz.y * 0.25, c.z + sz.z * 0.12);
+    if (where === 'smoke') return new THREE.Vector3(b.min.x + sz.x * 0.3, c.y + sz.y * 0.2, c.z);
+    if (where === 'fuel') return new THREE.Vector3(b.min.x + sz.x * 0.35, c.y, c.z + sz.z * 0.28);
+    // Somewhere random on top of the hull.
+    return new THREE.Vector3(b.min.x + sz.x * (0.2 + Math.random() * 0.6), b.max.y - sz.y * 0.3, c.z + sz.z * (Math.random() - 0.5) * 0.6);
+  }
+
+  private readonly tmpA = new THREE.Vector3();
+  private readonly tmpB = new THREE.Vector3();
+  private readonly tmpC = new THREE.Color();
+
+  private animateDamage(v: ShipView, t: number, dt: number) {
+    const d = v.damage;
+    if (!d || !v.model.visible) return;
+    const b = v.hullBox;
+    const k = THREE.MathUtils.clamp((b.max.x - b.min.x) / 40, 0.8, 2); // bigger ships, bigger effects
+    const fwd = this.tmpB.set(Math.cos(v.root.rotation.y), 0, -Math.sin(v.root.rotation.y));
+    const busy = v.thrust > 1.2; // flying: thicker trails
+    /** Run `fn` every `every` seconds on average (jittered), counted per effect. */
+    const tick = (key: string, every: number, fn: () => void) => {
+      d.timers[key] = (d.timers[key] ?? Math.random() * every) - dt;
+      for (let n = 0; d.timers[key] <= 0 && n < 4; n++) { fn(); d.timers[key] += every * (0.6 + Math.random() * 0.8); }
+    };
+    const world = (p: THREE.Vector3) => v.root.localToWorld(p);
+    const jitter = (amp: number) => new THREE.Vector3((Math.random() - 0.5) * amp, (Math.random() - 0.5) * amp, (Math.random() - 0.5) * amp);
+    const puff = (at: THREE.Vector3, color: number, a: number, s0: number, s1: number, life: number, up = 10) =>
+      this.smoke.spawn(at.clone().add(jitter(2 * k)), jitter(5).addScaledVector(fwd, -6).setY(up + Math.random() * 5), life, s0 * k, s1 * k, a,
+        this.tmpC.setHex(color).multiplyScalar(0.85 + Math.random() * 0.3));
+
+    if (d.smoke) {
+      tick('smoke', busy ? 0.05 : 0.11, () => puff(world(this.hullPoint(v, 'smoke')), 0x5c5e66, 0.5, 5, 24, 2.4));
+    }
+    if (d.fire) {
+      const at = this.hullPoint(v, 'fire');
+      d.glows.forEach((g, i) => {
+        g.position.copy(at).y += i * 1.5;
+        g.scale.setScalar((i ? 7 : 12) * k * (0.75 + Math.random() * 0.5));
+        g.material.opacity = 0.6 + Math.random() * 0.4;
+      });
+      const w = world(at.clone());
+      tick('flame', 0.035, () => this.embers.spawn(w.clone().add(jitter(3 * k)), jitter(6).addScaledVector(fwd, -8).setY(12 + Math.random() * 10),
+        0.35 + Math.random() * 0.25, 6 * k, 1.5 * k, 0.9, hot(Math.random() < 0.5 ? 0xff6a20 : 0xffb347, 2.4), 1.5));
+      tick('fireSmoke', 0.14, () => puff(w.clone().setY(w.y + 4 * k), 0x3a3b40, 0.55, 5, 20, 2));
+    }
+    if (d.fuel) {
+      tick('fuel', busy ? 0.03 : 0.06, () => {
+        const at = world(this.hullPoint(v, 'fuel'));
+        this.smoke.spawn(at, jitter(4).addScaledVector(fwd, -10), 1.4 + Math.random() * 0.6, 2 * k, 12 * k, 0.3, this.tmpC.setHex(0xcfe8f4), 0.9);
+      });
+    }
+    if (d.engine) {
+      // Now and then the engine coughs: the glow drops out and stutters, with a dark puff and a few sparks.
+      if (d.cough <= 0 && Math.random() < dt * 0.8) {
+        d.cough = 0.3 + Math.random() * 0.35;
+        for (const e of v.engines) {
+          const at = e.getWorldPosition(this.tmpA).clone();
+          puff(at, 0x2e2f34, 0.65, 4, 16, 1.2, 4);
+          for (let n = 0; n < 5; n++) this.embers.spawn(at, jitter(40).addScaledVector(fwd, -30), 0.3, 2.5 * k, 1, 1, hot(0xffa040, 3), 2);
+        }
+      }
+      if (d.cough > 0) {
+        d.cough -= dt;
+        const f = Math.sin(t * 60) > 0 ? 0.15 : 0.5;
+        v.engines.forEach((e) => e.scale.multiplyScalar(f));
+      } else {
+        v.engines.forEach((e) => e.scale.multiplyScalar(0.8 + 0.2 * Math.sin(t * 7 + v.phase))); // a rough idle
+      }
+      tick('engineSmoke', busy ? 0.08 : 0.25, () => {
+        const e = v.engines[Math.floor(Math.random() * v.engines.length)];
+        if (e) puff(e.getWorldPosition(this.tmpA).clone(), 0x45464c, 0.35, 3, 12, 1.3, 5);
+      });
+    }
+    if (d.electrical) {
+      // Short-circuits: a little spray of blue-white sparks from somewhere on the hull.
+      tick('spark', 0.9, () => {
+        const at = world(this.hullPoint(v, 'top'));
+        for (let n = 0; n < 9; n++) {
+          const vel = new THREE.Vector3().randomDirection().multiplyScalar(30 + Math.random() * 40);
+          vel.y = Math.abs(vel.y) + 10;
+          this.embers.spawn(at, vel, 0.25 + Math.random() * 0.2, 2.2 * k, 0.8, 1, hot(n % 3 ? 0xbfe8ff : 0xffffff, 3), 3);
+        }
+        this.embers.spawn(at, new THREE.Vector3(), 0.15, 10 * k, 14 * k, 0.9, hot(0x9fd8ff, 2.5), 0);
+      });
+    }
+  }
+
+  /** Radius of a ship's shield bubble (wraps big ships too). */
+  private shieldRadius(v: ShipView) { return Math.max(34, v.reach * 0.95); }
+
+  /** Where a shot meets the defender's shield bubble, on the side facing the attacker (a ship, or a point such as a bomb). */
+  shieldPoint(from: string | THREE.Vector3, toId: string): THREE.Vector3 | null {
+    const a = typeof from === 'string' ? this.gunPoint(from) : from.clone(), d = this.ships.get(toId);
+    if (!a || !d) return null;
+    const c = d.root.position.clone().setY(FLY_HEIGHT + 4);
+    const dir = a.sub(c).normalize().add(new THREE.Vector3((Math.random() - 0.5) * 0.5, (Math.random() - 0.2) * 0.4, (Math.random() - 0.5) * 0.5)).normalize();
+    return c.addScaledVector(dir, this.shieldRadius(d) * 0.97);
+  }
+
+  /**
+   * Blue energy bubble around a ship: its shields took the hit. With `at` (where the shot struck), the
+   * bubble flares there and a ring ripples out across it from that point; without, it flashes all over.
+   */
+  async shieldFlash(shipId: string, at?: THREE.Vector3 | null) {
     const v = this.ships.get(shipId);
     if (!v) return;
+    const center = v.root.position.clone().setY(FLY_HEIGHT + 4);
+    const hitDir = at ? at.clone().sub(center).normalize() : new THREE.Vector3();
     const mat = new THREE.ShaderMaterial({
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-      uniforms: { uT: { value: 0 }, uColor: { value: hot(0x5ab8ff, 2.2) } },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: at ? THREE.DoubleSide : THREE.FrontSide,
+      uniforms: { uT: { value: 0 }, uColor: { value: hot(0x5ab8ff, 2.2) }, uHit: { value: hitDir }, uDirected: { value: at ? 1 : 0 } },
       vertexShader: 'varying vec3 vN; varying vec3 vV; varying vec3 vP; void main() { vP = position; vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }',
-      fragmentShader: `uniform float uT; uniform vec3 uColor; varying vec3 vN; varying vec3 vV; varying vec3 vP;
+      fragmentShader: `uniform float uT, uDirected; uniform vec3 uColor, uHit; varying vec3 vN; varying vec3 vV; varying vec3 vP;
         void main() {
           float rim = pow(clamp(1.0 - abs(dot(vN, vV)), 0.0, 1.0), 2.5);
           float hex = 0.5 + 0.5 * sin(vP.x * 0.6) * sin(vP.y * 0.6) * sin(vP.z * 0.6);
-          float a = (rim * 0.9 + hex * 0.15) * (1.0 - uT);
+          float fade = 1.0 - uT;
+          float a;
+          if (uDirected > 0.5) {
+            // 0 at the impact, 1 on the far side of the bubble.
+            float ang = acos(clamp(dot(normalize(vP), uHit), -1.0, 1.0)) / 3.14159;
+            float ring = exp(-pow((ang - uT * 1.1) * 8.0, 2.0)) * fade;
+            float spot = exp(-ang * ang * 70.0) * (1.0 - smoothstep(0.0, 0.5, uT)) * 2.5;
+            a = spot + ring * (0.45 + hex * 0.9) + rim * 0.3 * fade;
+            if (!gl_FrontFacing) a *= 0.45;
+          } else {
+            a = (rim * 0.9 + hex * 0.15) * fade;
+          }
           gl_FragColor = vec4(uColor * a, 1.0);
         }`,
     });
-    const m = new THREE.Mesh(new THREE.SphereGeometry(Math.max(34, v.reach * 0.95), 32, 20), mat); // wraps big ships too
-    m.position.copy(v.root.position).setY(FLY_HEIGHT + 4);
+    const m = new THREE.Mesh(new THREE.SphereGeometry(this.shieldRadius(v), 40, 24), mat);
+    m.position.copy(center);
     this.scene.add(m);
-    this.flash(m.position, 0x5ab8ff, 300, 300);
-    await this.tween(420, (t) => { m.scale.setScalar(0.85 + t * 0.35); mat.uniforms.uT.value = t; });
+    this.flash(at ?? center, 0x5ab8ff, 300, 300);
+    if (at) {
+      // A few sparks skitter off the shield where the shot hit.
+      const pts = this.burst(at, hot(0x9fdcff, 2.6), 10, 26, 3.5);
+      void this.tween(300, (t) => pts.update(t)).then(() => pts.dispose());
+    }
+    await this.tween(at ? 620 : 420, (t) => { m.scale.setScalar(at ? 0.97 + t * 0.08 : 0.85 + t * 0.35); mat.uniforms.uT.value = t; });
     this.scene.remove(m);
     m.geometry.dispose();
     mat.dispose();
@@ -1798,31 +2067,65 @@ export class BattleScene {
     };
   }
 
-  /** Jolt the model (hull hit). */
+  /** Where a ship's model rests within its root (shake and jink offset from here). */
+  private static readonly REST = new THREE.Vector3(0, FLY_HEIGHT + 4, 0);
+
+  /** Jolt the model (hull hit). Keeps any jink under way. */
   async shake(shipId: string, ms = 300, amp = 3) {
     const v = this.ships.get(shipId);
     if (!v || this.reducedMotion) return;
-    const base = v.model.position.clone();
+    const R = BattleScene.REST;
     await this.tween(ms, (t) => {
-      const k = amp * (1 - t);
-      v.model.position.set(base.x + (Math.random() - 0.5) * k * 2, base.y + (Math.random() - 0.5) * k, base.z + (Math.random() - 0.5) * k * 2);
+      const k = amp * (1 - t), jink = (v.model.userData.jink as number | undefined) ?? 0;
+      v.model.position.set(R.x + (Math.random() - 0.5) * k * 2, R.y + (Math.random() - 0.5) * k, R.z + jink + (Math.random() - 0.5) * k * 2);
     });
-    v.model.position.copy(base);
+    v.model.position.set(R.x, R.y, R.z + ((v.model.userData.jink as number | undefined) ?? 0));
   }
 
-  /** Quick sideways jink: the target evaded everything. */
-  async dodge(shipId: string) {
+  /**
+   * Quick sideways jink: the target evades. With `from` (a shot's end point), it jinks away from the side
+   * the shot passes on; otherwise either way. A jink already under way is not restarted.
+   */
+  async dodge(shipId: string, from?: THREE.Vector3 | null) {
     const v = this.ships.get(shipId);
-    if (!v || this.reducedMotion) return;
-    const base = v.model.position.clone();
-    const dir = Math.random() < 0.5 ? 1 : -1;
-    await this.tween(420, (t) => {
+    if (!v || this.reducedMotion || v.model.userData.jinking) return;
+    v.model.userData.jinking = true;
+    const R = BattleScene.REST;
+    let dir = Math.random() < 0.5 ? 1 : -1;
+    if (from) {
+      // The ship's sideways axis (model-local +Z) in the world, and which side of it the shot passes.
+      const h = v.root.rotation.y;
+      const side = (from.x - v.root.position.x) * Math.sin(h) + (from.z - v.root.position.z) * Math.cos(h);
+      dir = side > 0 ? -1 : 1;
+    }
+    await this.tween(460, (t) => {
       const k = Math.sin(t * Math.PI);
-      v.model.position.set(base.x, base.y, base.z + dir * 12 * k); // model-local Z = sideways
+      v.model.userData.jink = dir * 12 * k;
+      v.model.position.set(R.x, R.y, R.z + dir * 12 * k); // model-local Z = sideways
       v.model.rotation.x = dir * -0.6 * k;
     });
-    v.model.position.copy(base);
+    v.model.userData.jink = 0;
+    v.model.userData.jinking = false;
+    v.model.position.copy(R);
     v.model.rotation.x = 0;
+  }
+
+  /**
+   * A near miss: a faint streak of heat that lingers where a shot skimmed past the hull (after the shot has
+   * flown by). `end` is the shot's end point, from boltEnd.
+   */
+  nearMiss(fromId: string, toId: string, end: THREE.Vector3, color: number) {
+    const a = this.gunPoint(fromId), d = this.ships.get(toId);
+    if (!a || !d) return;
+    const dir = end.clone().sub(a);
+    const len = dir.length();
+    dir.divideScalar(len);
+    // The point of the shot's path closest to the target, and a stretch either side of it.
+    const along = THREE.MathUtils.clamp(d.root.position.clone().setY(FLY_HEIGHT + 4).sub(a).dot(dir), 0, len);
+    for (let i = -4; i <= 4; i++) {
+      const p = a.clone().addScaledVector(dir, along + i * 7);
+      this.embers.spawn(p, new THREE.Vector3(0, 2, 0), 0.45 + (4 - Math.abs(i)) * 0.05, 5, 8, 0.55 - Math.abs(i) * 0.08, hot(color, 1.8), 0);
+    }
   }
 
   /** Refresh one ship's label from a (displayed) ship state. */
@@ -1868,11 +2171,24 @@ export class BattleScene {
     el.remove();
   }
 
-  /** Fireball, shockwave, flying debris and a lingering smoke puff. */
+  /**
+   * A ship blowing up: fireball, shockwave, sparks and smoke, then wreckage that tumbles onto the table,
+   * drifts and fades. Medium ships go up bigger and longer, with a few secondary blasts across the hull first.
+   */
   async explode(shipId: string) {
     const v = this.ships.get(shipId);
     if (!v) return;
+    const medium = SHIP_TYPES[v.typeId]?.size !== 'small';
+    const k = medium ? 1.6 : 1;
     const at = v.root.position.clone().setY(FLY_HEIGHT + 4);
+    if (medium) {
+      // Secondary blasts ripple across the hull before it goes.
+      for (let i = 0; i < 3; i++) {
+        void this.fireball(v.root.localToWorld(this.hullPoint(v, 'top')), 0.9);
+        void this.shake(shipId, 260, 4);
+        await this.wait(200);
+      }
+    }
     const tex = glowTexture();
     const sprite = (color: THREE.Color, blending: THREE.Blending = THREE.AdditiveBlending) => {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color, blending, depthWrite: false, transparent: true }));
@@ -1881,37 +2197,39 @@ export class BattleScene {
       return sp;
     };
     const core = sprite(hot(0xfff2d0, 6));
-    const fire = Array.from({ length: 6 }, () => {
+    const fire = Array.from({ length: medium ? 9 : 6 }, () => {
       const sp = sprite(hot(Math.random() < 0.5 ? 0xff7a2a : 0xffb347, 3));
-      sp.userData.off = new THREE.Vector3().randomDirection().multiplyScalar(14);
+      sp.userData.off = new THREE.Vector3().randomDirection().multiplyScalar(14 * k);
       return sp;
     });
     const smoke = Array.from({ length: 5 }, () => {
       const sp = sprite(new THREE.Color(0x1a1a22), THREE.NormalBlending);
-      sp.userData.off = new THREE.Vector3().randomDirection().multiplyScalar(22).setY(Math.random() * 10);
+      sp.userData.off = new THREE.Vector3().randomDirection().multiplyScalar(22 * k).setY(Math.random() * 10);
       return sp;
     });
     const wave = new THREE.Mesh(new THREE.RingGeometry(0.93, 1, 64), this.additive(hot(0xffc27a, 2.5)));
     wave.rotation.x = -Math.PI / 2;
     wave.position.copy(at);
     this.scene.add(wave);
-    const debris = this.burst(at, hot(0xffd08a, 3), 70, 140, 6);
-    this.flash(at, 0xff9944, 4000, 900);
-    await this.tween(1100, (t) => {
+    const debris = this.burst(at, hot(0xffd08a, 3), medium ? 120 : 70, 140 * k, 6);
+    this.flash(at, 0xff9944, 4000 * k, 900 * k);
+    void this.wreckage(v, at, k);
+    if (medium) void this.shockwave(at, 0xffffff, 1.6);
+    await this.tween(1100 * (medium ? 1.45 : 1), (t) => {
       const e = 1 - Math.pow(1 - t, 3);
-      core.scale.setScalar(30 + 90 * Math.min(1, t * 4));
+      core.scale.setScalar((30 + 90 * Math.min(1, t * 4)) * k);
       core.material.opacity = Math.max(0, 1 - t * 3);
       fire.forEach((f, i) => {
         f.position.copy(at).addScaledVector(f.userData.off, e * (1.5 + i * 0.2));
-        f.scale.setScalar(20 + 70 * e);
+        f.scale.setScalar((20 + 70 * e) * k);
         f.material.opacity = (1 - t) * (1 - t);
       });
       smoke.forEach((sm) => {
         sm.position.copy(at).addScaledVector(sm.userData.off, e * 1.8);
-        sm.scale.setScalar(30 + 90 * e);
+        sm.scale.setScalar((30 + 90 * e) * k);
         sm.material.opacity = 0.7 * Math.sin(Math.min(1, t * 1.4) * Math.PI);
       });
-      wave.scale.setScalar(10 + 130 * e);
+      wave.scale.setScalar((10 + 130 * e) * k);
       (wave.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t * 1.6);
       debris.update(t);
       v.root.scale.setScalar(Math.max(0.001, 1 - t * 2.5));
@@ -1924,5 +2242,67 @@ export class BattleScene {
     this.scene.remove(v.root);
     v.label.element.remove();
     this.ships.delete(shipId);
+  }
+
+  /**
+   * Wreckage from a destroyed ship: hull fragments thrown out that tumble down onto the table, skid, drift
+   * a little and fade after a few seconds, some still smouldering. Runs on its own clock (not skipped,
+   * not awaited): it is scenery, and does not hold up the game.
+   */
+  private async wreckage(v: ShipView, at: THREE.Vector3, k: number) {
+    const n = Math.round(14 * k);
+    const metal = new THREE.MeshStandardMaterial({ color: 0x8a909a, metalness: 0.7, roughness: 0.5, flatShading: true, transparent: true });
+    const burnt = new THREE.MeshStandardMaterial({ color: 0x26262a, metalness: 0.4, roughness: 0.85, flatShading: true, transparent: true });
+    const team = new THREE.MeshStandardMaterial({ color: COLORS[v.owner] ?? 0xffffff, metalness: 0.4, roughness: 0.4, flatShading: true, transparent: true });
+    const geos = [new THREE.TetrahedronGeometry(1), new THREE.BoxGeometry(1.6, 0.35, 1), new THREE.BoxGeometry(2.2, 0.5, 0.5)];
+    const parts = Array.from({ length: n }, (_, i) => {
+      const m = new THREE.Mesh(geos[i % geos.length], i % 5 === 0 ? team : i % 2 ? burnt : metal);
+      const size = (2.5 + Math.random() * 4) * Math.sqrt(k);
+      m.scale.setScalar(size);
+      m.position.copy(at).add(new THREE.Vector3().randomDirection().multiplyScalar(4));
+      m.castShadow = true;
+      this.scene.add(m);
+      const a = Math.random() * Math.PI * 2, sp = (40 + Math.random() * 90) * k;
+      return {
+        m, rest: size * 0.3,
+        vel: new THREE.Vector3(Math.cos(a) * sp, 25 + Math.random() * 45, Math.sin(a) * sp),
+        spin: new THREE.Vector3().randomDirection().multiplyScalar(4 + Math.random() * 8),
+        hot: i % 3 === 0, // smoulders: embers and a thread of smoke
+      };
+    });
+    const life = 7, fadeFrom = 4.5;
+    let last = performance.now(), age = 0;
+    await new Promise<void>((done) => {
+      const step = () => {
+        const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        age += dt;
+        for (const p of parts) {
+          p.vel.y -= 160 * dt; // gravity (mm/s², tuned to look right at table scale)
+          p.m.position.addScaledVector(p.vel, dt);
+          if (p.m.position.y < p.rest) { // hit the table: bounce a little, skid, settle flat-ish
+            p.m.position.y = p.rest;
+            p.vel.y = Math.abs(p.vel.y) > 20 ? -p.vel.y * 0.3 : 0;
+            p.vel.x *= 0.6; p.vel.z *= 0.6;
+            p.spin.multiplyScalar(0.5);
+          }
+          const grounded = p.m.position.y <= p.rest + 0.01 && p.vel.y === 0;
+          if (grounded) { p.vel.x *= 1 - 1.2 * dt; p.vel.z *= 1 - 1.2 * dt; p.spin.multiplyScalar(1 - 2.5 * dt); } // drift to a stop
+          p.m.rotation.x += p.spin.x * dt; p.m.rotation.y += p.spin.y * dt; p.m.rotation.z += p.spin.z * dt;
+          if (p.hot && Math.random() < dt * (age < 2 ? 14 : 4)) {
+            const q = p.m.position;
+            if (age < 3.5) this.embers.spawn(q, new THREE.Vector3((Math.random() - 0.5) * 6, 8 + Math.random() * 8, (Math.random() - 0.5) * 6), 0.5, 4, 1.5, 0.9, hot(0xff8a30, 2.4), 1);
+            this.smoke.spawn(q, new THREE.Vector3((Math.random() - 0.5) * 4, 10 + Math.random() * 6, (Math.random() - 0.5) * 4), 2, 3, 14, 0.35 * (1 - age / life), this.tmpC.setHex(0x4a4b52));
+          }
+        }
+        const fade = age < fadeFrom ? 1 : Math.max(0, 1 - (age - fadeFrom) / (life - fadeFrom));
+        metal.opacity = burnt.opacity = team.opacity = fade;
+        if (age < life) requestAnimationFrame(step); else done();
+      };
+      requestAnimationFrame(step);
+    });
+    for (const p of parts) this.scene.remove(p.m);
+    geos.forEach((g) => g.dispose());
+    [metal, burnt, team].forEach((m) => m.dispose());
   }
 }
