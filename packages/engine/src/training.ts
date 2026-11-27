@@ -200,7 +200,7 @@ export const TRAINING: MissionDef[] = [
     player: [officer(cadet(380, 60, 'Cadet One')), cadet(540, 60, 'Wingmate')],
     enemy: [300, 457, 620].map((x, i) => ({ pilotId: 'grunt-seven', shipType: 'wasp', pose: at(x, 854, S), name: `Raider ${i + 1}` })),
     objectives: [{ id: 'squadron', label: 'Destroy the enemy squadron', kind: 'destroy' }],
-    triggers: [tip({ first: 'damageCard' }, 'Damage card', 'Hover the red tag on the ship\'s label to read what it does. Repairable cards show a Repair button in the action ring.')],
+    triggers: [tip({ first: 'damageCard' }, 'Damage card', 'Tap the red tag on the ship\'s label (or hover it with a mouse) to read what it does. Repairable cards show a Repair button in the action ring.')],
     maxRounds: 12,
   },
   {

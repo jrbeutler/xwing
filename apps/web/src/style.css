@@ -159,7 +159,11 @@ html.compact .chips.special-row { display: flex; }
 
 /* ---------- critical damage cards ---------- */
 .label .crits { display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; margin-top: 2px; }
-.label .crits span { font-size: 9px; font-weight: 700; letter-spacing: .04em; color: #ffd9cc; background: rgba(160, 40, 20, .85); border-radius: 3px; padding: 0 3px; }
+.label .crits .crit-tag { font: inherit; font-size: 9px; font-weight: 700; letter-spacing: .04em; color: #ffd9cc; background: rgba(160, 40, 20, .85);
+  border: 0; border-radius: 3px; padding: 0 3px; margin: 0; cursor: help; pointer-events: auto; position: relative; }
+/* A bigger finger target than the tag itself, without growing the label. */
+.label .crits .crit-tag::after { content: ''; position: absolute; inset: -8px -3px; }
+html.compact .label .crits .crit-tag { font-size: 10px; padding: 1px 4px; }
 .label .ion, .ion { color: #8fd3ff; }
 .crit-list { margin: 4px 0 6px; padding-left: 16px; font-size: 12px; color: var(--text); }
 .crit-list li { margin: 2px 0; } .crit-list b { color: #ff8a65; }
