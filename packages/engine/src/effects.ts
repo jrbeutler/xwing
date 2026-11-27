@@ -88,6 +88,13 @@ export function attackEffects<K extends 'rerollAttack' | 'rerollDefense' | 'canc
 }
 
 /**
+ * Range 0 (official rules): a primary attack cannot add attack dice, and the attacker cannot reduce the
+ * defender's dice. Whether a dice effect is blocked by that.
+ */
+const blockedAtRange0 = (e: OfKind<'dice'>, when: 'attacking' | 'defending', facts: AttackFacts) =>
+  facts.range === 0 && ((e.dice === 'attack' && e.delta > 0 && facts.primary) || (e.dice === 'defense' && e.delta < 0 && when === 'attacking'));
+
+/**
  * Net change to the attack or defense dice of an attack from both ships' `dice` effects: the attacker's
  * (`when: 'attacking'`) and the defender's (`when: 'defending'`). Either ship may be missing (no effects).
  */
@@ -96,7 +103,7 @@ export function diceDelta(dice: 'attack' | 'defense', facts: AttackFacts, attack
   for (const [sh, when] of [[attacker, 'attacking'], [defender, 'defending']] as const) {
     if (!sh) continue;
     for (const a of effectsOf(sh, 'dice')) {
-      if (a.effect.when === when && a.effect.dice === dice && matches(a.effect.if, facts) && charged(a)) d += a.effect.delta;
+      if (a.effect.when === when && a.effect.dice === dice && matches(a.effect.if, facts) && charged(a) && !blockedAtRange0(a.effect, when, facts)) d += a.effect.delta;
     }
   }
   return d;
@@ -108,7 +115,7 @@ export function diceSources(facts: AttackFacts, attacker?: ShipState, defender?:
   for (const [sh, when] of [[attacker, 'attacking'], [defender, 'defending']] as const) {
     if (!sh) continue;
     for (const a of effectsOf(sh, 'dice')) {
-      if (a.effect.when === when && matches(a.effect.if, facts) && charged(a) && !out.includes(a.source.id)) out.push(a.source.id);
+      if (a.effect.when === when && matches(a.effect.if, facts) && charged(a) && !blockedAtRange0(a.effect, when, facts) && !out.includes(a.source.id)) out.push(a.source.id);
     }
   }
   return out;

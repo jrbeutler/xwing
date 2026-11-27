@@ -132,7 +132,9 @@ within 0.5 mm (35, 63, 90). Base sizes (40/60/80 mm) and the bullseye width are 
 Checked and matching: stress (no red maneuvers or actions while stressed, red actions add one, blue
 maneuvers remove one); fleeing; obstruction (+1 defense die); one lock at a time; simultaneous fire; ion
 thresholds (1/2/3 by size), Focus-only while ionized, ion tokens cleared after the ion maneuver; barrel roll
-positions. Fixed to match: the ion maneuver is a blue speed-1 bank or straight in the dial's direction (was a
+positions; range 0 attacks (a primary attack at range 0 adds no attack dice and the attacker cannot modify its
+dice; the attacker cannot reduce, cancel or modify the defender's dice; `attackerMayModify`, `diceDelta`).
+Fixed to match: the ion maneuver is a blue speed-1 bank or straight in the dial's direction (was a
 white 1-straight), and becoming ionized breaks the ship's lock and stops it locking.
 
 Different from the official rules (house rules, or not built yet). The first two are deliberate:
@@ -144,8 +146,6 @@ Different from the official rules (house rules, or not built yet). The first two
   and rolls for damage; a gas cloud breaks locks, gives a strain token and rolls for 1 or 3 ion tokens; ships at
   range 0 of an obstacle cannot attack, and at range 0 of a gas cloud cannot lock or be locked. Ours are lighter
   versions (`OBSTACLE_RULES`).
-- Range 0 attacks (official): the attacker cannot add or modify attack dice, and the defender's dice cannot be
-  reduced, cancelled or modified by enemies. Not implemented.
 - Coordinate reaches range 1-2 officially; ours includes range 0.
 - Strain tokens are not implemented.
 

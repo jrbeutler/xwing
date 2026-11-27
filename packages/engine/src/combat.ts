@@ -175,12 +175,25 @@ export function attackFacts(t: ShotInfo, defender: ShipState, attacker?: ShipSta
   };
 }
 
+/** The range modifier to a primary attack's dice. At range 0 attack dice cannot be added (official rules). */
+const rangeAttackBonus = (range: number) => {
+  const m = RANGE_RULES.attack[range] ?? 0;
+  return range === 0 ? Math.min(0, m) : m;
+};
+
+/**
+ * Range 0 (official rules): while performing a primary attack at range 0 the attacker's dice cannot be
+ * modified (no focus, lock, calculate, rerolls or result changes), and the defender's results cannot be
+ * cancelled or modified by the attacker. Dice counts are handled in attackDiceFor / diceDelta.
+ */
+export const attackerMayModify = (attacker: ShipState, t: Pick<TargetInfo, 'range'>) => canModifyAttack(attacker) && t.range !== 0;
+
 /**
  * Attack dice for a shot: weapon value, range modifier (primary only), effects (when the defender is known),
  * minus damage-card penalties. Shared with attackOdds.
  */
 export const attackDiceFor = (attacker: ShipState, t: Pick<TargetInfo, 'attack'> & ShotInfo, defender?: ShipState) =>
-  Math.max(0, t.attack + (isPrimary(t) ? RANGE_RULES.attack[t.range] ?? 0 : 0) - attackDicePenalty(attacker)
+  Math.max(0, t.attack + (isPrimary(t) ? rangeAttackBonus(t.range) : 0) - attackDicePenalty(attacker)
     + (defender ? diceDelta('attack', attackFacts(t, defender, attacker), attacker, defender) : 0));
 /**
  * Defense dice: agility, range modifier (primary only), +1 obstructed, both ships' dice effects (Stealth Coating,
@@ -279,7 +292,7 @@ export function resolveAttack(state: GameState, attacker: ShipState, defender: S
   const plan = spendPlan(state, attacker, defender, t);
   const attackDice = attackDiceFor(attacker, t, defender);
   const defenseDice = defenseDiceFor(defender, t, attacker);
-  const mods = canModifyAttack(attacker);
+  const mods = attackerMayModify(attacker, t);
   const primary = isPrimary(t), weapon = weaponOf(t);
   const facts = attackFacts(t, defender, attacker);
   const diceBy = diceSources(facts, attacker, defender); // before the roll: damage can switch effects off (Stealth Coating)
@@ -465,7 +478,7 @@ export function attackOdds(
   // Note: dice odds only. Damage-card cascades (Direct Hit!, Fuel Leak...) are not included in `dist`.
   const attackDice = attackDiceFor(attacker, t, defender);
   const defenseDice = defenseDiceFor(defender, t, attacker);
-  const mods = canModifyAttack(attacker);
+  const mods = attackerMayModify(attacker, t);
   const aw = faceWeights(ATTACK_DIE, ATK_FACES), dw = faceWeights(DEFENSE_DIE, DEF_FACES);
   const reroll = (n: number, w: number[]) => (n ? faceCounts(n, w) : [{ counts: w.map(() => 0), p: 1 }]);
   const plus = (a: number[], b: number[]) => a.map((x, i) => x + b[i]);
