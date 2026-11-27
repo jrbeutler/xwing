@@ -98,6 +98,14 @@ export const actionAllowed = (sh: ShipState, type: ActionType) => !hasCard(sh, '
 export const repairableCards = (sh: ShipState): DamageCardId[] =>
   [...new Set(sh.crits)].filter((c) => DAMAGE_CARDS[c].repairable);
 
+/** Face-up cards from most to least harmful, for effects that repair "a card" of their own choosing. */
+export const REPAIR_PRIORITY: DamageCardId[] = [
+  'consoleFire', 'hullBreach', 'fuelLeak', 'weaponsFailure', 'blindedPilot', 'structuralDamage', 'damagedEngine',
+  'damagedSensorArray', 'disabledPowerRegulator', 'woundedPilot', 'looseStabilizer', 'stunnedPilot', 'panickedPilot', 'directHit',
+];
+/** The face-up card a repair effect fixes first, or undefined if the ship has none. */
+export const worstCard = (sh: ShipState): DamageCardId | undefined => REPAIR_PRIORITY.find((c) => sh.crits.includes(c)) ?? sh.crits[0];
+
 /** Remove one copy of a face-up card from a ship to the discard pile. */
 export function discardCard(s: GameState, sh: ShipState, id: DamageCardId) {
   const i = sh.crits.indexOf(id);

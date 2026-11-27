@@ -56,15 +56,20 @@ own charges), listed before the ship's upgrades; `effectSource(id)` names any so
 
 | Kind | What it does | Used by |
 |---|---|---|
-| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating; Mara Venn, Tobin Reyes, Kira Solace, Bram Holloway |
+| `dice` | ±N attack or defense dice while this ship attacks or defends | Outmaneuver, Stealth Coating, Autocannon; Mara Venn, Tobin Reyes, Kira Solace, Bram Holloway |
 | `rerollAttack` | Reroll up to N attack dice (blanks first, then focus results) | Marksman, Steady Gunner, Ordnance Specialist |
 | `rerollDefense` | Reroll up to N defense dice | Elusive |
 | `cancelEvade` | Cancel 1 of the defender's evade results | Crack Shot |
-| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`, `actionPerformed`, `attackHit`), if conditions hold (shields/charges below max, which action, an `AttackCondition`), run ops (`gainFocus`, `gainCalculate`, `stressDefender`, `recoverShield`, `recoverCharge`, `loseCharges`) | Hotshot, Elusive, Damage Control, Stealth Coating; Syl Ketch, Ilse Kord, Wren Tal, Drav Okono, Tessa Varn, Corin Hale |
-| `stat` | Flat bonus to a looked-up number (`jamRange`, `deviceCharges`) | Signal Jammer, Payload Expert |
+| `trigger` | On an event (`redManeuverExecuted`, `endPhase`, `damaged`, `actionPerformed`, `attackHit`), if conditions hold (shields/charges below max, a face-up damage card, which action, an `AttackCondition`), run ops (`gainFocus`, `gainCalculate`, `stressDefender`, `recoverShield`, `recoverCharge`, `loseCharges`, `repairCard`) | Hotshot, Elusive, Damage Control, Stealth Coating, Combat Medic, Repair Droid; Syl Ketch, Ilse Kord, Wren Tal, Drav Okono, Tessa Varn, Corin Hale |
+| `stat` | Flat bonus to a looked-up number or a switch (`jamRange`, `deviceCharges`, `coordinateRange`, `repairAny`, `keepActionOnObstacle`, `keepLock`) | Signal Jammer, Payload Expert, Tactical Officer, Patch Droid, Collision Scanner, Fire-Control System |
+| `action` | Adds an action to the ship's action bar (`actionBar`) | Tactical Officer (Coordinate), Targeting Computer (Calculate) |
+| `changeAttack` | Change up to N focus results to hits, free (before tokens; mirrored in `attackOdds`) | Gunnery Chief |
+| `bonusAttack` | After an attack that deals no damage, one bonus attack with a different weapon through the turret arc (a `bonus` attack decision) | Second Gunner |
+| `maneuverDifficulty` | Dial entries of some bearings and one difficulty are flown at another (`maneuverFor`) | Nav Droid |
+| `peekDial` | At the start of Activation, see the nearest enemy's dial within N bands (`dialSeenBy`; `viewFor` keeps it) | Intelligence Agent |
 
 Attack effects can be limited with an `AttackCondition` (primary, turret, bullseye, front arc, attacker
-outside the defender's arcs, defender stressed, a range of bands). `cost: 'charge'` spends one of the
+outside the defender's arcs, defender stressed, a range of bands, the weapon fired). `cost: 'charge'` spends one of the
 source's charges per use; `needsCharge` only requires one; `recurring` sources get 1 charge back in each
 End phase ("once per round"). Attack events list the sources whose dice effects changed the dice (`diceBy`). Dice effects are read by both `resolveAttack` and `attackOdds` through the same helpers,
 and `test/effects.test.ts` checks the two against each other for effects the shipped content doesn't use yet
@@ -105,7 +110,9 @@ Keep these rules so this stays cheap:
 ### Simplifications and to-do (rules)
 
 - Dice modification is **automatic** (talent reroll → lock reroll → focus → defender focus → evade), on purpose: per-shot prompts slow the game down too much. The attacker's side follows a `SpendPlan` (`combat.ts`): hold focus for defense while an enemy that hasn't fired can still shoot back (unless it turns 2+ dice or could kill), keep a lock for loaded lock-only ordnance rather than reroll one die, and spend nothing on a guaranteed kill. `attackOdds` mirrors it exactly. The defender's order already keeps the more valuable token (an evade token is worth more than focus on later attacks).
-- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, crew/astromech/sensor upgrade slots, and a scenario format (missions) that would lay out obstacles by design.
+- Not yet: force, tractor, strain/deplete tokens, SLAM, cloak, tech/illicit/title/configuration slots, and a scenario format (missions) that would lay out obstacles by design.
+- Upgrade slots by ship: Kestrel cannon, torpedo, droid, modification; Wasp sensor, modification; Javelin missile, droid, sensor, modification; Anvil turret, torpedo, missile, 2 device, droid, gunner, modification; Bulwark cannon, missile, turret, crew, gunner, sensor, 2 modification; Wayfarer missile, torpedo, turret, 2 device, crew, gunner, sensor, 2 modification.
+- The AI flies the new upgrades (they work automatically or through options it already weighs) but does not use what an Intelligence Agent shows it.
 - The AI checks the whole path of a maneuver for obstacles (the rules count flying through the same as landing on one), weighted asteroid > debris > gas, and looks one move ahead: it avoids ending nose-up to an obstacle when a short straight and both gentle banks would all hit one next round (`OBSTACLE_AVOID` in `ai.ts`). AI-vs-AI games average about half an obstacle contact per game (down from about 10). It does not predict bumps, so it may skip a move that a collision would have stopped short of an obstacle.
 - Jam strips Focus, then Evade, Calculate, Reinforce, then a lock; a jam token cancels the next token of any of those kinds.
 - The AI weighs Calculate, Reinforce and Reload with the same exact-odds valuation as Focus/Evade/Lock, and takes a red linked action only when it is worth more than a stress (`TOKEN_WEIGHTS.stress`).

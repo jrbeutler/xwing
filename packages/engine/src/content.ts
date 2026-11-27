@@ -28,7 +28,7 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     primaries: [{ arc: 'front', attack: 3 }], agility: 2, hull: 4, shields: 2,
     actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'barrelRoll' }],
     dial: parseDial('1BL:b 1S:b 1BR:b 2TL:w 2BL:b 2S:b 2BR:b 2TR:w 3TL:w 3BL:w 3S:b 3BR:w 3TR:w 4S:w 4K:r'),
-    slots: ['torpedo', 'modification'],
+    slots: ['cannon', 'torpedo', 'droid', 'modification'],
   },
   wasp: {
     id: 'wasp', name: 'Wasp Interceptor', size: 'small', class: 'fighter', cost: 17,
@@ -36,7 +36,7 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     // Barrel roll → red Evade: dodge, then brace.
     actions: [{ type: 'focus' }, { type: 'evade' }, { type: 'lock' }, { type: 'barrelRoll', linked: { type: 'evade', red: true } }, { type: 'boost' }],
     dial: parseDial('1TL:w 1TR:w 2TL:w 2BL:b 2S:b 2BR:b 2TR:w 3TL:w 3BL:w 3S:b 3BR:w 3TR:w 3RL:r 3RR:r 4S:b 5S:w 4K:r'),
-    slots: ['modification'],
+    slots: ['sensor', 'modification'],
   },
   bulwark: {
     id: 'bulwark', name: 'Bulwark Gunship', size: 'medium', class: 'freighter', cost: 28,
@@ -45,7 +45,7 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     // lets a nearby friend act at once.
     actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'reinforce' }, { type: 'coordinate' }, { type: 'boost', red: true }],
     dial: parseDial('0X:r 1TL:r 1BL:b 1S:b 1BR:b 1TR:r 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3BL:w 3S:w 3BR:w 4S:w 1RS:r 2SL:r 2SR:r'),
-    slots: ['missile', 'turret', 'modification', 'modification'],
+    slots: ['cannon', 'missile', 'turret', 'crew', 'gunner', 'sensor', 'modification', 'modification'],
   },
   // Bomber class. Stats, actions and dial follow the X-Wing 2nd edition BTL-A4 Y-wing: tough (6 hull,
   // 2 shields) but slow to turn, with a red barrel roll and Reload (recover an ordnance or bomb charge,
@@ -56,7 +56,7 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     actions: [{ type: 'focus' }, { type: 'lock' }, { type: 'barrelRoll', red: true }, { type: 'reload' }],
     dial: parseDial('1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:w 3BR:w 3TR:r 4S:r 4K:r'),
     // Y-wing style: turret, ordnance and two device (bomb) slots.
-    slots: ['turret', 'torpedo', 'missile', 'device', 'device', 'modification'],
+    slots: ['turret', 'torpedo', 'missile', 'device', 'device', 'droid', 'gunner', 'modification'],
   },
   // Light freighter. Stats and dial follow the X-Wing 2nd edition HWK-290, but on a medium base like the
   // Bulwark: its primary weapon fires through a turret arc (turned with the Rotate action), it can Jam an
@@ -70,7 +70,7 @@ export const SHIP_TYPES: Record<string, ShipType> = {
       { type: 'calculate' }, { type: 'jam' }, { type: 'boost', red: true },
     ],
     dial: parseDial('0X:r 1BL:b 1S:b 1BR:b 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3TL:r 3BL:w 3S:b 3BR:w 3TR:r 4S:w'),
-    slots: ['missile', 'torpedo', 'turret', 'device', 'device', 'modification', 'modification'],
+    slots: ['missile', 'torpedo', 'turret', 'device', 'device', 'crew', 'gunner', 'sensor', 'modification', 'modification'],
   },
   // Fast interceptor. Stats, actions and dial follow the X-Wing 2nd edition RZ-1 A-wing: fragile but very
   // agile (agility 3), white focus/evade/lock/barrel roll/boost, a blue-heavy dial with 5-straight and red loops.
@@ -80,7 +80,7 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     primaries: [{ arc: 'front', attack: 2 }], agility: 3, hull: 2, shields: 2,
     actions: [{ type: 'focus' }, { type: 'evade' }, { type: 'lock' }, { type: 'barrelRoll' }, { type: 'boost', linked: { type: 'focus', red: true } }],
     dial: parseDial('1TL:w 1TR:w 2TL:b 2BL:b 2S:b 2BR:b 2TR:b 3SL:r 3TL:w 3BL:w 3S:b 3BR:w 3TR:w 3SR:r 4S:b 5S:b 5K:r'),
-    slots: ['missile', 'modification'],
+    slots: ['missile', 'droid', 'sensor', 'modification'],
   },
 };
 
@@ -274,6 +274,82 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   'proximity-mine': {
     id: 'proximity-mine', name: 'Proximity Mine', slot: 'device', cost: 6, charges: 2, device: { kind: 'mine', effect: 'proximity' },
     text: 'Drop behind you in the System phase. It stays until a ship moves through or onto it: that ship rolls 2 attack dice and takes 1 damage per hit or crit.',
+  },
+  // Cannons: front-arc secondary weapons with no charges, so they never run dry.
+  'heavy-laser-cannon': {
+    id: 'heavy-laser-cannon', name: 'Heavy Laser Cannon', slot: 'cannon', cost: 7,
+    weapon: { attack: 4, minRange: 2, maxRange: 3, bullseyeOnly: true },
+    text: 'Attack 4, range 2-3, only at a ship in your bullseye.',
+  },
+  'ion-cannon': {
+    id: 'ion-cannon', name: 'Ion Cannon', slot: 'cannon', cost: 5,
+    weapon: { attack: 3, minRange: 1, maxRange: 3, effect: 'ion' },
+    text: 'Attack 3, range 1-3. If it hits: 1 damage, and every other hit is an ion token instead.',
+  },
+  autocannon: {
+    id: 'autocannon', name: 'Autocannon', slot: 'cannon', cost: 4,
+    weapon: { attack: 2, minRange: 1, maxRange: 2 },
+    text: 'Attack 2, range 1-2. The defender rolls 1 fewer defense die.',
+    effects: [{ kind: 'dice', when: 'attacking', dice: 'defense', delta: -1, if: { weapon: 'autocannon' } }],
+  },
+  // Crew: a second person aboard (medium ships).
+  'tactical-officer': {
+    id: 'tactical-officer', name: 'Tactical Officer', slot: 'crew', cost: 4,
+    text: 'Adds the Coordinate action (a friendly ship performs an action now), and your Coordinate reaches range 3.',
+    effects: [{ kind: 'action', action: { type: 'coordinate' } }, { kind: 'stat', stat: 'coordinateRange', delta: 1 }],
+  },
+  'combat-medic': {
+    id: 'combat-medic', name: 'Combat Medic', slot: 'crew', cost: 5, charges: 1,
+    text: 'Once per battle, in the End phase, repair your worst face-up damage card (any card).',
+    effects: [{ kind: 'trigger', on: 'endPhase', cost: 'charge', if: { hasDamageCard: true }, do: [{ op: 'repairCard' }], log: 'used' }],
+  },
+  'intelligence-agent': {
+    id: 'intelligence-agent', name: 'Intelligence Agent', slot: 'crew', cost: 3,
+    text: 'At the start of the Activation phase, see the dial of the nearest enemy at range 1-3.',
+    effects: [{ kind: 'peekDial', range: 3 }],
+  },
+  // Gunners: second chances with the ship's guns.
+  'second-gunner': {
+    id: 'second-gunner', name: 'Second Gunner', slot: 'gunner', cost: 6,
+    text: 'After an attack that deals no damage, make a bonus attack with a different weapon through your turret arc.',
+    effects: [{ kind: 'bonusAttack' }],
+  },
+  'gunnery-chief': {
+    id: 'gunnery-chief', name: 'Gunnery Chief', slot: 'gunner', cost: 4,
+    text: 'When attacking through your turret arc, change 1 focus result to a hit.',
+    effects: [{ kind: 'changeAttack', dice: 1, if: { turret: true } }],
+  },
+  // Droids: a small ship's repairs and flight help.
+  'repair-droid': {
+    id: 'repair-droid', name: 'Repair Droid', slot: 'droid', cost: 6, charges: 1, recurring: true,
+    text: 'Once per round, in the End phase, if your shields are below their maximum, recover 1 shield.',
+    effects: [{ kind: 'trigger', on: 'endPhase', cost: 'charge', if: { shieldsBelowMax: true }, do: [{ op: 'recoverShield' }], log: 'used' }],
+  },
+  'patch-droid': {
+    id: 'patch-droid', name: 'Patch Droid', slot: 'droid', cost: 3,
+    text: 'Your Repair action can fix any face-up damage card, not only repairable ones.',
+    effects: [{ kind: 'stat', stat: 'repairAny', delta: 1 }],
+  },
+  'nav-droid': {
+    id: 'nav-droid', name: 'Nav Droid', slot: 'droid', cost: 4,
+    text: 'Your red banks and turns are white.',
+    effects: [{ kind: 'maneuverDifficulty', bearings: ['bankLeft', 'bankRight', 'turnLeft', 'turnRight'], from: 'red', to: 'white' }],
+  },
+  // Sensors: locks and information.
+  'fire-control-system': {
+    id: 'fire-control-system', name: 'Fire-Control System', slot: 'sensor', cost: 3,
+    text: 'When you reroll attack dice with a lock, keep the lock.',
+    effects: [{ kind: 'stat', stat: 'keepLock', delta: 1 }],
+  },
+  'targeting-computer': {
+    id: 'targeting-computer', name: 'Targeting Computer', slot: 'sensor', cost: 3,
+    text: 'Adds the Calculate action: a token that changes 1 focus result (a hit attacking, an evade defending).',
+    effects: [{ kind: 'action', action: { type: 'calculate' } }],
+  },
+  'collision-scanner': {
+    id: 'collision-scanner', name: 'Collision Scanner', slot: 'sensor', cost: 2,
+    text: 'Touching an obstacle never costs you your action.',
+    effects: [{ kind: 'stat', stat: 'keepActionOnObstacle', delta: 1 }],
   },
   // Modifications (stat boosts).
   'hull-plating': {

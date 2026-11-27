@@ -20,6 +20,7 @@ export interface BattleSetup { budget: number; versus: Versus; player: Squad; op
 const BUDGETS = [50, 75, 100, 150];
 const SLOT_LABEL: Record<SlotType, string> = {
   talent: 'Talent', modification: 'Modification', missile: 'Missile', torpedo: 'Torpedo', turret: 'Turret', device: 'Bomb',
+  cannon: 'Cannon', crew: 'Crew', gunner: 'Gunner', droid: 'Droid', sensor: 'Sensor',
 };
 const CLASS_LABEL: Record<ShipClass, string> = { fighter: 'Fighter', bomber: 'Bomber', freighter: 'Freighter' };
 const CLASSES: ShipClass[] = ['fighter', 'bomber', 'freighter'];

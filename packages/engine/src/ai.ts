@@ -9,7 +9,7 @@ import { actionOptions, activeShips, coordinatedOptions, ION_MANEUVER, isIonized
 import type { DamageCardId } from './damage';
 import { basePolygon, polygonDistance, polygonsOverlap } from './geometry';
 import { nextFloat } from './rng';
-import { charged, effectsOf } from './effects';
+import { actionBar, charged, effectsOf } from './effects';
 import type { ActionChoice, ActionType, ArcName, ObstacleKind, Command, DropChoice, GameState, PlayerId, ShipState, TargetInfo } from './types';
 
 /**
@@ -287,7 +287,7 @@ function repositionValue(s: GameState, sh: ShipState, o: Reposition): number {
   const moved: GameState = { ...s, ships: s.ships.map((x) => (x.id === sh.id ? me : x)) };
   let v = bestShotWeighted(moved, me, W.unmoved) - bestShotWeighted(s, sh, W.unmoved)
     + W.defense * (threatsTo(s, sh, W.unmoved)(sh) - threatsTo(moved, me, W.unmoved)(me));
-  const def = shipType(sh).actions.find((a) => a.type === o.type);
+  const def = actionBar(sh).find((a) => a.type === o.type);
   if (def?.red) v -= W.stress;
   // The linked action it opens (e.g. a red Evade after a roll), valued from the new position.
   if (def?.linked) {
@@ -316,7 +316,7 @@ function coordinateChoice(s: GameState, sh: ShipState, options: ActionChoice[]):
     const t = s.ships.find((x) => x.id === o.targetId)!;
     const best = tokenChoice(s, t, coordinatedOptions(s, t));
     if (!best) return 0;
-    const red = shipType(t).actions.find((a) => a.type === best.o.type)?.red;
+    const red = actionBar(t).find((a) => a.type === best.o.type)?.red;
     return best.v - (red ? TOKEN_WEIGHTS.stress : 0);
   };
   const best = coords.map((o) => ({ o, v: worth(o) })).sort((a, b) => b.v - a.v)[0];
