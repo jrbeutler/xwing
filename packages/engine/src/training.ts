@@ -91,7 +91,7 @@ export const TRAINING: MissionDef[] = [
     id: 'training-2', number: 2, title: 'Target Drones', teaches: 'Firing arcs, range and attacking',
     briefing: [
       'After everyone moves, ships attack in the Engagement phase. You can shoot ships inside your firing arc (the cone in front of your ship) out to range 4.',
-      'Range matters: range 2 is the sweet spot (an extra attack die), range 1 costs you a die, at range 4 the target gets an extra defense die.',
+      'Range matters: range 2 is the sweet spot (an extra shot), range 1 costs you a shot, at range 4 the target gets an extra dodge.',
       'Destroy the three drones. They fly slowly and never shoot back.',
     ],
     ruleset: ATTACKS, obstacles: [],
@@ -102,7 +102,7 @@ export const TRAINING: MissionDef[] = [
     objectives: [{ id: 'drones', label: 'Destroy the drones', kind: 'destroy', tag: 'drone' }],
     triggers: [
       tip({ roundStart: 1 }, 'Line up a shot', 'When you pick a maneuver, the odds of hitting each drone from where you would end up appear over it.'),
-      tip({ first: 'attack' }, 'Dice', 'Red dice attack, green dice defend. Each evade cancels one hit; what is left damages shields first, then hull.'),
+      tip({ first: 'attack' }, 'Shots and dodges', 'Each attack fires a few shots, each with about a 50% chance to hit. The target gets one dodge per point of agility, each with about a 38% chance to cancel a hit. Hits that get through damage shields first, then hull.'),
     ],
     maxRounds: 15,
   },
@@ -110,8 +110,8 @@ export const TRAINING: MissionDef[] = [
     id: 'training-3', number: 3, title: 'First Duel', teaches: 'Focus and Evade',
     briefing: [
       'After moving, each ship may perform one action. Two actions to start:',
-      'Focus: in an attack or defense, turn all your focus (eye) results into hits or evades.',
-      'Evade: add an evade result to your next defense roll.',
+      'Focus: about 1 in 4 shots or dodges is a close call. Focus turns every close call into a hit or an evade, so your shots hit 75% of the time instead of 50%.',
+      'Evade: the next time you are shot, one hit is cancelled automatically.',
       'Your sparring partner shoots back. Destroy it.',
     ],
     ruleset: TOKENS, obstacles: [],
@@ -128,7 +128,7 @@ export const TRAINING: MissionDef[] = [
     id: 'training-4', number: 4, title: 'Wingmen', teaches: 'Lock and initiative',
     briefing: [
       'Ships move in initiative order, lowest first, and attack highest first. Ties go to you this time.',
-      'Lock: pick an enemy. When you attack it, you may reroll any of your attack dice, which spends the lock. It lasts until you use it.',
+      'Lock: pick an enemy. When you attack it, your missed shots get a second try, which spends the lock. It lasts until you use it.',
       'Two against two. Destroy both enemy ships.',
     ],
     ruleset: LOCKS, obstacles: [],
@@ -141,8 +141,8 @@ export const TRAINING: MissionDef[] = [
   {
     id: 'training-5', number: 5, title: 'Rock Field', teaches: 'Obstacles',
     briefing: [
-      'Asteroids are dangerous: flying through or onto one rolls a die that can damage you, and you lose your action.',
-      'They also block shots: an attack through an asteroid gives the defender an extra die.',
+      'Asteroids are dangerous: flying through or onto one has a 50% chance to damage you, and you lose your action.',
+      'They also block shots: an attack through an asteroid gives the defender an extra dodge.',
       'Fight through the field. Destroy both enemy ships.',
     ],
     ruleset: LOCKS, obstacles: asteroids(5505, 5),
@@ -176,7 +176,7 @@ export const TRAINING: MissionDef[] = [
   {
     id: 'training-7', number: 7, title: 'Attrition', teaches: 'Critical damage',
     briefing: [
-      'A critical hit (the burst on a red die) that reaches the hull deals a damage card: a lasting problem such as a fire or a damaged engine.',
+      'A critical hit (about 1 shot in 8) that reaches the hull deals a damage card: a lasting problem such as a fire or a damaged engine.',
       'Some cards can be fixed with the Repair action. The card\'s effect is listed on the ship.',
       'Two against three. Destroy the enemy squadron.',
     ],

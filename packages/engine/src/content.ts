@@ -9,15 +9,15 @@ import type { ObstacleKind, ObstacleRule, PilotDef, ShipType, UpgradeDef } from 
  */
 export const OBSTACLE_RULES: Record<ObstacleKind, ObstacleRule> = {
   asteroid: {
-    name: 'Asteroid', text: 'Roll 1 attack die: a hit deals 1 damage, a crit 1 critical damage. You skip your action.',
+    name: 'Asteroid', text: '50% chance of 1 damage (13% chance it is critical). You skip your action.',
     stress: 0, hitOn: ['hit'], critOn: ['crit'], ionOn: [], skipAction: true,
   },
   debris: {
-    name: 'Debris field', text: 'Gain 1 stress, then roll 1 attack die: a crit deals 1 critical damage.',
+    name: 'Debris field', text: 'Gain 1 stress, then a 13% chance of 1 critical damage.',
     stress: 1, hitOn: [], critOn: ['crit'], ionOn: [], skipAction: false,
   },
   gas: {
-    name: 'Gas cloud', text: 'Roll 1 attack die: anything but a blank gives you 1 ion token. You keep your action.',
+    name: 'Gas cloud', text: '75% chance of 1 ion token. You keep your action.',
     stress: 0, hitOn: [], critOn: [], ionOn: ['hit', 'crit', 'focus'], skipAction: false,
   },
 };
@@ -93,7 +93,7 @@ export const PILOTS: Record<string, PilotDef> = {
   'mara-venn': {
     id: 'mara-venn', name: 'Mara Venn', specialty: 'fighter', ship: 'wasp', initiative: 5, cost: 14, unique: true, talents: ['elusive'],
     ability: {
-      name: 'Long-Range Dodger', text: 'While you defend at range 3-4, roll 1 extra defense die.',
+      name: 'Long-Range Dodger', text: 'While you defend at range 3-4, get 1 extra dodge.',
       effects: [{ kind: 'dice', when: 'defending', dice: 'defense', delta: 1, if: { range: [3, 4] } }],
     },
   },
@@ -108,7 +108,7 @@ export const PILOTS: Record<string, PilotDef> = {
   'tobin-reyes': {
     id: 'tobin-reyes', name: 'Tobin Reyes', specialty: 'fighter', ship: 'kestrel', initiative: 4, cost: 12, unique: true, talents: ['marksman'],
     ability: {
-      name: 'Press the Attack', text: 'While you perform a primary attack against a stressed ship, roll 1 extra attack die.',
+      name: 'Press the Attack', text: 'While you perform a primary attack against a stressed ship, fire 1 extra shot.',
       effects: [{ kind: 'dice', when: 'attacking', dice: 'attack', delta: 1, if: { primary: true, defenderStressed: true } }],
     },
   },
@@ -123,7 +123,7 @@ export const PILOTS: Record<string, PilotDef> = {
   'kira-solace': {
     id: 'kira-solace', name: 'Kira Solace', specialty: 'fighter', ship: 'javelin', initiative: 5, cost: 16, unique: true, talents: ['outmaneuver'],
     ability: {
-      name: 'Ambush', text: "While you perform a primary front-arc attack from outside the defender's firing arcs, roll 1 extra attack die.",
+      name: 'Ambush', text: "While you perform a primary front-arc attack from outside the defender's firing arcs, fire 1 extra shot.",
       effects: [{ kind: 'dice', when: 'attacking', dice: 'attack', delta: 1, if: { primary: true, frontArc: true, outsideDefenderArcs: true } }],
     },
   },
@@ -138,7 +138,7 @@ export const PILOTS: Record<string, PilotDef> = {
   'bram-holloway': {
     id: 'bram-holloway', name: 'Bram Holloway', specialty: 'bomber', ship: 'anvil', initiative: 4, cost: 11, unique: true, talents: ['payload-expert'],
     ability: {
-      name: 'Torpedo Run', text: 'While you attack with a missile or torpedo at range 3, roll 1 extra attack die.',
+      name: 'Torpedo Run', text: 'While you attack with a missile or torpedo at range 3, fire 1 extra shot.',
       effects: [{ kind: 'dice', when: 'attacking', dice: 'attack', delta: 1, if: { primary: false, turret: false, range: [3, 3] } }],
     },
   },
@@ -177,17 +177,17 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   // Fighter talents follow X-Wing 2nd edition talents.
   marksman: {
     id: 'marksman', name: 'Marksman', slot: 'talent', cost: 3, classes: ['fighter', 'bomber'],
-    text: 'When attacking a ship in your bullseye, reroll 1 attack die.',
+    text: 'When attacking a ship in your bullseye, re-fire 1 missed shot.',
     effects: [{ kind: 'rerollAttack', dice: 1, if: { primary: true, turret: false, bullseye: true } }],
   },
   'crack-shot': {
     id: 'crack-shot', name: 'Crack Shot', slot: 'talent', cost: 2, classes: ['fighter'], charges: 1,
-    text: 'Once per battle, when attacking a ship in your bullseye, cancel 1 of its evade results.',
+    text: 'Once per battle, when attacking a ship in your bullseye, cancel 1 of its successful dodges.',
     effects: [{ kind: 'cancelEvade', cost: 'charge', if: { primary: true, bullseye: true } }],
   },
   elusive: {
     id: 'elusive', name: 'Elusive', slot: 'talent', cost: 3, classes: ['fighter'], charges: 1,
-    text: 'When defending, spend the charge to reroll 1 defense die. Recover it after you fully execute a red maneuver.',
+    text: 'When defending, spend the charge to retry 1 failed dodge. Recover it after you fully execute a red maneuver.',
     effects: [
       { kind: 'rerollDefense', dice: 1, cost: 'charge' },
       { kind: 'trigger', on: 'redManeuverExecuted', if: { chargesBelowMax: true }, do: [{ op: 'recoverCharge' }], log: 'recovered' },
@@ -195,7 +195,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   outmaneuver: {
     id: 'outmaneuver', name: 'Outmaneuver', slot: 'talent', cost: 5, classes: ['fighter'],
-    text: "Your front-arc attacks from outside the defender's firing arc make it roll 1 fewer defense die.",
+    text: "Your front-arc attacks from outside the defender's firing arc give it 1 fewer dodge.",
     effects: [{ kind: 'dice', when: 'attacking', dice: 'defense', delta: -1, if: { frontArc: true, outsideDefenderArcs: true } }],
   },
   hotshot: {
@@ -206,7 +206,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   // Bomber talents.
   'ordnance-specialist': {
     id: 'ordnance-specialist', name: 'Ordnance Specialist', slot: 'talent', cost: 3, classes: ['bomber'],
-    text: 'When attacking with a missile or torpedo, reroll 1 attack die.',
+    text: 'When attacking with a missile or torpedo, re-fire 1 missed shot.',
     effects: [{ kind: 'rerollAttack', dice: 1, if: { primary: false, turret: false } }],
   },
   'payload-expert': {
@@ -217,7 +217,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   // Freighter talents.
   'steady-gunner': {
     id: 'steady-gunner', name: 'Steady Gunner', slot: 'talent', cost: 3, classes: ['freighter'],
-    text: 'When attacking through your turret arc, reroll 1 attack die.',
+    text: 'When attacking through your turret arc, re-fire 1 missed shot.',
     effects: [{ kind: 'rerollAttack', dice: 1, if: { turret: true } }],
   },
   'signal-jammer': {
@@ -273,7 +273,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   'proximity-mine': {
     id: 'proximity-mine', name: 'Proximity Mine', slot: 'device', cost: 6, charges: 2, device: { kind: 'mine', effect: 'proximity' },
-    text: 'Drop behind you in the System phase. It stays until a ship moves through or onto it: that ship rolls 2 attack dice and takes 1 damage per hit or crit.',
+    text: 'Drop behind you in the System phase. It stays until a ship moves through or onto it: that ship takes 2 shots, each with a 50% chance to deal 1 damage.',
   },
   // Cannons: front-arc secondary weapons with no charges, so they never run dry.
   'heavy-laser-cannon': {
@@ -289,7 +289,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   autocannon: {
     id: 'autocannon', name: 'Autocannon', slot: 'cannon', cost: 3,
     weapon: { attack: 2, minRange: 1, maxRange: 2 },
-    text: 'Attack 2, range 1-2. The defender rolls 1 fewer defense die.',
+    text: 'Attack 2, range 1-2. The defender gets 1 fewer dodge.',
     effects: [{ kind: 'dice', when: 'attacking', dice: 'defense', delta: -1, if: { weapon: 'autocannon' } }],
   },
   // Crew: a second person aboard (medium ships).
@@ -316,7 +316,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   'gunnery-chief': {
     id: 'gunnery-chief', name: 'Gunnery Chief', slot: 'gunner', cost: 3,
-    text: 'When attacking through your turret arc, change 1 focus result to a hit.',
+    text: 'When attacking through your turret arc, turn 1 close call into a hit.',
     effects: [{ kind: 'changeAttack', dice: 1, if: { turret: true } }],
   },
   // Droids: a small ship's repairs and flight help.
@@ -338,12 +338,12 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   // Sensors: locks and information.
   'fire-control-system': {
     id: 'fire-control-system', name: 'Fire-Control System', slot: 'sensor', cost: 5,
-    text: 'When you reroll attack dice with a lock, keep the lock.',
+    text: 'When you re-fire missed shots with a lock, keep the lock.',
     effects: [{ kind: 'stat', stat: 'keepLock', delta: 1 }],
   },
   'targeting-computer': {
     id: 'targeting-computer', name: 'Targeting Computer', slot: 'sensor', cost: 2,
-    text: 'Adds the Calculate action: a token that changes 1 focus result (a hit attacking, an evade defending).',
+    text: 'Adds the Calculate action: a token that turns 1 close call into a hit when attacking, or an evade when defending.',
     effects: [{ kind: 'action', action: { type: 'calculate' } }],
   },
   'collision-scanner': {
@@ -362,7 +362,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   'stealth-coating': {
     id: 'stealth-coating', name: 'Stealth Coating', slot: 'modification',
-    text: 'Roll 1 extra defense die until you first take damage.', cost: { small: 4, medium: 6, large: 8 }, charges: 1,
+    text: 'Get 1 extra dodge until you first take damage.', cost: { small: 4, medium: 6, large: 8 }, charges: 1,
     effects: [
       { kind: 'dice', when: 'defending', dice: 'defense', delta: 1, needsCharge: true },
       { kind: 'trigger', on: 'damaged', needsCharge: true, do: [{ op: 'loseCharges' }], log: 'spent' },

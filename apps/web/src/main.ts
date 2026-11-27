@@ -1094,11 +1094,16 @@ async function showDamageCard(e: Extract<GameEvent, { type: 'damageCard' }>) {
   } else if (e.what === 'triggered') {
     const dmg = (e.hullDamage ?? 0) + (e.shieldDamage ?? 0);
     const extra = dmg ? ` −${dmg}` : e.stress ? ' +stress' : e.ion ? ' ION' : '';
-    await scene.floatText(e.shipId, `${c.tag}${e.roll ? ` (${e.roll})` : ''}${extra}`, 'crit-float');
+    await scene.floatText(e.shipId, `${c.tag}${e.roll ? ` (${faceWord(e.roll)})` : ''}${extra}`, 'crit-float');
   } else if (e.what === 'repaired') {
     await scene.floatText(e.shipId, `REPAIRED ${c.tag}`, 'repair-float');
   }
 }
+
+/** How a single shot landed, for the log: the engine's die faces in plain words. */
+const faceWord = (f: string) => (f === 'crit' ? 'critical hit' : f === 'hit' ? 'hit' : 'miss');
+/** "1 shot" / "3 shots". */
+const shots = (n: number) => `${n} shot${n === 1 ? '' : 's'}`;
 
 /** Plain-language outcome of an attack (no dice). */
 function attackOutcome(e: AttackEvent) {
@@ -1302,7 +1307,7 @@ function describe(e: GameEvent): string | null {
       : `${nameHtml(e.shipId)} performs ${actionText(e.action)}${e.linked ? ' (linked)' : ''}${e.coordinatedBy ? ` (coordinated by ${nameHtml(e.coordinatedBy)})` : ''}`;
     case 'obstacleHit': {
       const dmg = e.shieldDamage + e.hullDamage;
-      const parts = [`rolls ${e.result}`, e.stress ? `${e.stress} stress` : '', dmg ? `${dmg} damage` : '', e.ion ? '1 ion' : ''].filter(Boolean);
+      const parts = [faceWord(e.result), e.stress ? `${e.stress} stress` : '', dmg ? `${dmg} damage` : '', e.ion ? '1 ion' : ''].filter(Boolean);
       const skip = OBSTACLE_RULES[e.kind].skipAction ? '; no action' : '';
       return `${nameHtml(e.shipId)} hits ${/^[AEIOU]/.test(OBSTACLE_RULES[e.kind].name) ? 'an' : 'a'} ${OBSTACLE_RULES[e.kind].name.toLowerCase()} (${parts.join(', ')}${skip})`;
     }
@@ -1310,7 +1315,7 @@ function describe(e: GameEvent): string | null {
       const o = attackOutcome(e);
       const talents = [...(e.diceBy ?? []), ...e.spent.map((t) => t.split(':')[1])].filter((t) => effectSource(t)).map((t) => effectSource(t)!.name);
       if (e.spent.some((t) => t.endsWith(':calculate'))) talents.push('calculate');
-      if (e.reinforced) talents.push('reinforced: 1 result cancelled');
+      if (e.reinforced) talents.push('reinforced: 1 hit blocked');
       // Tokens the dice policy kept on purpose: focus held for defense, a lock saved for later.
       const kept = (e.kept ?? []).map((t) => (t === 'attacker:focus' ? 'holds focus' : 'keeps lock'));
       return `${nameHtml(e.attackerId)} fires ${e.weapon ? `${UPGRADES[e.weapon].name} ` : ''}at ${nameHtml(e.defenderId)} (range ${e.range}${e.obstructed ? ', obstructed' : ''}${talents.length ? `; ${talents.join(', ')}` : ''}${kept.length ? `; ${kept.join(', ')}` : ''}): ` +
@@ -1322,7 +1327,7 @@ function describe(e: GameEvent): string | null {
       if (e.what === 'dealt') return `⚠ ${nameHtml(e.shipId)} takes critical damage: <b>${c.title}</b> — ${c.text}`;
       if (e.what === 'repaired') return `${nameHtml(e.shipId)} repairs ${c.title}`;
       if (e.what === 'triggered') {
-        const parts = [e.roll ? `rolls ${e.roll}` : '', dmg ? `${dmg} damage` : '', e.stress ? `${e.stress} stress` : '', e.ion ? 'ionized' : ''].filter(Boolean);
+        const parts = [e.roll ? faceWord(e.roll) : '', dmg ? `${dmg} damage` : '', e.stress ? `${e.stress} stress` : '', e.ion ? 'ionized' : ''].filter(Boolean);
         return `${nameHtml(e.shipId)}: ${c.title}${parts.length ? ` (${parts.join(', ')})` : ''}`;
       }
       return null;
@@ -1341,7 +1346,7 @@ function describe(e: GameEvent): string | null {
     case 'deviceDetonated': {
       const name = UPGRADES[e.device.upgrade].name;
       if (!e.ships.length) return `${name} detonates: nobody in range`;
-      return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (rolled ${h.roll.join(', ')})` : ''}`).join('; ');
+      return `${name} detonates: ` + e.ships.map((h) => `${nameHtml(h.shipId)} ${h.ion ? `+${h.ion} ion` : `${h.shieldDamage + h.hullDamage} damage`}${h.roll ? ` (${h.roll.map(faceWord).join(', ')})` : ''}`).join('; ');
     }
     case 'jam': {
       const what = { focus: 'its Focus', evade: 'its Evade', calculate: 'its Calculate', reinforce: 'its Reinforce', lock: 'its lock', jammed: '' }[e.effect];
@@ -2278,10 +2283,10 @@ const ACTION_SNAP = 45;
 /** `linked`: this is the linked action offered after another one (only its options, maybe red). */
 /** What each action does, for the action ring's help popup (hover with a mouse, hold with a finger). */
 const ACTION_HELP: Record<string, string> = {
-  focus: 'Gain a focus token. When you attack, every focus result becomes a hit; when you defend, every focus result becomes an evade. It is spent for you when it helps, and lasts until the end of the round.',
-  evade: 'Gain an evade token. When you defend, it adds an evade result, cancelling one hit. Lasts until the end of the round.',
-  calculate: 'Gain a calculate token. It changes <b>one</b> focus result: to a hit when you attack, or an evade when you defend. Weaker than Focus (one die instead of all of them), but cheap insurance. Lasts until the end of the round.',
-  lock: 'Lock onto an enemy (any range, no arc needed). Attacking that ship, you reroll your blanks (and focus results if you have no focus to spend). Most missiles and torpedoes can only fire at a locked ship. A lock lasts until you use it.',
+  focus: 'Gain a focus token. About 1 in 4 shots or dodges is a close call: Focus turns every one into a hit when you attack (your shots hit 75% of the time, not 50%) or an evade when you defend (63%, not 38%). It is spent for you when it helps, and lasts until the end of the round.',
+  evade: 'Gain an evade token. The next time you are shot, it cancels one hit for certain. Lasts until the end of the round.',
+  calculate: 'Gain a calculate token. It turns <b>one</b> close call into a hit when you attack, or an evade when you defend. Weaker than Focus (one shot or dodge instead of all of them), but cheap insurance. Lasts until the end of the round.',
+  lock: 'Lock onto an enemy (any range, no arc needed). Attacking that ship, your missed shots get a second try (close calls too, if you have no focus to spend). Most missiles and torpedoes can only fire at a locked ship. A lock lasts until you use it.',
   jam: 'Jam an enemy at range 1-2 in your firing arc: it loses its focus, evade, calculate or reinforce token, or else its lock. If it has none, it gets a jam token that cancels the next token it gains.',
   coordinate: 'Pick a friendly ship at range 0-2 that isn\'t stressed: it takes an action right now (and still gets its own later).',
   barrelRoll: 'Slide sideways by one base width, forward, level or back, keeping your facing. A quick way into an enemy\'s path or out of its arc. Then pick a teal spot.',
@@ -2467,7 +2472,7 @@ type Target = TargetInfo;
 const weaponName = (t: Pick<Target, 'weapon'>) => (isPrimary(t) ? 'Primary' : UPGRADES[t.weapon!].name);
 const targetText = (t: Target, attacker?: ShipState) =>
   `${shipById(t.targetId).name}: ${isPrimary(t) ? '' : `${weaponName(t)}, `}range ${t.range}, ` +
-  `${attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
+  `${shots(attacker ? attackDiceFor(attacker, t, shipById(t.targetId)) : t.attack)}${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}`;
 
 /** What each kind of obstacle on this board does, for the planning panel (all of them block line of sight). */
 function obstacleLegend(): string {
@@ -2477,7 +2482,7 @@ function obstacleLegend(): string {
   return `<details class="legend"><summary>Obstacles: ${kinds.map((k) => `<span style="color:${swatch[k]}">${OBSTACLE_RULES[k].name}</span>`).join(' · ')}</summary>
     <p class="hint">Flying through or onto one:</p>
     ${kinds.map((k) => `<p class="hint"><b style="color:${swatch[k]}">${OBSTACLE_RULES[k].name}</b>: ${OBSTACLE_RULES[k].text}</p>`).join('')}
-    <p class="hint">All of them obstruct attacks drawn through them (+1 defense die).</p></details>`;
+    <p class="hint">All of them obstruct attacks drawn through them (+1 dodge for the target).</p></details>`;
 }
 
 /** The pilot's ability, with its charges if it has any, e.g. "Steady Nerves 0/1" (hover for the text). */
@@ -2687,7 +2692,7 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
         <div class="gs-name"><span class="p2c">${e.name}</span>${isBest ? '<span class="gs-best">Best shot</span>' : ''}<span class="gs-count">${i + 1} / ${n}</span></div>
         <div class="gs-odds"><span class="gs-pct ${cls}">${pct(o.hit)}</span><span>hit chance</span></div>
         <div class="gs-stats">${o.expected.toFixed(1)} dmg${o.kill >= 0.005 ? ` · <span class="kill">${pct(o.kill)} kill</span>` : ''}${o.ion >= 0.05 ? ` · <span class="ion">${o.ion.toFixed(1)} ion</span>` : ''}</div>
-        <div class="gs-meta">${wname} · range ${c.range} · ${attackDiceFor(s, c, e)} dice${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
+        <div class="gs-meta">${wname} · range ${c.range} · ${shots(attackDiceFor(s, c, e))}${c.obstructed ? ' · obstructed' : ''}${isPrimary(c) && c.bullseye ? ' · bullseye' : ''}
           · hull ${e.hull} · shields ${e.shields}</div>
       </div>${nav('next', 'Next target', '&#8250;')}</div>
       ${altHtml ? `<div class="gs-alts"><span>Also on this ship:</span>${altHtml}</div>` : ''}
@@ -2720,7 +2725,7 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
         return {
           icon: weaponIcon(w, turretPrimary), label: weaponShort(w), badge: u && UPGRADES[w].charges !== undefined ? u.charges : undefined, disabled: !ok,
           title: ok ? `${w === 'primary' ? 'Primary weapon (lasers)' : UPGRADES[w].name}: ${targetsFor(w).length} target${targetsFor(w).length > 1 ? 's' : ''}` : why(w),
-          help: w === 'primary' ? 'Your main guns. Range 1 rolls a die fewer, range 2 one more (the sweet spot), range 4 gives the defender an extra die. Then pick a ringed enemy; each shows your odds.'
+          help: w === 'primary' ? 'Your main guns. Range 1 fires one shot fewer, range 2 one more (the sweet spot), range 4 gives the defender an extra dodge. Then pick a ringed enemy; each shows your odds.'
             : `${UPGRADES[w].text}${ok ? ' Then pick a ringed enemy; each shows your odds.' : `<br><span class="red">${why(w)}</span>`}`,
           onClick: () => pickWeapon(w),
         };
@@ -2773,16 +2778,16 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
     : '';
   detail.innerHTML = `<h2>${bonusBy ? 'Bonus attack' : 'Attack'}: ${s.name}</h2>${bonusNote}<p class="hint">Pick a weapon from the ring around your ship (or press 1-${weaponIds.length}).
     The camera drops in behind your ship, aimed at the best shot: use the arrows (or ← → / Tab) to look at each enemy in range and compare
-    the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) loses an attack die, range 2 is the sweet spot (an extra attack die), range 3 is plain, and range 4 gives the defender an extra die;
-    at range 0 (touching) you cannot spend tokens or rerolls on your dice, and nothing can take dice from the defender;
-    obstruction adds a defense die. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;
+    the odds, then Fire (Enter). Esc goes back to the table. Primary weapons: range 1 (very close) fires one shot fewer, range 2 is the sweet spot (an extra shot), range 3 is plain, and range 4 gives the defender an extra dodge;
+    at range 0 (touching) you cannot spend tokens or re-fire missed shots, and nothing can take dodges from the defender;
+    obstruction gives the defender an extra dodge. Tokens are spent automatically, and only when they help: focus is held for defense if an enemy can still shoot you this round. Or pick a line below.</p>`;
   for (const t of targets) {
     const e = shipById(t.targetId);
     const charges = s.upgrades.find((u) => u.id === t.weapon)?.charges;
     const b = document.createElement('button');
     b.className = 'opt';
     b.innerHTML = `<b>${e.name}</b> · ${weaponName(t)}${isPrimary(t) ? '' : ` (${charges} left)`}: range ${t.range}, ${t.arc} arc, ` +
-      `${attackDiceFor(s, t, e)} dice${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
+      `${shots(attackDiceFor(s, t, e))}${t.obstructed ? ', obstructed' : ''}${isPrimary(t) && t.bullseye ? ', bullseye' : ''}<br><span class="odds">${oddsHtml(s, t)}</span>` +
       `<br><span class="hint">hull ${e.hull} · shields ${e.shields} · agi ${SHIP_TYPES[e.typeId].agility}</span>`;
     // While aiming, hovering a line swings the sights to it.
     b.onmouseenter = () => { if (weapon) { weapon = t.weapon ?? 'primary'; candId = t.targetId; show(); } };
