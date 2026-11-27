@@ -361,6 +361,13 @@ export class BattleScene {
 
   private tipEl: HTMLDivElement | null = null;
   private tipTimer = 0;
+  /** A tap anywhere but a damage tag closes a popup opened by tapping one. */
+  private closeTipOnTap = (() => {
+    document.addEventListener('pointerdown', (e) => {
+      if (this.tipFor && !(e.target as HTMLElement).closest?.('.crit-tag')) { this.tipFor = null; this.hideTip(); }
+    }, true);
+    return true;
+  })();
   /** A small popup over `anchor` explaining it (`help` is HTML). */
   showTip(anchor: HTMLElement, title: string, help?: string) {
     if (!help) return;
@@ -563,6 +570,7 @@ export class BattleScene {
     const el = document.createElement('div');
     el.className = 'label';
     el.innerHTML = '<div class="info"></div><div class="odds" hidden></div>';
+    this.wireCritTags(el);
     const label = new CSS2DObject(el);
     label.center.set(0.5, 1); // anchor the label's bottom edge; placeLabels() puts that point just past the ship
     root.add(label);
@@ -691,8 +699,34 @@ export class BattleScene {
       `<div class="${s.owner}"><span class="nm">${s.name} </span><b>${s.initiative}</b></div>` +
       `<div class="pips"><span class="sh">${'●'.repeat(s.shields)}</span><span class="hu">${'■'.repeat(s.hull)}</span>` +
       `${s.stress ? `<span class="st"> ⚠${s.stress}</span>` : ''} ${tokens}${s.ion ? '<span class="ion"> ⚡</span>' : ''}</div>` +
-      (s.crits.length ? `<div class="crits">${s.crits.map((c) => `<span title="${DAMAGE_CARDS[c].title}: ${DAMAGE_CARDS[c].text}">${DAMAGE_CARDS[c].tag}</span>`).join('')}</div>` : '');
+      (s.crits.length ? `<div class="crits">${s.crits.map((c) => `<button type="button" class="crit-tag" data-crit="${c}" aria-label="${DAMAGE_CARDS[c].title}: ${DAMAGE_CARDS[c].text}">${DAMAGE_CARDS[c].tag}</button>`).join('')}</div>` : '');
   }
+
+  /**
+   * A ship label's damage tags explain themselves: tap one (or rest the mouse on it) for the card's title and
+   * what it does. The label is redrawn often, so its tags are handled from the label itself.
+   */
+  private wireCritTags(el: HTMLElement) {
+    const tagOf = (e: Event) => (e.target as HTMLElement).closest<HTMLElement>('.crit-tag');
+    const show = (tag: HTMLElement) => {
+      const c = DAMAGE_CARDS[tag.dataset.crit as keyof typeof DAMAGE_CARDS];
+      if (c) this.showTip(tag, c.title, `${c.text}${c.repairable ? '<br><span class="hint">Repairable: the Repair action fixes it.</span>' : ''}`);
+    };
+    // A finger or click on a tag is the tag's: it must not reach the table (pan, skip an animation, pick a ship).
+    el.addEventListener('pointerdown', (e) => { if (tagOf(e)) e.stopPropagation(); });
+    el.addEventListener('click', (e) => {
+      const tag = tagOf(e);
+      if (!tag) return;
+      e.stopPropagation();
+      if (this.tipEl && !this.tipEl.hidden && this.tipFor === tag.dataset.crit) { this.hideTip(); this.tipFor = null; return; }
+      show(tag);
+      this.tipFor = tag.dataset.crit ?? null;
+    });
+    el.addEventListener('pointerover', (e) => { const tag = tagOf(e); if (tag && e.pointerType === 'mouse') show(tag); });
+    el.addEventListener('pointerout', (e) => { if (tagOf(e) && e.pointerType === 'mouse') this.hideTip(); });
+  }
+  /** The damage card whose popup is open from a label tap (a second tap closes it). */
+  private tipFor: string | null = null;
 
   clearShips() {
     for (const v of this.ships.values()) { this.scene.remove(v.root); v.label.element.remove(); }
