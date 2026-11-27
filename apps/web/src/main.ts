@@ -1,9 +1,9 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
-import { BattleScene } from './scene';
+import { BattleScene, SHOT_TIMING } from './scene';
 import { openSetup, type BattleSetup } from './setup';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -802,8 +802,8 @@ async function animate(e: GameEvent) {
       await showAttack(e);
       return;
     case 'jam': {
-      const from = dispShip(e.shipId)?.pose ?? shipById(e.shipId).pose, to = dispShip(e.targetId)?.pose ?? shipById(e.targetId).pose;
-      scene.showLine(from, to, ACTION_COLOR.jam, `${shipById(e.shipId).name} jams ${shipById(e.targetId).name}`);
+      // Interference rolls from the jammer to the target, which glitches as its token is knocked off.
+      await scene.jam(e.shipId, e.targetId);
       const t = dispShip(e.targetId);
       if (t) {
         if (e.effect === 'focus') t.focus = Math.max(0, t.focus - 1);
@@ -946,11 +946,23 @@ function attackOutcome(e: AttackEvent) {
   return { word: 'HIT', detail: parts.join(' · '), cls: 'hit' };
 }
 
+/** How a weapon's shots are drawn: its own `look`, else by kind (ion, torpedo, missile), else a laser. */
+function shotLook(weapon?: string): ShotLook {
+  const w = weapon ? UPGRADES[weapon] : undefined;
+  if (!w?.weapon) return 'laser';
+  if (w.weapon.look) return w.weapon.look;
+  if (w.slot === 'torpedo') return 'torpedo';
+  if (w.weapon.effect === 'ion') return 'ion';
+  if (w.slot === 'missile') return 'missile';
+  return 'laser';
+}
+
 async function showAttack(e: AttackEvent) {
   const a = shipById(e.attackerId), d = shipById(e.defenderId);
   const incoming = d.owner === me;
   const color = a.owner === P1 ? 0xff4d4d : 0x52ff7a;
-  const ordnance = !!e.weapon;
+  // How this weapon's shots look (docs/VFX.md): lasers, ion arcs, missiles, rocket salvoes, torpedoes.
+  const look = shotLook(e.weapon);
   const ionShot = !!e.weapon && UPGRADES[e.weapon].weapon?.effect === 'ion';
   const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
 
@@ -984,7 +996,7 @@ async function showAttack(e: AttackEvent) {
     const end = scene.boltEnd(a.id, d.id, hit, i);
     if (!end) continue;
     const n = hit ? hitNo++ : -1;
-    flights.push(scene.bolt(a.id, end, ionShot ? 0x7fd8ff : color, ordnance ? 380 : 170, ordnance ? 'missile' : 'laser').then(() => {
+    flights.push(scene.shot(look, a.id, end, ionShot ? 0x7fd8ff : color, hit, i).then(() => {
       if (!hit) return;
       const crit = n >= e.hits; // crits are applied after hits
       if (n < e.shieldDamage) {
@@ -999,7 +1011,7 @@ async function showAttack(e: AttackEvent) {
       }
       relabel(d.id);
     }));
-    await scene.wait(110);
+    await scene.wait(SHOT_TIMING[look].gap);
   }
   await Promise.all(flights);
 

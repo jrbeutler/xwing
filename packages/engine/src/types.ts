@@ -126,7 +126,15 @@ export interface WeaponDef {
   effect?: 'proton' | 'ion';
   /** 'turret': fires through the ship's turret arc (which the Rotate action turns); default: front arc. */
   arc?: 'turret';
+  /**
+   * How clients draw its shots. Default: ion weapons 'ion' (torpedoes stay 'torpedo'), torpedoes 'torpedo',
+   * missiles 'missile', turrets 'laser'.
+   */
+  look?: ShotLook;
 }
+
+/** The kinds of shot a client draws (see docs/VFX.md). */
+export type ShotLook = 'laser' | 'ion' | 'missile' | 'rockets' | 'torpedo';
 
 /** An upgrade fitted to a ship in play, with its remaining charges. */
 export interface UpgradeState { id: string; charges: number }
