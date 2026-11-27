@@ -465,6 +465,7 @@ export class BattleScene {
       o.scale.setScalar(arming ? 18 : 12);
     });
     this.animateLocks(t);
+    for (const g of this.missionGroup.children) if (g.userData.pulse) g.scale.setScalar(this.reducedMotion ? 1 : 1 + 0.06 * Math.sin(t * 3));
     if (!this.reducedMotion) arcTime.value = t;
     for (const v of this.ships.values()) {
       if (!this.reducedMotion) {
@@ -731,6 +732,56 @@ export class BattleScene {
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([toV3(0, edgeY, 0.6), toV3(BOARD_SIZE, edgeY, 0.6)]),
       new THREE.LineBasicMaterial({ color: 0x7cf0c5, transparent: true, opacity: 0.8 }));
     this.deployZone.add(strip, line);
+  }
+
+  // ---------------- mission markings (gates, zones) ----------------
+  private missionGroup = new THREE.Group();
+
+  /**
+   * Draw a mission's gates and zones. Gates: a ring on the table with a numbered beacon; `next` is lit
+   * and pulses, `done` ones fade to green. Zones: a lit strip with its name.
+   */
+  setMissionMarks(markers: { id: string; label: string; x: number; y: number; r: number }[], zones: { label: string; x0: number; y0: number; x1: number; y1: number }[], next?: string, done: string[] = []) {
+    clearGroup(this.missionGroup);
+    if (!this.missionGroup.parent) this.scene.add(this.missionGroup);
+    for (const z of zones) {
+      const w = z.x1 - z.x0, d = z.y1 - z.y0;
+      const strip = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.12, depthWrite: false }));
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.copy(toV3(z.x0 + w / 2, z.y0 + d / 2, 0.45));
+      strip.raycast = () => {};
+      const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([
+        toV3(z.x0, z.y0, 0.7), toV3(z.x1, z.y0, 0.7), toV3(z.x1, z.y1, 0.7), toV3(z.x0, z.y1, 0.7),
+      ]), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.7 }));
+      const el = document.createElement('div');
+      el.className = 'zone-label';
+      el.textContent = z.label;
+      const label = new CSS2DObject(el);
+      label.position.copy(toV3(z.x0 + w / 2, z.y0 + d / 2, 4));
+      this.missionGroup.add(strip, edge, label);
+    }
+    for (const mk of markers) {
+      const state = done.includes(mk.id) ? 'done' : mk.id === next ? 'next' : 'later';
+      const color = state === 'done' ? 0x7cf0c5 : state === 'next' ? 0xffd166 : 0x8fa6c8;
+      const g = new THREE.Group();
+      g.position.copy(toV3(mk.x, mk.y, 0));
+      const ring = new THREE.Mesh(new THREE.RingGeometry(mk.r * 0.86, mk.r, 48), new THREE.MeshBasicMaterial({
+        color: state === 'next' ? hot(color, 1.6) : new THREE.Color(color), transparent: true, opacity: state === 'later' ? 0.45 : 0.9, side: THREE.DoubleSide, depthWrite: false,
+      }));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.8;
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, FLY_HEIGHT + 10, 8), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: state === 'later' ? 0.25 : 0.6, depthWrite: false }));
+      beam.position.y = (FLY_HEIGHT + 10) / 2;
+      const el = document.createElement('div');
+      el.className = `gate-label ${state}`;
+      el.textContent = mk.label;
+      const label = new CSS2DObject(el);
+      label.position.y = FLY_HEIGHT + 16;
+      g.add(ring, beam, label);
+      g.userData.pulse = state === 'next';
+      g.traverse((o) => { o.raycast = () => {}; });
+      this.missionGroup.add(g);
+    }
   }
 
   // ---------------- devices (bombs and mines) ----------------

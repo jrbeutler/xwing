@@ -6,18 +6,28 @@ import { actionBar, easedManeuver, effectsOf, gainToken, recoverRecurringCharges
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
+import { missionRoundEnd, missionScan, startMission, type MissionSetup } from './mission';
+import { isSpecialManeuver, rulesOf } from './rules';
 import type {
   ActionChoice, ActionType, Command, Decision, Device, DropChoice, GameState, GreenToken, Obstacle, ObstacleKind, Player, PlayerId, ShipState,
 } from './types';
 
-/** A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. */
-export interface SquadEntry { pilotId: string; shipType?: string; pose: Pose; upgrades?: string[] }
+/**
+ * A pilot, the hull they fly (default: their usual one), where it starts, and bought upgrades. Missions can
+ * also rename the ship, change its hull and shields (training drones) and tag it for objectives.
+ */
+export interface SquadEntry {
+  pilotId: string; shipType?: string; pose: Pose; upgrades?: string[];
+  name?: string; hull?: number; shields?: number; tags?: string[];
+}
 export interface GameSetup {
   seed: number;
   players: [Player, Player];
   squads: Record<PlayerId, SquadEntry[]>;
   obstacles?: Obstacle[];
   maxRounds?: number;
+  /** Play as a mission: its rules, objectives, zones and markers (docs/MISSIONS.md). */
+  mission?: MissionSetup;
 }
 
 const clone = <T>(x: T): T => structuredClone(x);
@@ -33,6 +43,7 @@ export function createGame(setup: GameSetup): GameState {
     players: setup.players, firstPlayer: setup.players[0].id, ships: [], obstacles: setup.obstacles ?? [],
     queue: [], queueIndex: 0, engagementInitiative: null, pending: null, log: [], winner: null, devices: [],
     damageDeck: [], damageDiscard: [],
+    ...(setup.mission ? { mission: startMission(setup.mission) } : {}),
   };
   state.damageDeck = newDamageDeck(state); // shuffled with the game's own RNG
   const fielded = new Map<string, number>(); // generic pilots flown more than once get numbered
@@ -43,12 +54,13 @@ export function createGame(setup: GameSetup): GameState {
       // Signature talents come with the pilot; they take talent slots ahead of bought upgrades.
       const ups = allUpgrades({ ...e, upgrades: e.upgrades ?? [] }).map((id) => UPGRADES[id]);
       const payload = statBonus(ups.map((u) => u.id), 'deviceCharges');
-      const hull = t.hull + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
-      const shields = t.shields + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
+      const hull = (e.hull ?? t.hull) + ups.reduce((a, u) => a + (u.stats?.hull ?? 0), 0);
+      const shields = (e.shields ?? t.shields) + ups.reduce((a, u) => a + (u.stats?.shields ?? 0), 0);
       const n = (fielded.get(pilot.id) ?? 0) + 1;
       fielded.set(pilot.id, n);
       state.ships.push({
-        id: `${p.id}-${i}`, pilotId: pilot.id, name: n > 1 ? `${pilot.name} #${n}` : pilot.name, typeId: t.id, owner: p.id,
+        id: `${p.id}-${i}`, pilotId: pilot.id, name: e.name ?? (n > 1 ? `${pilot.name} #${n}` : pilot.name), typeId: t.id, owner: p.id,
+        ...(e.tags?.length ? { tags: [...e.tags] } : {}),
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
         ability: pilot.ability ? { id: pilot.id, charges: pilot.ability.charges ?? 0 } : null,
@@ -57,6 +69,7 @@ export function createGame(setup: GameSetup): GameState {
     });
   }
   startRound(state);
+  missionScan(state); // messages for round 1
   return state;
 }
 
@@ -129,7 +142,13 @@ export function ionManeuverFor(m: Maneuver): Maneuver {
 
 /** Dial indices a ship may select this round (stressed ships cannot pick red). */
 export function legalDial(s: GameState, sh: ShipState): number[] {
-  return shipType(sh).dial.map((_, i) => (sh.stress > 0 && maneuverFor(sh, i).difficulty === 'red' ? -1 : i)).filter((i) => i >= 0);
+  const rules = rulesOf(s);
+  return shipType(sh).dial.map((_, i) => {
+    const m = maneuverFor(sh, i);
+    if (m.difficulty === 'red' && (sh.stress > 0 || !rules.redManeuvers)) return -1;
+    if (!rules.specialManeuvers && isSpecialManeuver(m)) return -1;
+    return i;
+  }).filter((i) => i >= 0);
 }
 
 export function inBounds(poly: { x: number; y: number }[]): boolean {
@@ -234,7 +253,8 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false, coor
     for (const to of ['front', 'left', 'right', 'rear'] as const) if (to !== sh.turretArc) opts.push({ type: 'rotateArc', to });
   }
   if (!ionized) for (const card of repairOptions(sh)) opts.push({ type: 'repair', card });
-  return opts;
+  const allowed = rulesOf(s).actions;
+  return opts.filter((o) => o.type === 'none' || allowed.includes(o.type));
 }
 
 /** Cards the Repair action could fix: repairable ones, or any face-up card with a Patch Droid. */
@@ -265,7 +285,7 @@ const actionDef = (sh: ShipState, type: ActionChoice['type']) => actionBar(sh).f
  */
 function linkedDecision(s: GameState, sh: ShipState, done: ActionChoice): Extract<Decision, { kind: 'action' }> | null {
   // Coordinate hands the turn to the coordinated ship instead; it has no link of its own.
-  const link = done.type === 'none' || done.type === 'coordinate' ? undefined : actionDef(sh, done.type)?.linked;
+  const link = done.type === 'none' || done.type === 'coordinate' || !rulesOf(s).linkedActions ? undefined : actionDef(sh, done.type)?.linked;
   if (!link || sh.destroyed || !actionAllowed(sh, link.type)) return null;
   const options = actionOptions(s, sh).filter((o) => o.type === link.type);
   if (!options.length) return null;
@@ -310,6 +330,12 @@ export function viewFor(s: GameState, playerId: PlayerId): GameState {
 // ---------------------------------------------------------------------------
 
 export function apply(prev: GameState, cmd: Command): GameState {
+  const s = applyRules(prev, cmd);
+  missionScan(s); // a mission moves on from what just happened
+  return s;
+}
+
+function applyRules(prev: GameState, cmd: Command): GameState {
   // Events are immutable once logged, so the log is shared structurally, not deep-cloned.
   const s = clone({ ...prev, log: [] as GameState['log'] });
   s.log = prev.log.slice();
@@ -743,6 +769,11 @@ function endPhase(s: GameState) {
     sh.jam = 0;
   }
   s.engagementInitiative = null;
+  if (s.mission) {
+    // A mission ends on its objectives (or its last round), not on the last player standing.
+    if (!missionRoundEnd(s)) startRound(s);
+    return;
+  }
   const alive = s.players.filter((p) => activeShips(s).some((x) => x.owner === p.id));
   if (alive.length <= 1 || s.round >= s.maxRounds) {
     s.phase = 'over';

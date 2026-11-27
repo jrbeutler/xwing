@@ -257,6 +257,8 @@ export interface ShipState {
   dial: number | null;
   /** Players who may see this ship's dial this round although it is not theirs (an upgrade peeked at it). */
   dialSeenBy?: PlayerId[];
+  /** Mission tags (e.g. 'freighter', 'drone') that objectives and triggers refer to. */
+  tags?: string[];
   destroyed: boolean;
   /** Destroyed ships linger until their initiative step ends (simultaneous fire). */
   removed: boolean;
@@ -382,7 +384,11 @@ export type GameEvent =
   /** A ship's upgrade showed it another ship's dial (the view of that ship's player keeps the dial). */
   | { type: 'dialPeeked'; shipId: string; targetId: string; upgrade: string }
   | { type: 'destroyed'; shipId: string }
-  | { type: 'gameOver'; winner: PlayerId | 'draw' }
+  | { type: 'gameOver'; winner: PlayerId | 'draw'; mission?: 'win' | 'loss' }
+  /** A mission objective moved on: progress (e.g. 3 of 5 markers), done, or failed. */
+  | { type: 'objective'; id: string; status: ObjectiveStatus; progress: number; of: number }
+  /** A mission message for the player (a coach tip or a scripted line). */
+  | { type: 'message'; title: string; text: string }
   | { type: 'info'; text: string };
 
 export type Phase = 'planning' | 'system' | 'activation' | 'engagement' | 'end' | 'over';
@@ -410,6 +416,85 @@ export interface GameState {
   pending: Decision | null;
   log: GameEvent[];
   winner: PlayerId | 'draw' | null;
+  /** A mission game: its rules, objectives and progress (absent in a skirmish). */
+  mission?: MissionState;
+}
+
+// ---------------------------------------------------------------------------
+// Missions (docs/MISSIONS.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which rules are on in a mission (training missions switch them on one at a time). Anything off is not
+ * offered: actions not listed are missing from the action options, red or special maneuvers from the dial.
+ */
+export interface Ruleset {
+  /** Ships may attack. */
+  attacks: boolean;
+  /** Actions that may be performed (Coordinate, Jam, Repair, Rotate... must be listed to be offered). */
+  actions: ActionType[];
+  /** Linked actions are offered after their first action. */
+  linkedActions: boolean;
+  /** Red maneuvers can be set. */
+  redManeuvers: boolean;
+  /** K-turns, loops, rolls, stops and reverse maneuvers can be set. */
+  specialManeuvers: boolean;
+  /** Crits that reach the hull deal face-up damage cards (off: they are plain hull damage). */
+  damageCards: boolean;
+}
+
+/** A rectangle of the table (board mm), e.g. the far edge to escape through. */
+export interface Zone { id: string; label: string; x0: number; y0: number; x1: number; y1: number }
+/** A round marker on the table (board mm), e.g. a gate of a flight course. */
+export interface Marker { id: string; label: string; x: number; y: number; r: number }
+
+/**
+ * A mission objective. All but `protect` must be done to win; a failed `protect` loses the mission.
+ *   destroy: every enemy ship (with `tag`, if given) is destroyed.
+ *   survive: the player still has a ship (a `tag`ged one, if given) at the end of round `rounds`.
+ *   reach: `count` of the player's ships (with `tag`) end a move with their centre in `zone`.
+ *   course: a player ship flies through `markers` in order (its base touching each).
+ *   protect: no player ship with `tag` is destroyed.
+ */
+export type Objective = { id: string; label: string } & (
+  | { kind: 'destroy'; tag?: string }
+  | { kind: 'survive'; rounds: number; tag?: string }
+  | { kind: 'reach'; zone: string; tag?: string; count?: number }
+  | { kind: 'course'; markers: string[]; tag?: string }
+  | { kind: 'protect'; tag: string }
+);
+export type ObjectiveStatus = 'open' | 'done' | 'failed';
+export type ObjectiveState = Objective & { status: ObjectiveStatus; progress: number; of: number };
+
+/**
+ * A scripted mission event: on a round starting, an objective done, a tagged ship destroyed, or the first
+ * time something happens to one of the player's ships, show a message (coach tips).
+ */
+export interface Trigger {
+  on: { roundStart: number } | { objectiveDone: string } | { shipDestroyed: string } | { first: 'stress' | 'damageCard' | 'obstacleHit' | 'attack' | 'hit' | 'lock' };
+  message: { title: string; text: string };
+}
+
+/** How the AI flies a side in a mission: 'drone' wanders in gentle moves and never acts or shoots. */
+export type AiProfile = 'standard' | 'drone';
+
+/** A mission as it is played: what createGame needs, and the progress it keeps. */
+export interface MissionState {
+  id: string;
+  /** The player the mission is for (the other side is the AI). */
+  player: PlayerId;
+  ruleset: Ruleset;
+  objectives: ObjectiveState[];
+  triggers: Trigger[];
+  /** Indices of triggers that have fired (each fires once). */
+  fired: number[];
+  zones: Zone[];
+  markers: Marker[];
+  ai: Record<PlayerId, AiProfile>;
+  maxRounds: number;
+  result: 'win' | 'loss' | null;
+  /** How far into the log the mission has read (missionScan). */
+  scanned: number;
 }
 
 export type Command =
