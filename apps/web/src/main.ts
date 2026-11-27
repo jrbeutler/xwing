@@ -1,9 +1,9 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, suggestManeuvers, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
-import { BattleScene } from './scene';
+import { BattleScene, SHOT_TIMING, type AttackAngle } from './scene';
 import { openSetup, type BattleSetup } from './setup';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -802,8 +802,8 @@ async function animate(e: GameEvent) {
       await showAttack(e);
       return;
     case 'jam': {
-      const from = dispShip(e.shipId)?.pose ?? shipById(e.shipId).pose, to = dispShip(e.targetId)?.pose ?? shipById(e.targetId).pose;
-      scene.showLine(from, to, ACTION_COLOR.jam, `${shipById(e.shipId).name} jams ${shipById(e.targetId).name}`);
+      // Interference rolls from the jammer to the target, which glitches as its token is knocked off.
+      await scene.jam(e.shipId, e.targetId);
       const t = dispShip(e.targetId);
       if (t) {
         if (e.effect === 'focus') t.focus = Math.max(0, t.focus - 1);
@@ -946,21 +946,51 @@ function attackOutcome(e: AttackEvent) {
   return { word: 'HIT', detail: parts.join(' · '), cls: 'hit' };
 }
 
+/** How a weapon's shots are drawn: its own `look`, else by kind (ion, torpedo, missile), else a laser. */
+function shotLook(weapon?: string): ShotLook {
+  const w = weapon ? UPGRADES[weapon] : undefined;
+  if (!w?.weapon) return 'laser';
+  if (w.weapon.look) return w.weapon.look;
+  if (w.slot === 'torpedo') return 'torpedo';
+  if (w.weapon.effect === 'ion') return 'ion';
+  if (w.slot === 'missile') return 'missile';
+  return 'laser';
+}
+
+/** The last attack angle used, so two shots in a row are not filmed from the same cinematic angle. */
+let lastAngle: AttackAngle = 'gunner';
+
+/**
+ * How to film an attack (null: stay on the table view). The player's own shots: the gunner's view half the
+ * time (less for slow ordnance, which is worth watching side-on), otherwise a cinematic angle. Enemy shots:
+ * a third of the time, a cinematic angle, often from behind the player's ship as the fire comes in.
+ */
+function attackAngle(own: boolean, look: ShotLook): AttackAngle | null {
+  if (!own && Math.random() > 0.35) return null;
+  const slow = look === 'missile' || look === 'torpedo';
+  if (own && Math.random() < (slow ? 0.3 : 0.5)) return (lastAngle = 'gunner');
+  const pool: AttackAngle[] = own ? ['reverse', 'side', 'low', ...(slow ? ['side' as const] : [])] : ['reverse', 'reverse', 'side', 'low'];
+  const choices = pool.filter((x) => x !== lastAngle);
+  return (lastAngle = choices[Math.floor(Math.random() * choices.length)] ?? 'side');
+}
+
 async function showAttack(e: AttackEvent) {
   const a = shipById(e.attackerId), d = shipById(e.defenderId);
   const incoming = d.owner === me;
   const color = a.owner === P1 ? 0xff4d4d : 0x52ff7a;
-  const ordnance = !!e.weapon;
+  // How this weapon's shots look (docs/VFX.md): lasers, ion arcs, missiles, rocket salvoes, torpedoes.
+  const look = shotLook(e.weapon);
   const ionShot = !!e.weapon && UPGRADES[e.weapon].weapon?.effect === 'ion';
   const ap = dispShip(a.id)?.pose ?? a.pose, dp = dispShip(d.id)?.pose ?? d.pose;
 
-  // 1. Who shoots whom. The player's own shots are seen from behind the attacker, down its line of fire.
+  // 1. Who shoots whom. The player's own shots are filmed: usually from behind the attacker, down its line
+  // of fire, sometimes from a cinematic angle. Enemy shots are now and then filmed too.
   // With two players every shot is someone's own.
-  const gunCam = isHuman(a.owner);
+  const angle = attackAngle(isHuman(a.owner), look);
   scene.setRings({ [a.id]: GREEN, [d.id]: RED });
   scene.setOdds({});
-  if (gunCam) {
-    scene.attackView(a.id, d.id, 650);
+  if (angle) {
+    scene.attackView(a.id, d.id, 650, angle);
     await scene.wait(750);
   } else {
     scene.showArcs([a.id]);
@@ -984,7 +1014,7 @@ async function showAttack(e: AttackEvent) {
     const end = scene.boltEnd(a.id, d.id, hit, i);
     if (!end) continue;
     const n = hit ? hitNo++ : -1;
-    flights.push(scene.bolt(a.id, end, ionShot ? 0x7fd8ff : color, ordnance ? 380 : 170, ordnance ? 'missile' : 'laser').then(() => {
+    flights.push(scene.shot(look, a.id, end, ionShot ? 0x7fd8ff : color, hit, i).then(() => {
       if (!hit) return;
       const crit = n >= e.hits; // crits are applied after hits
       if (n < e.shieldDamage) {
@@ -999,7 +1029,7 @@ async function showAttack(e: AttackEvent) {
       }
       relabel(d.id);
     }));
-    await scene.wait(110);
+    await scene.wait(SHOT_TIMING[look].gap);
   }
   await Promise.all(flights);
 
@@ -1047,7 +1077,7 @@ async function showAttack(e: AttackEvent) {
   roundShots.push(`${nameHtml(a.id)} → ${nameHtml(d.id)}: <b class="${o.cls}">${o.word === 'HIT' || o.word === 'CRITICAL HIT' ? o.detail : o.word.toLowerCase()}</b>`);
   await scene.wait(1100);
   scene.showArcs([]);
-  if (gunCam) {
+  if (angle) {
     scene.restoreView(600);
     await scene.wait(600);
   }
@@ -1853,7 +1883,8 @@ function planningBar() {
     b.className = 'sc' + (s.id === selected ? ' active' : '') + (plan[s.id] !== undefined ? ' done' : '');
     b.innerHTML = `<span class="sc-name">${s.name.split(' ')[0]} <i>${s.initiative}</i></span>
       <span class="sc-move">${plan[s.id] !== undefined ? shortMove(s, plan[s.id]) : '<span class="hint">not set</span>'}</span>`;
-    b.onclick = () => selectShip(s.id);
+    // Tapping a ship's button always brings the camera to it, even after an Overview or looking around.
+    b.onclick = () => { userOverview = false; camFree = false; if (s.id === selected) applyCamera(); else selectShip(s.id); };
     ships.appendChild(b);
   }
   const buttons: BarButton[] = [];

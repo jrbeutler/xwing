@@ -248,7 +248,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   'rocket-pods': {
     id: 'rocket-pods', name: 'Rocket Pods', slot: 'missile', cost: 5, charges: 2,
-    weapon: { attack: 3, minRange: 1, maxRange: 2 },
+    weapon: { attack: 3, minRange: 1, maxRange: 2, look: 'rockets' },
     text: 'Attack 3, range 1-2. No lock needed.',
   },
   // Turrets: secondary weapons firing through a turret arc the ship can turn with the Rotate action.

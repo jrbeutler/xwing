@@ -10,10 +10,73 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { loadShipModels } from './shipAsset';
 import { arcTime, bakeBoardTexture, buildArcs, buildTurretPointer, buildAsteroid, buildDebris, buildGasCloud, buildBase, buildShip, buildSky, glowTexture, hot } from './visuals';
-import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShipState, RANGE_RULES } from '@xw/engine';
+import { BASE_SIZE, BOARD_SIZE, DAMAGE_CARDS, SHIP_TYPES, UPGRADES, type Obstacle, type Pose, type ShotLook, type ShipState, RANGE_RULES } from '@xw/engine';
 
 const HALF = BOARD_SIZE / 2;
 const FLY_HEIGHT = 18;
+/** Effect colours that mean the same thing whoever fires: ion is electric blue, jamming violet. */
+const ION = 0x7fd8ff, JAM = 0xc58bff;
+/** Flight time of one shot, and the gap between shots in a volley, per kind of weapon (ms at 1×). */
+/** Camera angles for an attack: the gunner's view over the attacker's shoulder, or one of the cinematic ones. */
+export type AttackAngle = 'gunner' | 'reverse' | 'side' | 'low';
+export const SHOT_TIMING: Record<ShotLook, { flight: number; gap: number }> = {
+  laser: { flight: 170, gap: 110 }, ion: { flight: 300, gap: 170 }, rockets: { flight: 330, gap: 75 },
+  missile: { flight: 640, gap: 240 }, torpedo: { flight: 820, gap: 320 },
+};
+
+const UNIT_TUBE = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
+const UP = new THREE.Vector3(0, 1, 0);
+/**
+ * A jagged electric arc thick enough to read on any screen (WebGL lines are one pixel wide): a run of
+ * short tubes, each a hot core inside a coloured glow. `set` moves it to new points; the shared tube
+ * geometry is never disposed.
+ */
+class ArcRibbon extends THREE.Group {
+  private coreMat: THREE.MeshBasicMaterial;
+  private glowMat: THREE.MeshBasicMaterial;
+  private segs: { c: THREE.Mesh; g: THREE.Mesh }[] = [];
+  constructor(points: number, core: THREE.ColorRepresentation, glow: THREE.ColorRepresentation, private coreR: number, private glowR: number) {
+    super();
+    const mat = (color: THREE.ColorRepresentation) => new THREE.MeshBasicMaterial({ color, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.coreMat = mat(core);
+    this.glowMat = mat(glow);
+    for (let k = 0; k < points - 1; k++) {
+      const c = new THREE.Mesh(UNIT_TUBE, this.coreMat), g = new THREE.Mesh(UNIT_TUBE, this.glowMat);
+      c.frustumCulled = g.frustumCulled = false;
+      this.add(g, c);
+      this.segs.push({ c, g });
+    }
+    this.opacity = 0;
+  }
+  set(pts: THREE.Vector3[]) {
+    const d = new THREE.Vector3();
+    this.segs.forEach(({ c, g }, k) => {
+      const a = pts[k], b = pts[k + 1];
+      d.subVectors(b, a);
+      const len = d.length();
+      c.visible = g.visible = len > 0.01;
+      if (!c.visible) return;
+      d.divideScalar(len);
+      for (const [m, r] of [[c, this.coreR], [g, this.glowR]] as const) {
+        m.position.lerpVectors(a, b, 0.5);
+        m.quaternion.setFromUnitVectors(UP, d);
+        m.scale.set(r, len + r, r); // overlap a little so the bends have no gaps
+      }
+    });
+  }
+  set opacity(o: number) { this.coreMat.opacity = o; this.glowMat.opacity = o * 0.4; }
+  get opacity() { return this.coreMat.opacity; }
+  dispose() { this.removeFromParent(); this.coreMat.dispose(); this.glowMat.dispose(); }
+}
+/** Points along a jagged path from `a` to `b`: kinks up to `amp` off the straight line, ends fixed. */
+function jagged(a: THREE.Vector3, b: THREE.Vector3, n: number, amp: number, reach = 1) {
+  return Array.from({ length: n }, (_, k) => {
+    const f = (k / (n - 1)) * reach;
+    const p = new THREE.Vector3().lerpVectors(a, b, f);
+    if (k > 0 && k < n - 1) p.add(new THREE.Vector3().randomDirection().multiplyScalar(amp * (0.4 + Math.random() * 0.6) * Math.sin(Math.min(1, f) * Math.PI)));
+    return p;
+  });
+}
 const TURRET_COLOR = 0xffd166;
 /** The part of a ship model tagged as its turret gun (imported models only). */
 const findGun = (model: THREE.Object3D) => {
@@ -73,6 +136,8 @@ export interface ShipView {
   arcs: THREE.Group;
   /** Ships with a turret: its arc fan (shown with the arcs) and a pointer on the base, turned to face `turretArc`. */
   turret?: { holder: THREE.Group; fan: THREE.Group; facing: string; gun?: THREE.Object3D };
+  /** Flickering blue aura while the ship has ion tokens. */
+  ionAura?: THREE.Group;
 }
 
 export class BattleScene {
@@ -274,6 +339,7 @@ export class BattleScene {
         const f = 0.88 + 0.08 * Math.sin(t * 31 + i * 1.7 + v.phase) + Math.random() * 0.08;
         e.scale.setScalar(e.userData.base * f * v.thrust);
       });
+      this.animateIonAura(v, t);
     }
   }
 
@@ -456,6 +522,7 @@ export class BattleScene {
   }
 
   updateLabel(v: ShipView, s: ShipState) {
+    this.setIonAura(v, s.ion > 0 && !s.destroyed);
     const tokens = [
       s.focus ? `◉${s.focus > 1 ? s.focus : ''}` : '', s.evade ? '◆' : '',
       s.calculate ? `<span title="Calculate">▣${s.calculate > 1 ? s.calculate : ''}</span>` : '',
@@ -900,9 +967,10 @@ export class BattleScene {
    * Gunner's-eye view: drop in just behind and above the attacker, looking down its line of fire at the
    * defender. The orbit limits that keep the normal view overhead are lifted until restoreView().
    */
-  attackView(attackerId: string, defenderId: string, ms = 600) {
+  attackView(attackerId: string, defenderId: string, ms = 600, angle: AttackAngle = 'gunner') {
     const a = this.ships.get(attackerId), d = this.ships.get(defenderId);
     if (!a || !d) return;
+    if (angle !== 'gunner') return this.cinematicView(a, d, ms, angle);
     if (!this.savedView) {
       this.savedView = {
         target: this.controls.target.clone(), position: this.camera.position.clone(),
@@ -926,6 +994,76 @@ export class BattleScene {
     if (this.aimFrom && this.aimFrom !== a) this.aimFrom.label.visible = true;
     this.aimFrom = a;
     a.label.visible = false;
+  }
+
+  /**
+   * The other attack angles, for variety while the shots fly (the camera keeps drifting slowly until
+   * restoreView(), like a film camera on a dolly):
+   * - `reverse`: from behind the defender, over its shoulder, watching the fire come in;
+   * - `side`: side-on to the line of fire, both ships in frame, tracking along it;
+   * - `low`: low beside the attacker, its hull large in the foreground, the target beyond.
+   */
+  private cinematicView(a: ShipView, d: ShipView, ms: number, angle: Exclude<AttackAngle, 'gunner'>) {
+    if (!this.savedView) {
+      this.savedView = {
+        target: this.controls.target.clone(), position: this.camera.position.clone(),
+        minDistance: this.controls.minDistance, maxPolarAngle: this.controls.maxPolarAngle, enabled: this.controls.enabled,
+      };
+    }
+    this.controls.minDistance = 0;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.enabled = false;
+    const from = a.root.position.clone().setY(FLY_HEIGHT), to = d.root.position.clone().setY(FLY_HEIGHT);
+    const dist = to.distanceTo(from);
+    const dir = to.clone().sub(from).setY(0).normalize();
+    // Which side to film from: the one facing the player's own table edge, so left and right read as usual.
+    const across = new THREE.Vector3(-dir.z, 0, dir.x);
+    if (across.z * this.facing < 0) across.negate();
+    // Distance at which a span of `w` fits across the screen (narrow on an upright phone).
+    const fit = (w: number) => {
+      const v = THREE.MathUtils.degToRad(this.camera.fov) / 2;
+      const h = Math.atan(Math.tan(v) * this.camera.aspect);
+      return (w / 2) / Math.tan(h);
+    };
+    let target: THREE.Vector3, pos: THREE.Vector3, drift: THREE.Vector3, hide: ShipView;
+    if (angle === 'reverse') {
+      const lift = Math.max(0, 220 - dist) * 0.4;
+      pos = to.clone().addScaledVector(dir, d.reach * 1.5 + 25).addScaledVector(across, d.reach * 0.7)
+        .setY(Math.max(d.top, FLY_HEIGHT) + 16 + lift);
+      target = from.clone().lerp(to, 0.2);
+      drift = across.clone().multiplyScalar(-30);
+      hide = d;
+    } else if (angle === 'side') {
+      const mid = from.clone().lerp(to, 0.5);
+      const back = Math.max(fit(dist + a.reach + d.reach + 30), 110);
+      pos = mid.clone().addScaledVector(across, back).setY(FLY_HEIGHT + 12 + back * 0.1);
+      target = mid.setY(FLY_HEIGHT);
+      drift = dir.clone().multiplyScalar(dist * 0.18);
+      hide = a;
+    } else {
+      // An upright phone has little width: come in more from behind than from the side.
+      const narrow = this.camera.aspect < 1;
+      pos = from.clone().addScaledVector(dir, -(a.reach * (narrow ? 2.4 : 1.7) + 20)).addScaledVector(across, a.reach * (narrow ? 0.55 : 1.1) + 12)
+        .setY(Math.max(6, FLY_HEIGHT * 0.6));
+      target = from.clone().lerp(to, 0.6);
+      drift = new THREE.Vector3(0, 14, 0).addScaledVector(dir, -12);
+      hide = a;
+    }
+    this.flyTo(target, pos, ms);
+    if (this.aimFrom && this.aimFrom !== hide) this.aimFrom.label.visible = true;
+    this.aimFrom = hide;
+    hide.label.visible = false;
+    if (this.reducedMotion) return;
+    // Once in place, keep drifting until the next camera move takes over.
+    const id = this.camTween;
+    void this.wait(ms).then(() => {
+      if (id !== this.camTween) return;
+      const p0 = this.camera.position.clone();
+      void this.tween(4000, (t) => {
+        if (id !== this.camTween) return;
+        this.camera.position.copy(p0).addScaledVector(drift, t);
+      });
+    });
   }
 
   /** True while the camera is in attackView(), so the normal framing leaves it alone. */
@@ -1191,68 +1329,404 @@ export class BattleScene {
     return new THREE.MeshBasicMaterial({ color, map, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
   }
 
+  // ---------------- shots (docs/VFX.md, phase 1) ----------------
+
+  /** A muzzle point on the attacker: its nose, nudged to one side (`side` -1..1) for twin guns. */
+  private muzzle(shipId: string, side = 0): THREE.Vector3 | null {
+    const v = this.ships.get(shipId);
+    const p = this.gunPoint(shipId);
+    if (!v || !p) return null;
+    const h = v.root.rotation.y;
+    return p.add(new THREE.Vector3(Math.sin(h), 0, Math.cos(h)).multiplyScalar(side * Math.min(10, v.reach * 0.22)));
+  }
+
+  /** A glowing sprite (additive) at `at`, added to the scene. */
+  private glow(at: THREE.Vector3, color: THREE.Color, size: number, opacity = 1) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity }));
+    sp.position.copy(at);
+    sp.scale.setScalar(size);
+    this.scene.add(sp);
+    return sp;
+  }
+  private drop(...objs: (THREE.Sprite | THREE.Mesh | THREE.Line | THREE.Points)[]) {
+    for (const o of objs) {
+      this.scene.remove(o);
+      o.geometry.dispose();
+      const m = o.material as THREE.Material | THREE.Material[];
+      (Array.isArray(m) ? m : [m]).forEach((x) => x.dispose());
+    }
+  }
+
   /**
-   * One shot flying from the attacker's nose to `end`, resolving on arrival: a laser bolt, or a slower
-   * missile (glowing head with an exhaust trail) for ordnance.
+   * Smoke puffs left along a flight path: they hang where they were made, swell and fade. `add` drops one
+   * puff; `settle()` lets the last ones fade out (not awaited by the shot).
    */
-  async bolt(fromId: string, end: THREE.Vector3, color: number, ms = 170, style: 'laser' | 'missile' = 'laser') {
-    const start = this.gunPoint(fromId);
+  private smokeTrail(life: number, size: number, color = 0x8a8f99) {
+    const puffs: { sp: THREE.Sprite; born: number; drift: THREE.Vector3 }[] = [];
+    const tex = glowTexture();
+    let clock = 0;
+    const add = (at: THREE.Vector3, now: number) => {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color, transparent: true, opacity: 0.45, depthWrite: false }));
+      sp.position.copy(at);
+      sp.scale.setScalar(size * 0.4);
+      this.scene.add(sp);
+      puffs.push({ sp, born: now, drift: new THREE.Vector3().randomDirection().multiplyScalar(4) });
+    };
+    const update = (now: number) => {
+      clock = now;
+      for (const p of puffs) {
+        const age = Math.min(1, (now - p.born) / life);
+        p.sp.scale.setScalar(size * (0.4 + age * 1.1));
+        p.sp.material.opacity = 0.45 * (1 - age) * (1 - age);
+        p.sp.position.addScaledVector(p.drift, 0.016);
+      }
+    };
+    const settle = () => this.tween(life, (t) => update(clock + t * life)).then(() => puffs.forEach((p) => this.drop(p.sp)));
+    return { add, update, settle };
+  }
+
+  /**
+   * One shot from the attacker to `end` (on the target for a hit, past it for a miss), resolving when it
+   * arrives. Each kind of weapon has its own look: lasers, ion arcs, missiles, rocket salvoes, torpedoes.
+   * `i` is the shot's number in the volley (alternates the guns, varies the paths).
+   */
+  async shot(kind: ShotLook, fromId: string, end: THREE.Vector3, color: number, hit: boolean, i = 0) {
+    const ms = SHOT_TIMING[kind].flight;
+    if (kind === 'laser') return this.laserShot(fromId, end, color, hit, i, ms);
+    if (kind === 'ion') return this.ionShot(fromId, end, hit, ms);
+    if (kind === 'missile') return this.missileShot(fromId, end, hit, i, ms, false);
+    if (kind === 'rockets') return this.missileShot(fromId, end, hit, i, ms, true);
+    return this.torpedoShot(fromId, end, color, hit, ms);
+  }
+
+  /** Laser: a white-hot core in a coloured glow with a short fading tail, from alternating guns. */
+  private async laserShot(fromId: string, end: THREE.Vector3, color: number, hit: boolean, i: number, ms: number) {
+    const start = this.muzzle(fromId, i % 2 ? 1 : -1);
     if (!start) return;
-    if (style === 'missile') return this.missile(start, end, color, ms);
-    const dir = end.clone().sub(start);
-    const len = 34;
-    const geo = new THREE.CylinderGeometry(1.6, 1.6, len, 8);
-    geo.rotateZ(Math.PI / 2); // along +X
-    const core = new THREE.Mesh(geo, this.additive(hot(0xffffff, 3)));
-    const glowGeo = new THREE.CylinderGeometry(4.5, 4.5, len * 1.2, 10).rotateZ(Math.PI / 2);
-    const glow = new THREE.Mesh(glowGeo, this.additive(hot(color, 2.5), 0.6));
+    const dir = end.clone().sub(start).normalize();
+    const len = 30;
     const g = new THREE.Group();
-    g.add(core, glow);
-    g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir.clone().normalize());
-    // muzzle flash at the attacker's nose
-    const muzzle = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(color, 4), blending: THREE.AdditiveBlending, depthWrite: false }));
-    muzzle.position.copy(start);
-    muzzle.scale.setScalar(26);
-    this.scene.add(muzzle);
-    this.flash(start, color, 400, 160);
-    void this.tween(160, (t) => { muzzle.scale.setScalar(26 * (1 + t)); muzzle.material.opacity = 1 - t; })
-      .then(() => { this.scene.remove(muzzle); muzzle.material.dispose(); });
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, len, 6).rotateZ(Math.PI / 2), this.additive(hot(0xffffff, 3.2)));
+    const glow = new THREE.Mesh(new THREE.CylinderGeometry(3.6, 3.6, len * 1.15, 10).rotateZ(Math.PI / 2), this.additive(hot(color, 2.6), 0.6));
+    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 2.6, len * 1.8, 8).rotateZ(Math.PI / 2), this.additive(hot(color, 1.6), 0.35));
+    tail.position.x = -len * 1.2; // trailing behind the bolt
+    g.add(core, glow, tail);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+    const flare = this.glow(start, hot(color, 4), 22);
+    this.flash(start, color, 380, 150);
+    void this.tween(150, (t) => { flare.scale.setScalar(22 * (1 + t)); flare.material.opacity = 1 - t; }).then(() => this.drop(flare));
     this.scene.add(g);
     await this.tween(ms, (t) => g.position.lerpVectors(start, end, t));
     this.scene.remove(g);
-    geo.dispose();
-    glowGeo.dispose();
+    [core, glow, tail].forEach((m) => { m.geometry.dispose(); (m.material as THREE.Material).dispose(); });
+    if (hit) void this.impactFlare(end, color, 1);
   }
 
-  private async missile(start: THREE.Vector3, end: THREE.Vector3, color: number, ms: number) {
-    const head = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(0xfff0d0, 2.4), blending: THREE.AdditiveBlending, depthWrite: false }));
-    head.scale.setScalar(16);
-    const flare = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(color, 1.6), blending: THREE.AdditiveBlending, depthWrite: false }));
-    flare.scale.setScalar(36);
-    const trailN = 40;
-    const trailPos = new Float32Array(trailN * 3);
-    const trailGeo = new THREE.BufferGeometry();
-    trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
-    const trailMat = new THREE.PointsMaterial({ color: hot(0xffa060, 2.2), size: 16, map: glowTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
-    const trail = new THREE.Points(trailGeo, trailMat);
-    trail.frustumCulled = false; // its bounds would be computed from the all-zero start positions
-    this.scene.add(head, flare, trail);
-    this.flash(start, color, 300, 200);
-    // A slight arc so a volley reads as missiles, not lasers.
-    const lift = new THREE.Vector3(0, start.distanceTo(end) * 0.12, 0);
-    const at = (t: number) => new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(lift, Math.sin(t * Math.PI));
-    await this.tween(ms, (t) => {
-      const p = at(t);
-      head.position.copy(p);
-      flare.position.copy(p);
-      for (let i = 0; i < trailN; i++) {
-        const q = at(Math.max(0, t - (i / trailN) * 0.35));
-        trailPos.set([q.x, q.y, q.z], i * 3);
-      }
-      trailGeo.attributes.position.needsUpdate = true;
+  /** A quick flare and a few sparks where a shot lands; `scale` 1 for a laser, more for warheads. */
+  private async impactFlare(at: THREE.Vector3, color: number, scale: number) {
+    const core = this.glow(at, hot(0xfff4e0, 3.5), 10 * scale);
+    const ring = this.glow(at, hot(color, 2.4), 16 * scale, 0.8);
+    const pts = this.burst(at, hot(color, 2.6), Math.round(10 * scale), 30 * scale, 4);
+    await this.tween(260, (t) => {
+      core.scale.setScalar(10 * scale * (1 + t * 1.5)); core.material.opacity = 1 - t;
+      ring.scale.setScalar(16 * scale * (1 + t * 2)); ring.material.opacity = 0.8 * (1 - t);
+      pts.update(t);
     });
-    this.scene.remove(head, flare, trail);
-    head.material.dispose(); flare.material.dispose(); trailMat.dispose(); trailGeo.dispose();
+    this.drop(core, ring);
+    pts.dispose();
+  }
+
+  /**
+   * Ion cannon: a jagged arc of electricity that reaches out to the target, flickers, and fades. A hit
+   * crackles over the target.
+   */
+  private async ionShot(fromId: string, end: THREE.Vector3, hit: boolean, ms: number) {
+    const start = this.muzzle(fromId);
+    if (!start) return;
+    const n = 18;
+    // The main bolt, and a thinner second strand that wanders around it.
+    const main = new ArcRibbon(n, hot(0xeefaff, 3.2), hot(ION, 2.6), 1.1, 4.2);
+    const strand = new ArcRibbon(n, hot(0xd8f4ff, 2.4), hot(ION, 2), 0.6, 2.6);
+    this.scene.add(main, strand);
+    const amp = Math.min(12, end.distanceTo(start) * 0.045);
+    const muzzleGlow = this.glow(start, hot(ION, 3), 26);
+    let reach = 0, last = -1;
+    this.flash(start, ION, 500, 300);
+    await this.tween(ms, (t) => {
+      reach = Math.min(1, t * 2.2);
+      const step = Math.floor(t * 14); // re-jag the arc a dozen times while it lives
+      if (step !== last) {
+        last = step;
+        main.set(jagged(start, end, n, amp, reach));
+        strand.set(jagged(start, end, n, amp * 1.6, reach));
+      }
+      const fade = t > 0.75 ? (1 - t) / 0.25 : 1;
+      main.opacity = fade * (0.7 + Math.random() * 0.3);
+      strand.opacity = fade * (Math.random() < 0.7 ? 0.7 : 0.15);
+      muzzleGlow.material.opacity = fade * (0.6 + Math.random() * 0.4);
+    });
+    main.dispose();
+    strand.dispose();
+    this.drop(muzzleGlow);
+    if (hit) void this.crackle(end, 18, 480);
+  }
+
+  /** Little arcs of electricity flickering around a point (an ion hit, or an ionized ship). */
+  private async crackle(at: THREE.Vector3, radius: number, ms: number) {
+    const arcs = Array.from({ length: 3 }, () => {
+      const r = new ArcRibbon(6, hot(0xeefaff, 3), hot(ION, 2.4), 0.7, 2.6);
+      this.scene.add(r);
+      return r;
+    });
+    const core = this.glow(at, hot(ION, 2.4), 26);
+    const pts = this.burst(at, hot(ION, 2.6), 14, 26, 4);
+    this.flash(at, ION, 700, ms);
+    let last = -1;
+    await this.tween(ms, (t) => {
+      const step = Math.floor(t * 12);
+      if (step !== last) {
+        last = step;
+        for (const r of arcs) {
+          const a = new THREE.Vector3().randomDirection().multiplyScalar(radius).add(at), b = new THREE.Vector3().randomDirection().multiplyScalar(radius).add(at);
+          r.set(jagged(a, b, 6, 6));
+        }
+      }
+      arcs.forEach((r) => { r.opacity = (1 - t) * (Math.random() < 0.8 ? 1 : 0.2); });
+      core.scale.setScalar(26 * (1 + t)); core.material.opacity = 0.7 * (1 - t);
+      pts.update(t);
+    });
+    arcs.forEach((r) => r.dispose());
+    this.drop(core);
+    pts.dispose();
+  }
+
+  /**
+   * Missile: a body with a flickering exhaust drops off the launcher, curves in on the target and leaves
+   * smoke hanging behind it; a hit is a fireball. `rocket`: a small, fast, wobbling rocket from a salvo.
+   */
+  private async missileShot(fromId: string, end: THREE.Vector3, hit: boolean, i: number, ms: number, rocket: boolean) {
+    const start = this.muzzle(fromId, rocket ? ((i % 3) - 1) * 0.8 : i % 2 ? 0.8 : -0.8);
+    if (!start) return;
+    const s = rocket ? 0.6 : 1;
+    const body = new THREE.Mesh(new THREE.ConeGeometry(1.8 * s, 9 * s, 8), new THREE.MeshBasicMaterial({ color: 0xc9ced6 }));
+    const exhaust = this.glow(start, hot(0xffb060, 3), 14 * s);
+    const head = this.glow(start, hot(0xfff0d0, 2.2), 7 * s);
+    this.scene.add(body);
+    const smoke = this.smokeTrail(rocket ? 420 : 900, rocket ? 12 : 20);
+    const dir = end.clone().sub(start);
+    const dist = dir.length();
+    const side = new THREE.Vector3(-dir.z, 0, dir.x).normalize().multiplyScalar(i % 2 ? 1 : -1);
+    // Missiles drop away, then swing round onto the target; rockets fly nearly straight with a wobble.
+    const c1 = start.clone().addScaledVector(side, rocket ? 4 : dist * 0.22).add(new THREE.Vector3(0, rocket ? 0 : -6, 0));
+    const c2 = end.clone().addScaledVector(dir, -0.35).addScaledVector(side, rocket ? 0 : dist * 0.12).add(new THREE.Vector3(0, rocket ? 3 : dist * 0.1, 0));
+    const at = (t: number) => {
+      const u = 1 - t;
+      const p = start.clone().multiplyScalar(u * u * u).addScaledVector(c1, 3 * u * u * t).addScaledVector(c2, 3 * u * t * t).addScaledVector(end, t * t * t);
+      if (rocket) p.addScaledVector(side, Math.sin(t * Math.PI * 4 + i) * 2.5 * Math.sin(t * Math.PI));
+      return p;
+    };
+    this.flash(start, 0xffa040, rocket ? 160 : 320, 200);
+    let lastPuff = -1, now = 0;
+    await this.tween(ms, (t) => {
+      now = t * ms;
+      const p = at(t), ahead = at(Math.min(1, t + 0.02));
+      body.position.copy(p);
+      const v = ahead.clone().sub(p);
+      if (v.lengthSq() > 1e-6) body.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v.normalize());
+      head.position.copy(p);
+      exhaust.position.copy(p).addScaledVector(v, -5 * s);
+      exhaust.scale.setScalar(14 * s * (0.75 + Math.random() * 0.5));
+      const puff = Math.floor(t * (rocket ? 10 : 22));
+      if (puff !== lastPuff) { lastPuff = puff; smoke.add(exhaust.position, now); }
+      smoke.update(now);
+    });
+    this.drop(body, exhaust, head);
+    void smoke.settle();
+    if (hit) void (rocket ? this.impactFlare(end, 0xff9a40, 1.3) : this.fireball(end, 1));
+    else void this.impactFlare(end, 0xffb060, rocket ? 0.6 : 0.9); // a miss self-destructs past the target
+  }
+
+  /** A small explosion: white core, licks of fire, smoke and sparks. `scale` 1 for a missile, more for a torpedo. */
+  private async fireball(at: THREE.Vector3, scale: number) {
+    const core = this.glow(at, hot(0xfff2d0, 5), 14 * scale);
+    const fire = Array.from({ length: 4 }, () => {
+      const sp = this.glow(at, hot(Math.random() < 0.5 ? 0xff7a2a : 0xffb347, 3), 12 * scale);
+      sp.userData.off = new THREE.Vector3().randomDirection().multiplyScalar(8 * scale);
+      return sp;
+    });
+    const pts = this.burst(at, hot(0xffc070, 3), Math.round(24 * scale), 50 * scale, 5);
+    this.flash(at, 0xff9944, 1200 * scale, 450);
+    await this.tween(520, (t) => {
+      const e = 1 - Math.pow(1 - t, 3);
+      core.scale.setScalar(14 * scale * (1 + e * 2.5)); core.material.opacity = Math.max(0, 1 - t * 2);
+      fire.forEach((f) => { f.position.copy(at).addScaledVector(f.userData.off, e * 1.6); f.scale.setScalar(12 * scale * (1 + e * 2)); f.material.opacity = (1 - t) * (1 - t); });
+      pts.update(t);
+    });
+    this.drop(core, ...fire);
+    pts.dispose();
+  }
+
+  /**
+   * Torpedo: a slow, heavy warhead that pulses as it comes, with a sparkling wake; a hit is a big flash with
+   * a shockwave ring (ion torpedoes crackle too). Proton warheads glow orange-white, ion ones blue.
+   */
+  private async torpedoShot(fromId: string, end: THREE.Vector3, color: number, hit: boolean, ms: number) {
+    const start = this.muzzle(fromId);
+    if (!start) return;
+    const ion = color === ION;
+    const tint = ion ? ION : 0xff8a3d;
+    const core = this.glow(start, hot(0xffffff, 4), 12);
+    const halo = this.glow(start, hot(tint, 2.6), 34, 0.85);
+    const wakeN = 26;
+    const wakePos = new Float32Array(wakeN * 3);
+    const wakeGeo = new THREE.BufferGeometry();
+    wakeGeo.setAttribute('position', new THREE.BufferAttribute(wakePos, 3));
+    const wake = new THREE.Points(wakeGeo, new THREE.PointsMaterial({ color: hot(tint, 2.2), size: 7, map: glowTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+    wake.frustumCulled = false;
+    this.scene.add(wake);
+    const lift = new THREE.Vector3(0, start.distanceTo(end) * 0.06, 0);
+    const at = (t: number) => new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(lift, Math.sin(t * Math.PI));
+    this.flash(start, tint, 700, 350);
+    await this.tween(ms, (t) => {
+      // Slow off the launcher, then accelerating in.
+      const e = t * t * (1.6 - 0.6 * t);
+      const p = at(e);
+      core.position.copy(p);
+      halo.position.copy(p);
+      halo.scale.setScalar(34 * (0.85 + 0.2 * Math.sin(t * 40)));
+      for (let k = 0; k < wakeN; k++) {
+        const q = at(Math.max(0, e - (k / wakeN) * 0.25)).add(new THREE.Vector3().randomDirection().multiplyScalar(k * 0.35));
+        wakePos.set([q.x, q.y, q.z], k * 3);
+      }
+      wakeGeo.attributes.position.needsUpdate = true;
+    });
+    this.drop(core, halo, wake);
+    if (!hit) { void this.impactFlare(end, tint, 1.2); return; }
+    void this.shockwave(end, tint, 1);
+    void this.fireball(end, 1.7);
+    if (ion) void this.crackle(end, 24, 650);
+  }
+
+  /** A flat ring racing out along the table from a blast. */
+  private async shockwave(at: THREE.Vector3, color: number, scale: number) {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 64), this.additive(hot(color, 2.4)));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(at);
+    this.scene.add(ring);
+    await this.tween(600, (t) => {
+      const e = 1 - Math.pow(1 - t, 3);
+      ring.scale.setScalar(8 + 90 * scale * e);
+      (ring.material as THREE.MeshBasicMaterial).opacity = (1 - t) * 0.9;
+    });
+    this.drop(ring);
+  }
+
+  /**
+   * Jamming: rings of interference travel from the jammer to the target over a crackle of static; then
+   * the target glitches (its model flickers and jitters, violet static) as its token is knocked off.
+   */
+  async jam(fromId: string, toId: string) {
+    const from = this.ships.get(fromId), to = this.ships.get(toId);
+    if (!from || !to) return;
+    const a = from.root.position.clone().setY(FLY_HEIGHT + 6), b = to.root.position.clone().setY(FLY_HEIGHT + 6);
+    const dir = b.clone().sub(a);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
+    const rings = Array.from({ length: 5 }, () => {
+      const m = new THREE.Mesh(new THREE.RingGeometry(0.7, 1, 40), this.additive(hot(JAM, 2.4), 0));
+      m.quaternion.copy(q);
+      this.scene.add(m);
+      return m;
+    });
+    const n = 24;
+    const staticLine = new ArcRibbon(n, hot(0xf0e0ff, 2), hot(JAM, 2), 0.35, 1.6);
+    this.scene.add(staticLine);
+    const side = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+    this.flash(a, JAM, 500, 400);
+    let last = -1;
+    await this.tween(850, (t) => {
+      rings.forEach((r, k) => {
+        const f = THREE.MathUtils.clamp(t * 1.6 - k * 0.15, 0, 1);
+        r.position.lerpVectors(a, b, f);
+        r.scale.setScalar(6 + 10 * Math.sin(f * Math.PI));
+        (r.material as THREE.MeshBasicMaterial).opacity = f > 0 && f < 1 ? 0.85 * Math.sin(f * Math.PI) : 0;
+      });
+      const step = Math.floor(t * 20);
+      if (step !== last) {
+        last = step;
+        staticLine.set(Array.from({ length: n }, (_, k) => {
+          const f = k / (n - 1);
+          return new THREE.Vector3().lerpVectors(a, b, f).addScaledVector(side, Math.sin(f * 30 + t * 40) * 3 + (Math.random() - 0.5) * 3);
+        }));
+      }
+      staticLine.opacity = 0.4 * Math.sin(t * Math.PI);
+    });
+    rings.forEach((r) => this.drop(r));
+    staticLine.dispose();
+    // The target glitches.
+    const pts = this.burst(b, hot(JAM, 2.6), 18, 28, 4);
+    const base = to.model.position.clone();
+    let lastG = -1;
+    await this.tween(480, (t) => {
+      pts.update(t);
+      const step = Math.floor(t * 16);
+      if (step === lastG) return;
+      lastG = step;
+      to.model.visible = t > 0.9 || Math.random() > 0.35;
+      if (!this.reducedMotion) to.model.position.set(base.x + (Math.random() - 0.5) * 4 * (1 - t), base.y, base.z + (Math.random() - 0.5) * 4 * (1 - t));
+    });
+    to.model.visible = true;
+    to.model.position.copy(base);
+    pts.dispose();
+  }
+
+  /**
+   * Ionized ships keep a faint flickering blue aura with stray sparks while they have ion tokens (set from
+   * the ship's label refresh; animated in animateIdle).
+   */
+  private setIonAura(v: ShipView, on: boolean) {
+    if (on === !!v.ionAura) return;
+    if (!on) {
+      for (const o of [...v.ionAura!.children]) {
+        if (o instanceof ArcRibbon) o.dispose();
+        else { o.removeFromParent(); (o as THREE.Sprite).material.dispose(); }
+      }
+      v.root.remove(v.ionAura!);
+      v.ionAura = undefined;
+      return;
+    }
+    const g = new THREE.Group();
+    g.position.y = FLY_HEIGHT + 4;
+    const r = Math.max(16, v.reach * 0.6);
+    for (let k = 0; k < 3; k++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(ION, 1.8), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.4 }));
+      sp.scale.setScalar(r * 1.4);
+      sp.userData.k = k;
+      g.add(sp);
+    }
+    g.add(new ArcRibbon(5, hot(0xeefaff, 2.6), hot(ION, 2.2), 0.5, 1.9));
+    g.userData.r = r;
+    v.root.add(g);
+    v.ionAura = g;
+  }
+
+  private animateIonAura(v: ShipView, t: number) {
+    const g = v.ionAura;
+    if (!g) return;
+    const r = g.userData.r as number;
+    for (const o of g.children) {
+      if (o instanceof ArcRibbon) {
+        // Now and then a stray spark arcs over the hull.
+        if (!this.reducedMotion && Math.random() < 0.04) {
+          o.set(jagged(new THREE.Vector3().randomDirection().multiplyScalar(r), new THREE.Vector3().randomDirection().multiplyScalar(r), 5, 4));
+          o.opacity = 0.9;
+        } else o.opacity *= 0.82;
+        continue;
+      }
+      const sp = o as THREE.Sprite;
+      const k = o.userData.k as number;
+      sp.position.set(Math.sin(t * 2 + k * 2.1) * r * 0.3, Math.sin(t * 3 + k) * 2, Math.cos(t * 2.3 + k * 2.1) * r * 0.3);
+      sp.material.opacity = this.reducedMotion ? 0.3 : 0.22 + 0.2 * Math.random();
+    }
   }
 
   /** Blue energy bubble around a ship: its shields took the hit. Bright at the rim, ripples outward. */
