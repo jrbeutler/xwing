@@ -277,17 +277,17 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   // Cannons: front-arc secondary weapons with no charges, so they never run dry.
   'heavy-laser-cannon': {
-    id: 'heavy-laser-cannon', name: 'Heavy Laser Cannon', slot: 'cannon', cost: 7,
+    id: 'heavy-laser-cannon', name: 'Heavy Laser Cannon', slot: 'cannon', cost: 4,
     weapon: { attack: 4, minRange: 2, maxRange: 3, bullseyeOnly: true },
     text: 'Attack 4, range 2-3, only at a ship in your bullseye.',
   },
   'ion-cannon': {
-    id: 'ion-cannon', name: 'Ion Cannon', slot: 'cannon', cost: 5,
+    id: 'ion-cannon', name: 'Ion Cannon', slot: 'cannon', cost: 3,
     weapon: { attack: 3, minRange: 1, maxRange: 3, effect: 'ion' },
     text: 'Attack 3, range 1-3. If it hits: 1 damage, and every other hit is an ion token instead.',
   },
   autocannon: {
-    id: 'autocannon', name: 'Autocannon', slot: 'cannon', cost: 4,
+    id: 'autocannon', name: 'Autocannon', slot: 'cannon', cost: 3,
     weapon: { attack: 2, minRange: 1, maxRange: 2 },
     text: 'Attack 2, range 1-2. The defender rolls 1 fewer defense die.',
     effects: [{ kind: 'dice', when: 'attacking', dice: 'defense', delta: -1, if: { weapon: 'autocannon' } }],
@@ -299,7 +299,7 @@ export const UPGRADES: Record<string, UpgradeDef> = {
     effects: [{ kind: 'action', action: { type: 'coordinate' } }, { kind: 'stat', stat: 'coordinateRange', delta: 1 }],
   },
   'combat-medic': {
-    id: 'combat-medic', name: 'Combat Medic', slot: 'crew', cost: 5, charges: 1,
+    id: 'combat-medic', name: 'Combat Medic', slot: 'crew', cost: 3, charges: 1,
     text: 'Once per battle, in the End phase, repair your worst face-up damage card (any card).',
     effects: [{ kind: 'trigger', on: 'endPhase', cost: 'charge', if: { hasDamageCard: true }, do: [{ op: 'repairCard' }], log: 'used' }],
   },
@@ -310,44 +310,44 @@ export const UPGRADES: Record<string, UpgradeDef> = {
   },
   // Gunners: second chances with the ship's guns.
   'second-gunner': {
-    id: 'second-gunner', name: 'Second Gunner', slot: 'gunner', cost: 6,
+    id: 'second-gunner', name: 'Second Gunner', slot: 'gunner', cost: 5,
     text: 'After an attack that deals no damage, make a bonus attack with a different weapon through your turret arc.',
     effects: [{ kind: 'bonusAttack' }],
   },
   'gunnery-chief': {
-    id: 'gunnery-chief', name: 'Gunnery Chief', slot: 'gunner', cost: 4,
+    id: 'gunnery-chief', name: 'Gunnery Chief', slot: 'gunner', cost: 3,
     text: 'When attacking through your turret arc, change 1 focus result to a hit.',
     effects: [{ kind: 'changeAttack', dice: 1, if: { turret: true } }],
   },
   // Droids: a small ship's repairs and flight help.
   'repair-droid': {
-    id: 'repair-droid', name: 'Repair Droid', slot: 'droid', cost: 6, charges: 1, recurring: true,
-    text: 'Once per round, in the End phase, if your shields are below their maximum, recover 1 shield.',
+    id: 'repair-droid', name: 'Repair Droid', slot: 'droid', cost: 6, charges: 2,
+    text: 'Twice per battle, in the End phase, if your shields are below their maximum, recover 1 shield.',
     effects: [{ kind: 'trigger', on: 'endPhase', cost: 'charge', if: { shieldsBelowMax: true }, do: [{ op: 'recoverShield' }], log: 'used' }],
   },
   'patch-droid': {
-    id: 'patch-droid', name: 'Patch Droid', slot: 'droid', cost: 3,
+    id: 'patch-droid', name: 'Patch Droid', slot: 'droid', cost: 2,
     text: 'Your Repair action can fix any face-up damage card, not only repairable ones.',
     effects: [{ kind: 'stat', stat: 'repairAny', delta: 1 }],
   },
   'nav-droid': {
-    id: 'nav-droid', name: 'Nav Droid', slot: 'droid', cost: 4,
+    id: 'nav-droid', name: 'Nav Droid', slot: 'droid', cost: 2,
     text: 'Your red banks and turns are white.',
     effects: [{ kind: 'maneuverDifficulty', bearings: ['bankLeft', 'bankRight', 'turnLeft', 'turnRight'], from: 'red', to: 'white' }],
   },
   // Sensors: locks and information.
   'fire-control-system': {
-    id: 'fire-control-system', name: 'Fire-Control System', slot: 'sensor', cost: 3,
+    id: 'fire-control-system', name: 'Fire-Control System', slot: 'sensor', cost: 5,
     text: 'When you reroll attack dice with a lock, keep the lock.',
     effects: [{ kind: 'stat', stat: 'keepLock', delta: 1 }],
   },
   'targeting-computer': {
-    id: 'targeting-computer', name: 'Targeting Computer', slot: 'sensor', cost: 3,
+    id: 'targeting-computer', name: 'Targeting Computer', slot: 'sensor', cost: 2,
     text: 'Adds the Calculate action: a token that changes 1 focus result (a hit attacking, an evade defending).',
     effects: [{ kind: 'action', action: { type: 'calculate' } }],
   },
   'collision-scanner': {
-    id: 'collision-scanner', name: 'Collision Scanner', slot: 'sensor', cost: 2,
+    id: 'collision-scanner', name: 'Collision Scanner', slot: 'sensor', cost: 3,
     text: 'Touching an obstacle never costs you your action.',
     effects: [{ kind: 'stat', stat: 'keepActionOnObstacle', delta: 1 }],
   },

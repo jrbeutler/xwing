@@ -1,7 +1,7 @@
 // Upgrade balance by simulation: how much one copy of an upgrade raises the win rate of an otherwise
 // mirrored AI-vs-AI matchup, turned into points by comparing with reference upgrades whose cost we trust.
 //
-//   npx vite-node packages/engine/scripts/balance.ts -- [games per upgrade] [only-these,ids]
+//   npx vite-node packages/engine/scripts/balance.ts -- [games per upgrade] [only-these,ids] [first seed]
 //
 // Each case puts the upgrade on a "host" ship that has the slot (on both sides the squads are otherwise
 // identical generic pilots), swaps which side gets it every game, and counts draws as half a win.
@@ -85,10 +85,11 @@ export function measure(c: Case, games: number, seed0 = 1): { rate: number; se: 
 const args = process.argv.slice(2).filter((a) => a !== '--');
 if (args.length) {
   const games = Number(args[0]) || 200;
-  const only = args[1]?.split(',');
+  const only = args[1] ? args[1].split(',') : undefined;
+  const seed0 = Number(args[2]) || 1; // run several processes with different seeds and pool the results
   for (const c of CASES.filter((x) => !only || only.includes(x.upgrade))) {
     const t0 = Date.now();
-    const r = measure(c, games);
+    const r = measure(c, games, seed0);
     console.log(JSON.stringify({ upgrade: c.upgrade, cost: upgradeCost(c.upgrade, c.host), reference: !!c.reference, games, ...r, secs: (Date.now() - t0) / 1000 }));
   }
 }
