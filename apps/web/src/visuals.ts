@@ -227,47 +227,83 @@ function radiusAt(poly: { x: number; z: number }[], c: { x: number; z: number },
   return Number.isFinite(best) ? best : 0;
 }
 
-/**
- * A lumpy rock whose footprint fills (but never exceeds) the obstacle polygon, so what you see is
- * what you collide with. `poly` is in world x/z.
- */
-export function buildAsteroid(poly: { x: number; z: number }[], seed: number): THREE.Group {
-  const c = poly.reduce((a, p) => ({ x: a.x + p.x / poly.length, z: a.z + p.z / poly.length }), { x: 0, z: 0 });
-  const avgR = poly.reduce((a, p) => a + Math.hypot(p.x - c.x, p.z - c.z), 0) / poly.length;
-  const height = THREE.MathUtils.clamp(avgR * 0.7, 18, 55);
-  const geo = new THREE.IcosahedronGeometry(1, 4);
+/** Distance from (x, z) to the nearest edge of the polygon. */
+function edgeDist(poly: { x: number; z: number }[], x: number, z: number) {
+  let best = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    const ex = q.x - p.x, ez = q.z - p.z;
+    const t = Math.max(0, Math.min(1, ((x - p.x) * ex + (z - p.z) * ez) / (ex * ex + ez * ez || 1)));
+    best = Math.min(best, Math.hypot(x - (p.x + ex * t), z - (p.z + ez * t)));
+  }
+  return best;
+}
+
+const ROCK_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.05, flatShading: true });
+
+/** One lumpy rock of radius `r` centred at the origin (cratered, a little squashed, each one its own shape). */
+function rock(r: number, seed: number, detail: number): THREE.Mesh {
+  const geo = new THREE.IcosahedronGeometry(1, detail);
   const pos = geo.attributes.position;
   const col = new Float32Array(pos.count * 3);
   const v = new THREE.Vector3();
   const base = new THREE.Color(0x544a42), dark = new THREE.Color(0x221d1a), light = new THREE.Color(0x8c7a68);
   const tmp = new THREE.Color();
+  // A stretch per axis, so the rocks aren't all balls.
+  const sx = 0.8 + vnoise(seed, 1, 2) * 0.4, sy = 0.6 + vnoise(2, seed, 3) * 0.35, sz = 0.8 + vnoise(3, 4, seed) * 0.4;
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i);
-    const n = fbm(v.x * 1.7 + seed, v.y * 1.7, v.z * 1.7 - seed, 5);
-    const crater = Math.max(0, vnoise(v.x * 4 + seed, v.y * 4, v.z * 4) - 0.72) * 1.6;
-    const bump = 0.78 + n * 0.32 - crater;
-    const a = Math.atan2(v.z, v.x);
-    const R = radiusAt(poly, c, a) * 0.97;
-    const horiz = Math.min(1, bump) * R;
-    let y = v.y * height * (0.7 + n * 0.5);
-    if (y < 0) y *= 0.25; // flatter underside
-    const rr = Math.hypot(v.x, v.z);
-    pos.setXYZ(i, c.x + (rr ? (v.x / rr) * horiz * rr : 0), y + 4, c.z + (rr ? (v.z / rr) * horiz * rr : 0));
+    const n = fbm(v.x * 1.7 + seed, v.y * 1.7, v.z * 1.7 - seed, 4);
+    const crater = Math.max(0, vnoise(v.x * 3.5 + seed, v.y * 3.5, v.z * 3.5) - 0.72) * 1.6;
+    const k = r * (0.78 + n * 0.34 - crater);
+    pos.setXYZ(i, v.x * k * sx, v.y * k * sy, v.z * k * sz);
     tmp.copy(base).lerp(n > 0.55 ? light : dark, Math.min(1, Math.abs(n - 0.5) * 2.4)).lerp(dark, Math.min(1, crater * 2.5));
     col.set([tmp.r, tmp.g, tmp.b], i * 3);
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   geo.computeVertexNormals();
-  const rock = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.05, flatShading: true }));
-  rock.castShadow = rock.receiveShadow = true;
+  const m = new THREE.Mesh(geo, ROCK_MAT);
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+
+/**
+ * An asteroid field: a cluster of rocks, a few big ones and many small, with gravel between them. Every
+ * rock stays inside the obstacle polygon, so what you see is what you collide with. `poly` is in world x/z.
+ */
+export function buildAsteroid(poly: { x: number; z: number }[], seed: number): THREE.Group {
+  const rnd = seeded(seed);
+  const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
+  const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+  const c = poly.reduce((a, p) => ({ x: a.x + p.x / poly.length, z: a.z + p.z / poly.length }), { x: 0, z: 0 });
+  const avgR = poly.reduce((a, p) => a + Math.hypot(p.x - c.x, p.z - c.z), 0) / poly.length;
   const g = new THREE.Group();
-  g.add(rock);
+  const placed: { x: number; z: number; r: number }[] = [];
+  /** Put a rock of about `want` radius somewhere free inside the footprint (shrinking it to fit). */
+  const place = (want: number, min: number, detail: number, lift: number) => {
+    for (let t = 0; t < 60; t++) {
+      const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0);
+      if (!insidePoly(poly, x, z)) continue;
+      let r = Math.min(want, edgeDist(poly, x, z) * 0.95);
+      for (const o of placed) r = Math.min(r, Math.hypot(o.x - x, o.z - z) - o.r * 0.8); // rocks may nestle into each other a little
+      if (r < min) continue;
+      placed.push({ x, z, r });
+      const m = rock(r, seed * 13.7 + placed.length * 3.1, detail);
+      m.position.set(x, 4 + r * 0.5 + rnd() * lift, z);
+      m.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI);
+      g.add(m);
+      return;
+    }
+  };
+  // The big ones first (they need the room), then the middling, then a scatter of gravel.
+  const big = avgR > 60 ? 4 : 3;
+  for (let i = 0; i < big; i++) place(avgR * (0.44 - i * 0.04), avgR * 0.18, 3, 6);
+  const mid = Math.round(THREE.MathUtils.clamp(avgR / 4, 8, 18));
+  for (let i = 0; i < mid; i++) place(avgR * (0.14 + rnd() * 0.1), 4, 2, 10);
+  const gravel = Math.round(THREE.MathUtils.clamp(avgR / 2, 20, 45));
+  for (let i = 0; i < gravel; i++) place(2 + rnd() * 3.5, 1.5, 1, 14);
   // faint hazard outline of the true footprint
-  const outline = new THREE.LineLoop(
-    new THREE.BufferGeometry().setFromPoints(poly.map((p) => new THREE.Vector3(p.x, 0.5, p.z))),
-    new THREE.LineBasicMaterial({ color: 0xd08a4a, transparent: true, opacity: 0.45 }),
-  );
-  g.add(outline);
+  g.add(footprint(poly, 0xd08a4a));
   return g;
 }
 

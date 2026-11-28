@@ -69,7 +69,7 @@ function campaignStatus(p: Progress) {
 }
 
 /** The start menu: the campaign or a skirmish (the squad builder). */
-export function openStart(go: { campaign(): void; skirmish(): void }) {
+export function openStart(go: { campaign(): void; skirmish(): void; quick(): void }) {
   const p = loadProgress();
   const { root, close } = overlay('start', `
     <h1 class="menu-title">Squadron Tactics</h1>
@@ -79,6 +79,10 @@ export function openStart(go: { campaign(): void; skirmish(): void }) {
         <b>${p.officer ? 'Continue campaign' : 'Start campaign'}</b>
         <span>${campaignStatus(p)}</span>
       </button>
+      <button class="menu-choice" id="st-quick">
+        <b>Quick battle</b>
+        <span>Straight into a fight against the AI: your last squad, or a random one.</span>
+      </button>
       <button class="menu-choice" id="st-skirmish">
         <b>Skirmish</b>
         <span>Build a squad and fight the AI, a friend on this device, or online.</span>
@@ -86,6 +90,7 @@ export function openStart(go: { campaign(): void; skirmish(): void }) {
     </div>`);
   root.querySelector<HTMLButtonElement>('#st-campaign')!.onclick = () => { close(); go.campaign(); };
   root.querySelector<HTMLButtonElement>('#st-skirmish')!.onclick = () => { close(); go.skirmish(); };
+  root.querySelector<HTMLButtonElement>('#st-quick')!.onclick = () => { close(); go.quick(); };
   root.querySelector<HTMLButtonElement>('#st-campaign')!.focus();
 }
 
