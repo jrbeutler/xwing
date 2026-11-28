@@ -2,8 +2,8 @@
 
 Status: the mission framework, the eight training missions, a first campaign arc (mission boards, flags), the
 squadron roster with experience, the hangar and retreats, and ejection with the medic ship and rescue missions are
-built; rising threat, mission templates, the longer campaign and fleet battles are not (planned below in
-**Roster, experience and rescue**). Decisions so far:
+built, with a ninth flight-school lesson for the medic, rising threat and mission templates; the longer campaign
+(Acts II and III) and fleet battles are not (planned below in **Roster, experience and rescue**). Decisions so far:
 - **Fighters in fleet battles** are abstract squadron tokens to start (the fleet layer is later).
 - **Losses**: a destroyed ship is gone. Its pilot ejects; the squadron's medic ship has to pick them up before
   their life support runs out, or they are lost (or captured, which opens a rescue mission).
@@ -306,6 +306,25 @@ Earned per mission, by pilots who come home:
   recovery phase; the objectives panel lists pods waiting; Recover in the action ring and the phone bar; the
   debrief says what became of each pilot; the crew screen explains the medic; a captured officer's rescue is
   crewed without them; an ending for a lost officer.
+
+### As built (the medic lesson and step 3)
+- **Training 9, Search and Rescue**: the cadet flies the medic alone (it carries the officer tag in this lesson);
+  three pods start on the table (`MissionDef.pods`, each with its own `life`) and two drones drift about. A
+  `recover` objective counts pods aboard and fails when one is lost; with no fighters, only losing the medic
+  loses the mission. Coach tips on round 1, the first Recover and the first stress. Graduation follows it; the
+  campaign shows a one-time tip at the first ejection pointing back to it.
+- **Threat** (`threat.ts`): `threatLevel(missionIndex, crew)` = one level per two missions flown plus one per two
+  points of the crew's experience (initiative above where each pilot started, plus talents). `applyThreat`
+  hardens the enemy a step per level: leader +1 initiative; all +1; an extra ship; a talent for the leader;
+  modifications; a second extra ship; then +1 initiative to all every two levels (capped at 6). Extra ships are
+  copies of the last enemy, untagged, at free spots on the far edge. `missionAsFlown` applies it after the
+  crew is chosen, and its note ("Threat N: ...") shows on the board card and in the briefing.
+- **Templates** (`templates.ts`): `strike` (destroy a tagged target behind escorts), `escort` (a Wayfarer to the
+  far edge, kept alive), `defend` (survive N rounds), `recon` (buoys placed from the seed, clear of obstacles),
+  `duel` (destroy a named ace) and `rescue` (the Prison Break, now built from it). Each takes the story
+  (title, summary, stakes, intro, outcome, flags, extras), a seed for the table, and optional hulls for both
+  sides. Tests check 25 tables of each for soundness (also at the highest threat), play each to a result, and
+  fly whole campaigns with the AI (squadron, threat, rescues and greedy hangar spending all in play).
 
 ### Build steps
 1. **Roster and experience**: roster state, pilot picking, XP and the hangar, retreat off the table with

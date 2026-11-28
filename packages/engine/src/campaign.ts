@@ -8,6 +8,8 @@ import {
   applyReport, crewShips, defaultCrew, isSeat, startingRoster, withReplacements, type PilotReport, type RosterPilot,
 } from './roster';
 import { MEDIC_TAG } from './rescue';
+import { applyThreat, threatLevel } from './threat';
+import { rescue as rescueTemplate } from './templates';
 import { OFFICER_TAG, type MissionDef } from './training';
 import type { Zone } from './types';
 
@@ -367,23 +369,17 @@ export const awaitingRescue = (p: CampaignProgress) =>
  */
 export function rescueMission(n: number): CampaignMission {
   const guards = Math.min(4, 2 + Math.floor(n / 3));
-  const enemy = [wasp(300, 'Guard 1'), javelin(457, 'Guard 2'), wasp(614, 'Guard 3'), javelin(170, 'Guard 4')].slice(0, guards);
-  return {
-    ...base(n + 1), id: `rescue-${n}`, title: 'Prison Break', teaches: 'Rescue', difficulty: 2,
+  return rescueTemplate({
+    id: `rescue-${n}`, number: n + 1, title: 'Prison Break', difficulty: 2, seed: 5101 + n * 17,
     summary: 'The Syndicate holds your captured pilots on a prison barge. Clear its guards and bring them home.',
     stakes: 'Your captured pilots. Fly any other mission and they are gone for good.',
     intro: '{officer}, we found them: a prison barge, lightly guarded, moving tonight. We get one try.',
-    briefing: ['Destroy the barge\'s guards. With its escort gone the barge surrenders, and the prisoners come home with your medic.'],
-    obstacles: rocks(5101 + n * 17, 3),
-    player: [lead(300), wing(457, 'Wingmate'), wing(614, 'Second wing')],
-    enemy,
-    objectives: [{ id: 'guards', label: 'Destroy the barge\'s guards', kind: 'destroy' }],
-    maxRounds: 10,
+    enemy: ['wasp', 'javelin', 'wasp', 'javelin'].slice(0, guards),
     outcome: {
       win: { flags: [], text: 'The guards are down and the barge struck its colours. Your pilots are home, a little worse for wear.' },
       loss: { flags: [], text: 'The barge got away with its prisoners. We will not see them again.' },
     },
-  };
+  });
 }
 
 /** Whether a mission's flags let it on the board. */
@@ -442,7 +438,9 @@ export function missionAsFlown(m: CampaignMission, p: CampaignProgress, crew?: s
   const pilots = ids.map((id) => r.roster.find((x) => x.id === id)).filter((x): x is RosterPilot => !!x);
   const held = m.id.startsWith('rescue-') ? awaitingRescue(r) : [];
   if (held.length) notes.unshift(`Held aboard the barge: ${held.map((x) => x.name).join(', ')}.`);
-  return { def: { ...m, player: withMedic(crewShips(player, seats, pilots)), enemy }, notes };
+  // The Syndicate answers how far the campaign has come and who is flying.
+  const threat = applyThreat(enemy, threatLevel(r.history.length, pilots));
+  return { def: { ...m, player: withMedic(crewShips(player, seats, pilots)), enemy: threat.enemy }, notes: [...notes, ...threat.notes] };
 }
 
 /**
