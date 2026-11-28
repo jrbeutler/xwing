@@ -2,6 +2,7 @@
 // switched on one step at a time. Missions are data; `missionGame` turns one into a game.
 import { generateObstacles, createGame, type SquadEntry } from './game';
 import { ALL_ACTIONS, FULL_RULES } from './rules';
+import { isMedic, MEDIC_TAG } from './rescue';
 import type { AiProfile, GameState, Marker, Objective, Obstacle, Ruleset, Trigger, Zone } from './types';
 
 /** A mission as written: briefing, rules, table, forces, objectives and coach tips. */
@@ -27,6 +28,8 @@ export interface MissionDef {
   objectives: Objective[];
   triggers?: Trigger[];
   maxRounds: number;
+  /** Escape pods already on the table (the medic's lesson): position, pilot, rounds of life support. */
+  pods?: { x: number; y: number; name: string; life: number }[];
 }
 
 export const MISSION_PLAYERS = [
@@ -47,9 +50,12 @@ export function missionGame(def: MissionDef, seed: number, opts: { officer?: str
     squads: { p1: player, p2: def.enemy },
     obstacles: def.obstacles,
     maxRounds: def.maxRounds,
+    ...(def.pods ? { pods: def.pods } : {}),
     mission: {
       id: def.id, player: 'p1', ruleset: def.ruleset, objectives: def.objectives, triggers: def.triggers ?? [],
       zones: def.zones ?? [], markers: def.markers ?? [], ai: { p2: def.enemyAi ?? 'standard' }, maxRounds: def.maxRounds,
+      // A medic ship on the player's side turns escape pods on (campaign missions).
+      ...(player.some(isMedic) ? { rescue: true } : {}),
     },
   });
 }
@@ -227,6 +233,34 @@ export const TRAINING: MissionDef[] = [
       { id: 'protect', label: 'Lumen must survive', kind: 'protect', tag: 'freighter' },
     ],
     triggers: [tip({ roundStart: 1 }, 'The freighter', 'Lumen has a turret: it can shoot in any direction you turn it to with the Rotate action.')],
+    maxRounds: 12,
+  },
+  {
+    id: 'training-9', number: 9, title: 'Search and Rescue', teaches: 'The medic ship',
+    intro: 'One more thing before you graduate. Out there, pilots get shot down, and somebody has to go and get them. Today that is you.',
+    briefing: [
+      'Every campaign mission brings a medic ship: no guns, heavy shields, a slow dial. A pilot who is shot down ejects, and a beacon marks the escape pod.',
+      'End a move with a pod inside its ring (range 1), then take the Recover action. Each pod\'s label counts down its life support: when it runs out, the pilot is lost.',
+      'Three cadets ejected in an exercise. Pick up all three, most urgent first. Red moves add stress, and a stressed ship can\'t take an action, so it can\'t Recover.',
+    ],
+    ruleset: FULL_RULES, obstacles: asteroids(9909, 2),
+    player: [officer({ pilotId: 'medic-droid', shipType: 'medic', pose: at(457, 60, N), name: 'Medevac', tags: [MEDIC_TAG] })],
+    enemy: [
+      { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(200, 640, S), name: 'Drone 1' },
+      { pilotId: 'grunt-seven', shipType: 'wasp', pose: at(720, 380, S), name: 'Drone 2' },
+    ],
+    enemyAi: 'drone',
+    pods: [
+      { x: 330, y: 290, name: 'Cadet Ames', life: 3 },
+      { x: 640, y: 520, name: 'Cadet Brill', life: 7 },
+      { x: 420, y: 760, name: 'Cadet Okoro', life: 10 },
+    ],
+    objectives: [{ id: 'rescue', label: 'Recover all three cadets', kind: 'recover' }],
+    triggers: [
+      tip({ roundStart: 1 }, 'The medic ship', 'Ames has the least life support left: 3 rounds. Steer the medic so a move ends with Ames\'s pod inside the red ring.'),
+      tip({ first: 'recover' }, 'Pilot aboard', 'Recovered pilots are safe aboard unless the medic is destroyed. Check the countdowns and go for the next most urgent pod.'),
+      tip({ first: 'stress' }, 'Stressed', 'A stressed ship can\'t take actions, Recover included. A blue maneuver clears stress: plan one before you reach the next pod.'),
+    ],
     maxRounds: 12,
   },
 ];

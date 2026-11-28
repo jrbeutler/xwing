@@ -4,6 +4,12 @@
 // operations and the few pure functions the client needs (the board, recording a result, a mission as flown).
 import { generateObstacles, type SquadEntry } from './game';
 import { FULL_RULES } from './rules';
+import {
+  applyReport, crewShips, defaultCrew, isSeat, startingRoster, withReplacements, type PilotReport, type RosterPilot,
+} from './roster';
+import { MEDIC_TAG } from './rescue';
+import { applyThreat, threatLevel } from './threat';
+import { rescue as rescueTemplate } from './templates';
 import { OFFICER_TAG, type MissionDef } from './training';
 import type { Zone } from './types';
 
@@ -35,8 +41,12 @@ export interface Operation {
 }
 
 export interface CampaignRecord { op: string; mission: string; result: 'win' | 'loss' }
-/** Where a campaign stands: the officer, the flags results have set, and the missions flown (one per operation). */
-export interface CampaignProgress { officer: string; flags: string[]; history: CampaignRecord[] }
+/**
+ * Where a campaign stands: the officer, the flags results have set, the missions flown (one per operation), and
+ * the squadron (`roster`, with `recruited` counting every pilot who has joined; absent in saves from before the
+ * roster, and filled in by `withRoster`).
+ */
+export interface CampaignProgress { officer: string; flags: string[]; history: CampaignRecord[]; roster?: RosterPilot[]; recruited?: number }
 
 const N = Math.PI / 2, S = -Math.PI / 2;
 const at = (x: number, y: number, h: number) => ({ x, y, h });
@@ -316,50 +326,140 @@ export const OPERATIONS: Operation[] = [
 ];
 
 /** Earlier results' extras: ships added to either side, or the opposition's last ships left out. */
-function applyExtras(m: CampaignMission, flags: string[]): { player: SquadEntry[]; enemy: SquadEntry[]; notes: string[] } {
+function applyExtras(m: CampaignMission, flags: string[]): { player: SquadEntry[]; enemy: SquadEntry[]; notes: string[]; seats: number[] } {
   let player = [...m.player], enemy = [...m.enemy];
+  // The mission's own player ships are the squadron's seats; ships added by earlier results are seats too if
+  // they are call-sign fighters, and allies (named pilots, other classes) otherwise.
+  const seats = player.map((_, i) => i);
   const notes: string[] = [];
   for (const x of m.extras ?? []) {
     if (!x.any.some((f) => flags.includes(f))) continue;
     notes.push(x.note);
-    if (x.player) player = [...player, ...x.player];
+    if (x.player) {
+      x.player.forEach((e, i) => { if (isSeat(e)) seats.push(player.length + i); });
+      player = [...player, ...x.player];
+    }
     if (x.fewerEnemies) enemy = enemy.slice(0, Math.max(1, enemy.length - x.fewerEnemies));
     if (x.enemy) enemy = [...enemy, ...x.enemy];
   }
-  return { player, enemy, notes };
+  return { player, enemy, notes, seats };
 }
 
-export const newCampaign = (officer: string): CampaignProgress => ({ officer, flags: [], history: [] });
+export const newCampaign = (officer: string): CampaignProgress => ({ officer, flags: [], history: [], ...startingRoster(officer) });
+
+/** The progress with a squadron: saves from before the roster get the starting one. */
+export const withRoster = (p: CampaignProgress): CampaignProgress & { roster: RosterPilot[]; recruited: number } =>
+  p.roster ? { ...p, roster: p.roster, recruited: p.recruited ?? p.roster.length } : { ...p, ...startingRoster(p.officer) };
 
 /** The operation being fought: one per mission flown, undefined once the campaign is over. */
 export const currentOperation = (p: CampaignProgress): Operation | undefined => OPERATIONS[p.history.length];
 
-export const campaignOver = (p: CampaignProgress) => p.history.length >= OPERATIONS.length;
+/** The officer is lost (life support ran out, or a failed rescue): the campaign ends there. */
+export const officerLost = (p: CampaignProgress) => !!p.roster?.some((x) => x.officer && x.status === 'lost');
+
+export const campaignOver = (p: CampaignProgress) => p.history.length >= OPERATIONS.length || officerLost(p);
+
+/** Pilots captured in the last mission: the board now offers their rescue, once. */
+export const awaitingRescue = (p: CampaignProgress) =>
+  (p.roster ?? []).filter((x) => x.status === 'captured' && x.capturedAt === p.history.length - 1);
+
+/**
+ * The rescue mission offered after pilots were captured (at history index `n`): break them out of a
+ * Syndicate prison barge by clearing its guards. The guard grows as the campaign goes on.
+ */
+export function rescueMission(n: number): CampaignMission {
+  const guards = Math.min(4, 2 + Math.floor(n / 3));
+  return rescueTemplate({
+    id: `rescue-${n}`, number: n + 1, title: 'Prison Break', difficulty: 2, seed: 5101 + n * 17,
+    summary: 'The Syndicate holds your captured pilots on a prison barge. Clear its guards and bring them home.',
+    stakes: 'Your captured pilots. Fly any other mission and they are gone for good.',
+    intro: '{officer}, we found them: a prison barge, lightly guarded, moving tonight. We get one try.',
+    enemy: ['wasp', 'javelin', 'wasp', 'javelin'].slice(0, guards),
+    outcome: {
+      win: { flags: [], text: 'The guards are down and the barge struck its colours. Your pilots are home, a little worse for wear.' },
+      loss: { flags: [], text: 'The barge got away with its prisoners. We will not see them again.' },
+    },
+  });
+}
 
 /** Whether a mission's flags let it on the board. */
 export const available = (m: CampaignMission, flags: string[]) =>
   (m.needs ?? []).every((f) => flags.includes(f)) && (!m.needsAny || m.needsAny.some((f) => flags.includes(f)));
 
-/** The current operation's board: the missions the campaign so far makes available. */
+/**
+ * The current operation's board: the missions the campaign so far makes available, with a rescue first when
+ * pilots were just captured. A captured officer leaves the squadron one mission: their rescue.
+ */
 export function missionBoard(p: CampaignProgress): CampaignMission[] {
-  return currentOperation(p)?.missions.filter((m) => available(m, p.flags)) ?? [];
-}
-
-export const findCampaignMission = (id: string) => OPERATIONS.flatMap((o) => o.missions).find((m) => m.id === id);
-
-/** A board mission as it will be flown: earlier results add (or remove) ships. `notes` says what changed. */
-export function missionAsFlown(m: CampaignMission, p: CampaignProgress): { def: MissionDef; notes: string[] } {
-  const { player, enemy, notes } = applyExtras(m, p.flags);
-  return { def: { ...m, player, enemy }, notes };
-}
-
-/** Record a flown mission: its flags are set, and the campaign moves on to the next operation. */
-export function recordMission(p: CampaignProgress, missionId: string, result: 'win' | 'loss'): CampaignProgress {
   const op = currentOperation(p);
-  const m = op?.missions.find((x) => x.id === missionId);
-  if (!op || !m || !available(m, p.flags)) return p;
+  if (!op || officerLost(p)) return [];
+  const board = op.missions.filter((m) => available(m, p.flags));
+  const captured = awaitingRescue(p);
+  if (!captured.length) return board;
+  const rescue = rescueMission(p.history.length);
+  return captured.some((x) => x.officer) ? [rescue] : [rescue, ...board];
+}
+
+export const findCampaignMission = (id: string): CampaignMission | undefined => {
+  const r = /^rescue-(\d+)$/.exec(id);
+  return r ? rescueMission(Number(r[1])) : OPERATIONS.flatMap((o) => o.missions).find((m) => m.id === id);
+};
+
+/** The squadron's medic ship: on the home edge, in a gap between the fighters. */
+function withMedic(player: SquadEntry[]): SquadEntry[] {
+  const free = (x: number) => player.every((e) => Math.abs(e.pose.x - x) >= 75 || Math.abs(e.pose.y - 60) >= 75);
+  const x = [457, 140, 774, 300, 614, 60, 854].find(free) ?? 60;
+  return [...player, { pilotId: 'medic-droid', shipType: 'medic', pose: at(x, 50, N), name: 'Medevac', tags: [MEDIC_TAG] }];
+}
+
+/** How many ships of a board mission the squadron flies (its seats), as earlier results shape it. */
+export const seatCount = (m: CampaignMission, p: CampaignProgress) => applyExtras(m, p.flags).seats.length;
+
+/**
+ * Get the squadron ready for a board mission: replacements join if too few pilots are fit to fly its seats.
+ * Returns the progress to save, and who flies by default.
+ */
+export function prepareCrew(m: CampaignMission, p: CampaignProgress): { progress: CampaignProgress; seats: number; crew: string[] } {
+  const r = withRoster(p);
+  const seats = seatCount(m, r), at = r.history.length;
+  const { roster, recruited } = withReplacements(r.roster, r.recruited, at, seats);
+  return { progress: { ...r, roster, recruited }, seats, crew: defaultCrew(roster, at, seats) };
+}
+
+/**
+ * A board mission as it will be flown: earlier results add (or remove) ships, and roster pilots fly the seats
+ * (`crew`, roster ids, the officer first; by default the officer and the best wingmen fit to fly). `notes` says
+ * what changed.
+ */
+export function missionAsFlown(m: CampaignMission, p: CampaignProgress, crew?: string[]): { def: MissionDef; notes: string[] } {
+  const { player, enemy, notes, seats } = applyExtras(m, p.flags);
+  const r = withRoster(p);
+  const ids = crew ?? defaultCrew(r.roster, r.history.length, seats.length);
+  const pilots = ids.map((id) => r.roster.find((x) => x.id === id)).filter((x): x is RosterPilot => !!x);
+  const held = m.id.startsWith('rescue-') ? awaitingRescue(r) : [];
+  if (held.length) notes.unshift(`Held aboard the barge: ${held.map((x) => x.name).join(', ')}.`);
+  // The Syndicate answers how far the campaign has come and who is flying.
+  const threat = applyThreat(enemy, threatLevel(r.history.length, pilots));
+  return { def: { ...m, player: withMedic(crewShips(player, seats, pilots)), enemy: threat.enemy }, notes: [...notes, ...threat.notes] };
+}
+
+/**
+ * Record a flown mission: its flags are set, the pilots who flew it bank their experience (`report`, from
+ * `missionReport`), and the campaign moves on to the next operation.
+ */
+export function recordMission(p: CampaignProgress, missionId: string, result: 'win' | 'loss', report: PilotReport[] = []): CampaignProgress {
+  const op = currentOperation(p);
+  const m = missionBoard(p).find((x) => x.id === missionId);
+  if (!op || !m) return p;
+  const r = withRoster(p), at = r.history.length;
+  // Pilots captured last mission: a won rescue brings them home (injured); anything else, and they are lost.
+  const freed = missionId.startsWith('rescue-') && result === 'win';
+  const roster = applyReport(r.roster, report, at).map((x) => (x.status === 'captured' && x.capturedAt === at - 1
+    ? (freed ? { ...x, status: 'active' as const, capturedAt: undefined, ...(x.officer ? {} : { injuredUntil: at + 2 }) } : { ...x, status: 'lost' as const })
+    : x));
   return {
-    ...p,
+    ...r,
+    roster,
     flags: [...new Set([...p.flags, ...m.outcome[result].flags])],
     history: [...p.history, { op: op.id, mission: m.id, result }],
   };

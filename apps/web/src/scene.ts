@@ -471,6 +471,12 @@ export class BattleScene {
       ((o as THREE.Sprite).material as THREE.SpriteMaterial).opacity = arming ? (Math.sin(t * 38) > 0 ? 1 : 0.1) : blink;
       o.scale.setScalar(arming ? 18 : 12);
     });
+    // Escape-pod beacons pulse; faster on their last round of life support.
+    for (const g of this.podViews.values()) {
+      const light = g.userData.light as THREE.Sprite;
+      const fast = g.userData.urgent ? 9 : 4;
+      (light.material as THREE.SpriteMaterial).opacity = this.reducedMotion ? 0.9 : 0.3 + 0.7 * Math.max(0, Math.sin(t * fast));
+    }
     this.animateLocks(t);
     for (const g of this.missionGroup.children) if (g.userData.pulse) g.scale.setScalar(this.reducedMotion ? 1 : 1 + 0.06 * Math.sin(t * 3));
     if (!this.reducedMotion) arcTime.value = t;
@@ -816,6 +822,72 @@ export class BattleScene {
       g.traverse((o) => { o.raycast = () => {}; });
       this.missionGroup.add(g);
     }
+  }
+
+  // ---------------- escape pods (campaign missions) ----------------
+  private podGroup = new THREE.Group();
+  private podViews = new Map<string, THREE.Group>();
+
+  /**
+   * Make the table show exactly these escape pods: a small capsule with a blinking beacon, the medic's
+   * pickup range (range 1) as a faint ring, and a label with the pilot and the rounds of life support left.
+   */
+  setPods(pods: { id: string; x: number; y: number; name: string; left: number }[]) {
+    if (!this.podGroup.parent) this.scene.add(this.podGroup);
+    for (const [id, g] of this.podViews) {
+      if (pods.some((p) => p.id === id)) continue;
+      (g.userData.el as HTMLElement).remove(); // a label's element outlives its object being taken off the table
+      this.podGroup.remove(g);
+      this.podViews.delete(id);
+    }
+    for (const p of pods) {
+      let g = this.podViews.get(p.id);
+      if (!g) {
+        g = new THREE.Group();
+        const shell = new THREE.Mesh(new THREE.CapsuleGeometry(4, 7, 4, 10), new THREE.MeshStandardMaterial({ color: 0xe8edf3, metalness: 0.5, roughness: 0.35 }));
+        shell.rotation.z = Math.PI / 2;
+        shell.position.y = 8;
+        shell.castShadow = true;
+        const light = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(0xff5a5a, 3), blending: THREE.AdditiveBlending, depthWrite: false }));
+        light.position.y = 16;
+        light.scale.setScalar(16);
+        const reach = new THREE.Mesh(new THREE.RingGeometry(58, 60, 48), new THREE.MeshBasicMaterial({ color: 0xff8a8a, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }));
+        reach.rotation.x = -Math.PI / 2;
+        reach.position.y = 0.6;
+        const el = document.createElement('div');
+        el.className = 'pod-label';
+        const label = new CSS2DObject(el);
+        label.position.y = 28;
+        g.add(shell, light, reach, label);
+        g.userData = { light, el };
+        g.traverse((o) => { o.raycast = () => {}; });
+        this.podGroup.add(g);
+        this.podViews.set(p.id, g);
+      }
+      g.position.copy(toV3(p.x, p.y, 0));
+      g.userData.urgent = p.left <= 1;
+      const el = g.userData.el as HTMLElement;
+      el.classList.toggle('urgent', p.left <= 1);
+      el.innerHTML = `<b>${p.name.replace(/[&<>]/g, '')}</b> ${p.left <= 1 ? 'last round' : `${p.left} rounds`}`;
+    }
+  }
+
+  /** The beacon flares as a pod lands, is picked up, or goes dark. */
+  async podFlash(x: number, y: number, color: number) {
+    const flare = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: hot(color, 3), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+    flare.position.copy(toV3(x, y, 14));
+    this.scene.add(flare);
+    const t0 = this.clock.elapsedTime;
+    await new Promise<void>((done) => {
+      const step = () => {
+        const k = (this.clock.elapsedTime - t0) / 0.7;
+        if (k >= 1 || this.skipping) { this.scene.remove(flare); flare.material.dispose(); done(); return; }
+        flare.scale.setScalar(20 + 70 * k);
+        flare.material.opacity = 1 - k;
+        requestAnimationFrame(step);
+      };
+      step();
+    });
   }
 
   // ---------------- devices (bombs and mines) ----------------

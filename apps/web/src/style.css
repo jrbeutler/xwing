@@ -476,6 +476,28 @@ html.compact #log.open { cursor: pointer; }
 .history { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
 .history .won { color: var(--accent); }
 .history .lost { color: var(--red); }
+/* The squadron: the board's hangar line, the hangar and crew screens, and the debrief's pilot lines. */
+.squadron-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.xp { color: #ffcf6b; }
+.pilot-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.pilot-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.pilot-row .hint { margin: 0; }
+.pilot-row.unfit { opacity: 0.6; }
+.pilot-row.pick { flex-direction: row; align-items: center; gap: 12px; }
+.pilot-row.pick.on { border-color: var(--accent); }
+.pilot-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pilot-head .warn { color: #ffcf6b; }
+.pilot-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-top: 4px; }
+.pilot-actions .talents { flex: 1 1 100%; }
+.talents summary { cursor: pointer; color: var(--muted); }
+.talents summary.ready { color: #ffcf6b; }
+.talents ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pilot-toggle { flex: none; width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--accent); font-size: 18px; cursor: pointer; }
+.pilot-row.on .pilot-toggle { border-color: var(--accent); background: #7cf0c522; }
+.pilot-toggle:disabled { cursor: default; }
+.pilot-report { list-style: none; margin: 10px 0; padding: 0; text-align: left; display: flex; flex-direction: column; gap: 4px; }
+.pilot-report .hint { margin: 0; }
+.pilot-report li.down b:first-child { color: var(--red); }
 .objective-list li.done { color: var(--accent); }
 .objective-list li.failed { color: var(--red); text-decoration: line-through; }
 #mission-hud { position: fixed; z-index: 4; left: calc(16px + env(safe-area-inset-left, 0px)); top: calc(56px + env(safe-area-inset-top, 0px));
@@ -599,3 +621,14 @@ html.compact.ring-ui #panel > .bar, html.compact.ring-ui #panel > .detail { disp
 html.compact.ring-ui #panel:not(:has(> #coach:not([hidden]))) { display: none; }
 html.compact.ring-ui #gunsight .gs-actions kbd { display: none; }
 html.compact.ring-ui #gunsight .gs-actions .opt.mini, html.compact.ring-ui #gunsight .gs-fire { min-height: 44px; }
+.pilot-actions button, .squadron-line button { width: auto; flex: none; }
+.warn-text { color: #ffcf6b; }
+.pod-label { font: 600 11px system-ui, sans-serif; color: #ffd6d6; background: #2a0d12d9; border: 1px solid #ff5a5a88; border-radius: 6px; padding: 2px 6px; white-space: nowrap; pointer-events: none; }
+.pod-label.urgent { color: #fff; background: #8a1620e6; border-color: #ff5a5a; }
+.mh-pods { margin-top: 6px; font-size: 12px; color: #ffb3b3; }
+.mh-pods .urgent { color: #ff5a5a; font-weight: 700; }
+.ask-screen { z-index: 40; }
+.ask-card { width: min(420px, 100%); text-align: center; }
+.ask-card h2 { margin: 0 0 10px; font-size: 18px; }
+.ask-card .hint { margin: 0 0 14px; }
+.ask-card .opt { text-align: center; margin: 0; }

@@ -1,10 +1,11 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, resolveMovement, TRAINING, killCredits, podRoundsLeft, type Pod, missionReport, type PilotReport, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, quickSetup, type BattleSetup } from './setup';
+import { ask } from './dialog';
 import { campaignBriefing, markDone, nextMission, officerName, openBriefing, openCampaign, openStart, recordCampaign } from './campaign';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -110,9 +111,10 @@ ringBox.onchange = () => {
   // Switch the decision on screen over now.
   if (stage === 'battle' && !busy && state?.pending && state.pending.kind !== 'planning') { gameMenu.hidden = true; render(); }
 };
-gameMenu.querySelector<HTMLButtonElement>('#gm-main')!.onclick = () => {
+gameMenu.querySelector<HTMLButtonElement>('#gm-main')!.onclick = async () => {
   const playing = stage !== 'setup' && state && state.phase !== 'over';
-  if (playing && !confirm(mission ? 'Leave this mission?' : 'Leave this battle?')) return;
+  gameMenu.hidden = true;
+  if (playing && !await ask(mission ? 'Leave this mission?' : 'Leave this battle?', 'Leave', campaignMission ? 'A campaign mission you leave is not recorded: you can fly it again from the board.' : '')) return;
   gameMenu.hidden = true;
   showStart();
 };
@@ -227,6 +229,9 @@ function startMission(m: MissionDef, cm: CampaignMission | null = null) {
   logEl.innerHTML = '';
   roundShots = [];
   disp = structuredClone(state.ships);
+  podsShown = [];
+  podRound = state.round;
+  scene.setPods([]);
   finaleFor = null;
   scene.clearShips();
   scene.setObstacles(state.obstacles);
@@ -272,7 +277,8 @@ function renderMissionHud() {
   const chip = lone ? `${lone.progress}/${lone.of}` : `${objectives.length - open.length}/${objectives.length}`;
   missionHud.innerHTML = `<button class="mh-chip" aria-label="Objectives">🎯 ${chip}</button>
     <div class="mh-full"><div class="mh-title">${campaignMission ? 'Operation' : 'Mission'} ${mission.number}: ${mission.title}</div>
-    <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul></div>`;
+    <ul>${objectives.map((o) => `<li class="${o.status}">${mark(o)}${o.label}${progress(o)}</li>`).join('')}</ul>
+    ${podsOutHtml()}</div>`;
   missionHud.querySelector<HTMLButtonElement>('.mh-chip')!.onclick = () => missionHud.classList.toggle('open');
   // Gates: the next one in each open course is lit; the ones flown through fade.
   const done: string[] = [];
@@ -283,6 +289,20 @@ function renderMissionHud() {
     if (o.status === 'open') next ??= o.markers[o.progress];
   }
   scene.setMissionMarks(m.markers, m.zones, next, done);
+}
+
+/** The first pilot shot down in the campaign: once, a word on what the medic has to do (and where to practise it). */
+function firstEjectionTip() {
+  try { if (localStorage.getItem('xw-tip-eject')) return; localStorage.setItem('xw-tip-eject', '1'); } catch { /* storage unavailable: tip every time */ }
+  showCoach('Pilot down', 'Fly your medic so a move ends with the escape pod inside its red ring, then take Recover. The label counts down their life support. Flight school\'s Search and Rescue lesson practises this.');
+}
+
+/** The mission panel's line about escape pods waiting for the medic. */
+function podsOutHtml() {
+  const out = podsShown.filter((p) => p.status === 'out');
+  if (!out.length) return state.mission?.recovery ? '<div class="mh-pods">Recovery: all pilots accounted for</div>' : '';
+  const left = (p: Pod) => podRoundsLeft({ round: podRound }, p);
+  return `<div class="mh-pods">✚ ${state.mission?.recovery ? 'Recovery: ' : ''}pilots to pick up: ${out.map((p) => `${esc(p.name)} <span class="${left(p) <= 1 ? 'urgent' : ''}">(${left(p) <= 1 ? 'last round' : `${left(p)} rounds`})</span>`).join(', ')}</div>`;
 }
 
 /** Coach tips and scripted lines: a card in the corner, one at a time, until dismissed. */
@@ -386,7 +406,7 @@ function renderDeployment() {
     <div class="row"><button class="opt mini" id="dp-auto">Auto-arrange</button><button class="opt mini" id="dp-back">Back to squad</button></div>
     <button class="go" id="dp-go">${goLabel}</button>`;
   document.getElementById('dp-auto')!.onclick = autoArrange;
-  document.getElementById('dp-back')!.onclick = () => { if (!online || confirm('Leave this online game?')) newGame(lastSetup ?? undefined); };
+  document.getElementById('dp-back')!.onclick = async () => { if (!online || await ask('Leave this online game?', 'Leave')) newGame(lastSetup ?? undefined); };
   document.getElementById('dp-go')!.onclick = beginBattle;
   setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : `${who}Deploy: drag your ships, then ${handsOver ? 'hand over' : 'begin'}`, buttons: [
     { label: 'Auto', onClick: autoArrange },
@@ -905,6 +925,14 @@ function renderOpponentTurn(d: NonNullable<GameState['pending']>) {
 // What the board currently shows. Events are applied to it one by one as they animate,
 // so health markers drop the moment a shot lands, not when the whole round is done.
 let disp: ShipState[] = [];
+/** Escape pods as shown so far (they move on as events are presented), and the round shown. */
+let podsShown: Pod[] = [];
+let podRound = 0;
+/** Draw the pods still out, each with the rounds of life support it has left. */
+function drawPods() {
+  scene.setPods(podsShown.filter((p) => p.status === 'out').map((p) => ({ id: p.id, x: p.x, y: p.y, name: p.name, left: podRoundsLeft({ round: podRound }, p) })));
+  renderMissionHud();
+}
 const dispShip = (id: string) => disp.find((x) => x.id === id);
 /** The charges of an upgrade or the pilot's ability on a displayed ship, by source id. */
 const sourceState = (d: ShipState | undefined, id: string) => (d?.ability?.id === id ? d.ability : d?.upgrades.find((x) => x.id === id));
@@ -942,6 +970,9 @@ async function present() {
   scene.syncShips(state.ships);
   scene.setDevices(state.devices);
   disp = structuredClone(state.ships);
+  podsShown = structuredClone(state.pods ?? []);
+  podRound = state.round;
+  drawPods();
   roundEl.textContent = `Round ${state.round}`;
   phaseEl.textContent = state.phase;
 }
@@ -954,6 +985,8 @@ async function animate(e: GameEvent) {
       return;
     case 'roundStart':
       roundEl.textContent = `Round ${e.round}`;
+      podRound = e.round;
+      if (podsShown.length) drawPods();
       if (roundShots.length) {
         lastRecap = { round: recapRound, lines: roundShots };
         // Phones: the recap stays folded into the ticker (tap to read it) so it never covers the board.
@@ -1138,6 +1171,33 @@ async function animate(e: GameEvent) {
         const extra = (e.focus ? ' +FOCUS' : '') + (e.calculate ? ' +CALCULATE' : '') + (e.shields ? ' +SHIELD' : '');
         await scene.floatText(e.shipId, name + extra, 'talent-float');
       }
+      return;
+    }
+    case 'pod': {
+      const i = podsShown.findIndex((p) => p.id === e.pod.id);
+      if (i >= 0) podsShown[i] = { ...e.pod }; else podsShown.push({ ...e.pod });
+      drawPods();
+      const name = `<span class="who">${esc(e.pod.name)}</span>`;
+      if (e.what === 'ejected') {
+        if (campaignMission) firstEjectionTip();
+        showBanner(`${name}<b>EJECTED</b><span class="detail">The medic has ${podRoundsLeft({ round: podRound }, e.pod) - 1} more rounds to pick them up</span>`, 'incoming');
+        await scene.podFlash(e.pod.x, e.pod.y, 0xff5a5a);
+      } else if (e.what === 'recovered') {
+        showBanner(`${name}<b>RECOVERED</b>`, 'hit');
+        if (e.by) void scene.floatText(e.by, `${e.pod.name.toUpperCase()} ABOARD`, 'talent-float');
+        await scene.podFlash(e.pod.x, e.pod.y, 0x7cf0c5);
+      } else {
+        showBanner(`${name}<b>${e.what === 'lost' ? 'LOST' : 'CAPTURED'}</b>${e.what === 'lost' ? '<span class="detail">Life support ran out</span>' : ''}`, 'crit incoming', 2200);
+        await scene.podFlash(e.pod.x, e.pod.y, 0x555555);
+      }
+      await scene.wait(500);
+      return;
+    }
+    case 'recovery': {
+      for (const id of e.withdrawn) scene.removeShip(id);
+      showBanner('<span class="who">The enemy withdraws</span><b>RECOVERY</b><span class="detail">Pick up your pilots before their life support runs out</span>', 'hit', 2600);
+      showCoach('Recovery', 'You hold the field. Fly the medic to each escape pod and Recover it before its countdown runs out; the mission ends when none are left.');
+      await scene.wait(1200);
       return;
     }
     case 'destroyed': {
@@ -1467,6 +1527,10 @@ function describe(e: GameEvent): string | null {
     case 'message': return `💬 <b>${e.title}</b>: ${e.text}`;
     case 'jamSpent': return `${nameHtml(e.shipId)} is jammed: its ${e.lost[0].toUpperCase() + e.lost.slice(1)} is lost`;
     case 'destroyed': return `💥 ${nameHtml(e.shipId)} destroyed`;
+    case 'pod': return e.what === 'ejected' ? `🚨 ${esc(e.pod.name)} ejected: an escape pod is out`
+      : e.what === 'recovered' ? `✚ ${esc(e.pod.name)} recovered by ${e.by ? nameHtml(e.by) : 'the medic'}`
+      : e.what === 'lost' ? `<b>${esc(e.pod.name)} lost</b>: life support ran out` : `<b>${esc(e.pod.name)} captured</b>`;
+    case 'recovery': return '<b>The enemy withdraws.</b> Recover your pilots.';
     case 'gameOver': return e.mission ? `<b>${e.mission === 'win' ? 'Mission complete' : 'Mission failed'}</b>`
       : `<b>${e.winner === 'draw' ? 'Draw' : `${state.players.find((p) => p.id === e.winner)?.name} win`}</b>`;
     case 'info': return e.text;
@@ -1474,8 +1538,11 @@ function describe(e: GameEvent): string | null {
   }
 }
 
+/** The pilot in an escape pod. */
+const podName = (id: string) => state.pods?.find((p) => p.id === id)?.name ?? 'a pilot';
+
 const actionTypeName = (t: ActionType) =>
-  ({ barrelRoll: 'Barrel roll', rotateArc: 'Rotate', boost: 'Boost', focus: 'Focus', evade: 'Evade', lock: 'Lock', repair: 'Repair', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload', coordinate: 'Coordinate' })[t];
+  ({ barrelRoll: 'Barrel roll', rotateArc: 'Rotate', boost: 'Boost', focus: 'Focus', evade: 'Evade', lock: 'Lock', repair: 'Repair', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload', coordinate: 'Coordinate', recover: 'Recover' })[t];
 
 function actionText(a: ActionChoice): string {
   switch (a.type) {
@@ -1492,6 +1559,7 @@ function actionText(a: ActionChoice): string {
     case 'reinforce': return `Reinforce ${a.side}`;
     case 'reload': return `Reload ${UPGRADES[a.upgrade].name}`;
     case 'coordinate': return `Coordinate ${shipById(a.targetId).name}`;
+    case 'recover': return `Recover ${podName(a.podId)}`;
   }
 }
 
@@ -1580,22 +1648,7 @@ finale.hidden = true;
 document.body.appendChild(finale);
 
 /** Kills per ship: the last ship to hit a ship (shot or bomb) gets the credit when it is destroyed. */
-function killsBy(): Map<string, number> {
-  const lastHit = new Map<string, string>(), dropper = new Map<string, string>(), kills = new Map<string, number>();
-  for (const e of state.log) {
-    if (e.type === 'attack' && e.hullDamage + e.shieldDamage + (e.ion ?? 0) > 0) lastHit.set(e.defenderId, e.attackerId);
-    if (e.type === 'deviceDropped') dropper.set(e.device.id, e.shipId);
-    if (e.type === 'deviceDetonated') {
-      const by = dropper.get(e.device.id);
-      if (by) for (const h of e.ships) if (h.shipId !== by && h.hullDamage + h.shieldDamage > 0) lastHit.set(h.shipId, by);
-    }
-    if (e.type === 'destroyed') {
-      const by = lastHit.get(e.shipId);
-      if (by && shipById(by).owner !== shipById(e.shipId).owner) kills.set(by, (kills.get(by) ?? 0) + 1);
-    }
-  }
-  return kills;
-}
+const killsBy = () => killCredits(state);
 
 /** Victory/Defeat against the AI; with two players, who won. */
 function resultTitle() {
@@ -1608,7 +1661,7 @@ function resultTitle() {
 function nextLabel(won: boolean) {
   if (campaignMission) return 'Mission board';
   if (won && mission && nextMission(mission)) return 'Next mission';
-  return won && mission?.id === 'training-8' ? 'Graduate' : 'Campaign';
+  return won && mission?.id === TRAINING.at(-1)!.id ? 'Graduate' : 'Campaign';
 }
 
 /** After a mission: the next one's briefing if it was won and there is one, else the campaign. */
@@ -1622,7 +1675,8 @@ function afterMission() {
 /** The end of a mission: complete or failed, how each objective went, and where to go next. */
 function showDebrief(first: boolean) {
   const m = mission!, won = state.mission?.result === 'win', cm = campaignMission;
-  if (first && cm) recordCampaign(cm.id, won ? 'win' : 'loss');
+  const report = cm ? missionReport(state) : [];
+  if (first && cm) recordCampaign(cm.id, won ? 'win' : 'loss', report);
   else if (won && first) markDone(m.id);
   const next = won && !cm ? nextMission(m) : undefined;
   const title = won ? 'Mission complete' : 'Mission failed';
@@ -1642,6 +1696,7 @@ function showDebrief(first: boolean) {
       <h1 id="finale-title" aria-label="${title}">${letters}</h1>
       <p class="finale-why">${why}</p>
       <ul class="objective-list" style="text-align:left">${objs.map((o) => `<li class="${o.status}">${o.status === 'done' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.label}</li>`).join('')}</ul>
+      ${report.length ? pilotReportHtml(report) : ''}
       <div class="finale-buttons"><button class="opt" id="fn-board">View table</button>${cm ? '' : '<button class="opt" id="fn-retry">Retry</button>'}
         <button class="go" id="fn-next">${nextLabel(won)}</button></div>
     </div>`;
@@ -1653,6 +1708,19 @@ function showDebrief(first: boolean) {
   finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
   finale.querySelector<HTMLButtonElement>('#fn-next')!.focus();
   if (won && first) scene.celebrate(P1);
+}
+
+const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/** The debrief's squadron lines: how each pilot's mission went, and the experience they earned. */
+function pilotReportHtml(report: PilotReport[]) {
+  const fate = (r: PilotReport) => r.outcome === 'home' ? 'came home'
+    : r.outcome === 'retreated' ? `retreated in round ${r.rounds} of ${r.of}`
+    : r.outcome === 'rescued' ? (r.pilotId === 'officer' ? 'shot down, picked up by the medic' : 'shot down, picked up by the medic: injured, sits out the next mission')
+    : r.outcome === 'captured' ? 'captured: the next board offers a rescue, their only chance'
+    : 'lost: life support ran out before the medic got there';
+  return `<ul class="pilot-report">${report.map((r) => `<li class="${r.outcome === 'lost' || r.outcome === 'captured' ? 'down' : r.outcome}"><b>${esc(r.name)}</b> <span class="hint">${fate(r)}${r.kills ? ` · ${r.kills} kill${r.kills === 1 ? '' : 's'}` : ''}</span> <b class="xp">+${r.xp} XP</b></li>`).join('')}</ul>
+    ${report.some((r) => r.xp > 0) ? '<p class="hint">Spend experience in the hangar, from the mission board.</p>' : ''}`;
 }
 
 function showFinale(first = false) {
@@ -2426,13 +2494,13 @@ function renderPlanning() {
     const card = document.createElement('div');
     card.className = 'card' + (plan[s.id] !== undefined ? ' done' : '') + (s.id === selected ? ' active' : '');
     card.innerHTML = `<h3>${s.name} <span class="hint">· ${t.name} · init ${s.initiative}</span></h3>
-      <div class="stats">atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')} · agi ${t.agility} · hull ${s.hull}/${s.maxHull} · shields ${s.shields}/${s.maxShields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
+      <div class="stats">${t.primaries.length ? `atk ${t.primaries.map((p) => `${p.attack}${p.arc === 'rear' ? 'R' : ''}`).join('/')}` : 'no guns'} · agi ${t.agility} · hull ${s.hull}/${s.maxHull} · shields ${s.shields}/${s.maxShields}${s.stress ? ` · <span style="color:var(--red)">stressed</span>` : ''}</div>
       ${abilityLine(s)}
       ${s.upgrades.length ? `<div class="hint">${s.upgrades.map((u) => upgradeLabel(u, s)).join(' · ')}</div>` : ''}
       ${critList(s)}
       ${isIonized(s) ? '' : hintLine(s)}
       <div class="planned">${isIonized(s) ? `<span class="ion">⚡ Ionized: drifts 1 ${DRIFT_LABEL[driftOf(s, plan[s.id])]} (blue), Focus only</span>`
-        : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
+        : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) + leavesTable(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
     card.querySelector<HTMLButtonElement>('[data-use-hint]')?.addEventListener('click', () => useSuggestion(s.id));
     if (s.id === selected) {
@@ -2451,6 +2519,12 @@ function renderPlanning() {
   go.onclick = executePlan;
   detail.appendChild(go);
   refreshBoard();
+}
+
+/** A warning when a planned move ends off the table: a retreat in a mission, a lost ship in a skirmish. */
+function leavesTable(s: ShipState, i: number) {
+  if (!resolveMovement(state, s, maneuverOf(s, i)).fled) return '';
+  return mission ? ' <span class="warn-text">· leaves the table: retreats from the battle</span>' : ' <span class="warn-text">· leaves the table: the ship is lost</span>';
 }
 
 /** The classic dial grid, kept as a collapsed fallback. */
@@ -2562,6 +2636,7 @@ const ACTION_HELP: Record<string, string> = {
   rotateArc: 'Turn your turret arc to face front, left, right or rear, so the turret can shoot that way.',
   reinforce: 'Brace the front or rear half of your ship for the rest of the round: an attack from that side that lands 2 or more hits loses one.',
   reload: 'Get back one charge on this missile, torpedo or bomb. You can\'t attack this round.',
+  recover: 'Take the escape pod at range 0-1 aboard: that pilot is safe (unless the medic is destroyed before the mission ends).',
   none: 'Take no action this round.',
 };
 const RED_NOTE = '<br><span class="red">Red: it costs 1 stress. A stressed ship can\'t take actions or fly red maneuvers until a blue maneuver clears it.</span>';
@@ -2576,7 +2651,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
   const locks = options.filter((o): o is LockChoice => o.type === 'lock');
   const jams = options.filter((o): o is JamChoice => o.type === 'jam');
   const coords = options.filter((o): o is CoordChoice => o.type === 'coordinate');
-  const instant = (o: ActionChoice) => ['focus', 'evade', 'calculate', 'reinforce', 'reload', 'repair'].includes(o.type);
+  const instant = (o: ActionChoice) => ['focus', 'evade', 'calculate', 'reinforce', 'reload', 'repair', 'recover'].includes(o.type);
   const simple = [...options.filter(instant), { type: 'none' } as ActionChoice];
   let cand: ActionChoice | null = null;
   /**
@@ -2630,6 +2705,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
       if (o.type === 'calculate') tiles.push({ icon: ICONS.calculate, label: 'Calc', cls: cls(o), onClick: () => choose(o) });
       if (o.type === 'reinforce') tiles.push({ icon: ICONS.reinforce, label: 'Reinforce', sub: o.side, cls: cls(o), onClick: () => choose(o) });
       if (o.type === 'reload') tiles.push({ icon: ICONS.reload, label: 'Reload', sub: weaponShort(o.upgrade), cls: cls(o), onClick: () => choose(o) });
+      if (o.type === 'recover') tiles.push({ icon: ICONS.recover, label: 'Recover', sub: podName(o.podId), cls: cls(o), onClick: () => choose(o) });
     }
     if (locks.length) narrow('lock', ICONS.lock, 'Lock');
     if (jams.length) narrow('jam', ICONS.jam, 'Jam');
@@ -2698,6 +2774,10 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
       if (o.type !== 'reload') continue;
       const u = UPGRADES[o.upgrade];
       items.push({ icon: ICONS.reload, label: 'Reload', title: `Reload ${u.name}${stress}`, help: helpOf('reload').replace('this missile, torpedo or bomb', `your <b>${u.name}</b>`), cls: red, onClick: () => choose(o) });
+    }
+    for (const o of options) {
+      if (o.type !== 'recover') continue;
+      items.push({ icon: ICONS.recover, label: 'Recover', title: `Recover ${podName(o.podId)}`, help: helpOf('recover'), onClick: () => choose(o) });
     }
     if (locks.length) items.push(narrow('lock', ICONS.lock, 'Lock', 'Lock: then click a ringed enemy'));
     if (jams.length) items.push(narrow('jam', ICONS.jam, 'Jam', 'Jam: strip an enemy\'s Focus, Evade or lock (range 1-2 in your arc); then click a ringed enemy'));
@@ -2776,7 +2856,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
   };
 
   const ring = [
-    `Pick from the ring around your ship: ${['Focus', 'Evade', 'Calculate', 'Reinforce', 'Reload'].filter((n) => options.some((o) => o.type === n.toLowerCase())).join(', ') || 'instant actions'} act at once`,
+    `Pick from the ring around your ship: ${['Focus', 'Evade', 'Calculate', 'Reinforce', 'Reload', 'Recover'].filter((n) => options.some((o) => o.type === n.toLowerCase())).join(', ') || 'instant actions'} act at once`,
     locks.length ? '<b style="color:#ffd166">Lock</b> then click a ringed enemy' : '',
     jams.length ? '<b style="color:#c58bff">Jam</b> then click a ringed enemy to strip its Focus, Evade or lock' : '',
     coords.length ? '<b style="color:#8fd3ff">Coordinate</b> then click a ringed friend: it takes an action now' : '',
@@ -3191,6 +3271,8 @@ else showStart();
   /** The player this device is acting for, and a way to send its commands (as the UI would). */
   get me() { return me; },
   send: (cmd: Command) => send(cmd),
+  /** What the AI would do for this device's player now (for test scripts that play a whole battle). */
+  ai: () => aiDecide({ ...viewFor(state, me), rng: state.rng }, me),
   /** The move hints for the player planning now (for test scripts that fly missions). */
   suggest: () => suggestManeuvers(viewFor(state, me), me),
   /** Legal dial indices for one of the ships (for test scripts that plan moves). */

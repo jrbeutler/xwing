@@ -6,6 +6,7 @@ import { actionBar, easedManeuver, effectsOf, gainToken, recoverRecurringCharges
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
+import { expirePods, recoverablePods, recoverPod, shipDown } from './rescue';
 import { missionRoundEnd, missionScan, startMission, type MissionSetup } from './mission';
 import { isSpecialManeuver, rulesOf } from './rules';
 import type {
@@ -19,6 +20,8 @@ import type {
 export interface SquadEntry {
   pilotId: string; shipType?: string; pose: Pose; upgrades?: string[];
   name?: string; hull?: number; shields?: number; tags?: string[];
+  /** A campaign roster pilot flying this ship: their own initiative and talents, and their roster id. */
+  initiative?: number; talents?: string[]; rosterId?: string;
 }
 export interface GameSetup {
   seed: number;
@@ -28,6 +31,8 @@ export interface GameSetup {
   maxRounds?: number;
   /** Play as a mission: its rules, objectives, zones and markers (docs/MISSIONS.md). */
   mission?: MissionSetup;
+  /** Escape pods already on the table (a mission's): the mission player's, each with its rounds of life support. */
+  pods?: { x: number; y: number; name: string; life: number }[];
 }
 
 const clone = <T>(x: T): T => structuredClone(x);
@@ -61,12 +66,17 @@ export function createGame(setup: GameSetup): GameState {
       state.ships.push({
         id: `${p.id}-${i}`, pilotId: pilot.id, name: e.name ?? (n > 1 ? `${pilot.name} #${n}` : pilot.name), typeId: t.id, owner: p.id,
         ...(e.tags?.length ? { tags: [...e.tags] } : {}),
+        ...(e.rosterId ? { rosterId: e.rosterId } : {}),
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
         ability: pilot.ability ? { id: pilot.id, charges: pilot.ability.charges ?? 0 } : null,
         stress: 0, focus: 0, evade: 0, calculate: 0, reinforce: null, disarmed: false, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
+  }
+  if (setup.pods?.length && state.mission) {
+    state.pods = setup.pods.map((p, i) => ({ id: `pod-${i + 1}`, shipId: '', name: p.name, owner: state.mission!.player, x: p.x, y: p.y, round: 0, life: p.life, status: 'out' as const }));
+    for (const o of state.mission.objectives) if (o.kind === 'recover') o.of = state.pods.length;
   }
   startRound(state);
   missionScan(state); // messages for round 1
@@ -212,6 +222,7 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false, coor
     if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
     if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
     if (a.type === 'coordinate' && !coordinated) for (const t of coordinateTargets(s, sh)) opts.push({ type: 'coordinate', targetId: t.id });
+    if (a.type === 'recover') for (const p of recoverablePods(s, sh)) opts.push({ type: 'recover', podId: p.id });
     if (a.type === 'lock' && !isIonized(sh)) {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
@@ -428,6 +439,7 @@ function destroy(s: GameState, sh: ShipState) {
   sh.lock = null;
   for (const o of s.ships) if (o.lock === sh.id) o.lock = null;
   s.log.push({ type: 'destroyed', shipId: sh.id });
+  shipDown(s, sh); // a campaign pilot ejects
 }
 
 function initiativeOrder(s: GameState, ascending: boolean): string[] {
@@ -585,7 +597,10 @@ function continueActivation(s: GameState) {
     if (mv.partial && mv.bumped.length) { sh.stress += BUMP_STRESS; s.log.push({ type: 'stress', shipId: sh.id, delta: BUMP_STRESS }); }
 
     if (mv.fled) {
-      s.log.push({ type: 'info', text: `${sh.name} fled the battlefield.` });
+      // In a mission, flying off the table is a retreat: the ship leaves the battle (out of play like a
+      // destroyed one) but the campaign counts it as home, not lost.
+      if (s.mission) sh.fled = s.round;
+      s.log.push({ type: 'info', text: s.mission ? `${sh.name} retreated from the battle.` : `${sh.name} fled the battlefield.` });
       destroy(s, sh);
       s.queueIndex++;
       continue;
@@ -695,6 +710,7 @@ function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolea
   if (a.type === 'focus' || a.type === 'evade' || a.type === 'calculate') gainToken(s, sh, a.type);
   if (a.type === 'reinforce') gainToken(s, sh, 'reinforce', a.side);
   if (a.type === 'jam') jam(s, sh, s.ships.find((x) => x.id === a.targetId)!);
+  if (a.type === 'recover') recoverPod(s, sh, a.podId);
   if (a.type === 'repair') {
     discardCard(s, sh, a.card);
     s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
@@ -770,6 +786,7 @@ function endPhase(s: GameState) {
   }
   s.engagementInitiative = null;
   if (s.mission) {
+    expirePods(s); // escape pods whose life support ran out
     // A mission ends on its objectives (or its last round), not on the last player standing.
     if (!missionRoundEnd(s)) startRound(s);
     return;

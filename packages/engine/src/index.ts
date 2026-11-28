@@ -13,3 +13,7 @@ export * from './rules';
 export * from './mission';
 export * from './training';
 export * from './campaign';
+export * from './roster';
+export * from './rescue';
+export * from './threat';
+export * from './templates';

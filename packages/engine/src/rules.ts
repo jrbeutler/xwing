@@ -4,7 +4,7 @@ import type { Maneuver } from './maneuvers';
 import type { ActionType, GameState, Ruleset } from './types';
 
 export const ALL_ACTIONS: ActionType[] = [
-  'focus', 'evade', 'lock', 'barrelRoll', 'boost', 'repair', 'rotateArc', 'jam', 'calculate', 'reinforce', 'reload', 'coordinate',
+  'focus', 'evade', 'lock', 'barrelRoll', 'boost', 'repair', 'rotateArc', 'jam', 'calculate', 'reinforce', 'reload', 'coordinate', 'recover',
 ];
 
 /** Every rule on: skirmishes, and missions once training is done. */
