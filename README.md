@@ -58,6 +58,7 @@ Drag to orbit the camera; scroll to zoom.
 - **Attacks:** the camera opens in the sights on the ship's best shot; **Fire** or **Hold fire** are in the bar (a tap on the enemy in your sights fires too), the arrows beside the odds look at other enemies, and **Weapons** shows the ship's other weapons with their hit chance. A shot under 20% is marked a long shot and Hold fire becomes the main button.
 - **Looking around:** drag with one finger anywhere away from your ship and its dots, or pinch with two fingers to zoom and pan. The camera follows the ship you're working with until you move it yourself; then it stays put and the top button says **Recenter**. **Overview** shows the whole table. Turning the phone sideways and back keeps the layout.
 - **What happened:** the line under the top row shows the latest combat result; at the start of a round it is the last round's recap (tap to read it). **Details** opens full stats, the dial and what each action does. In a mission the 🎯 chip in the top row is the objectives (tap for the list) and coach tips appear in the bar.
+- **Ring menu:** prefer the ring? Turn on **Ring menu** in the ☰ menu. Actions, attacks and bomb drops are then picked from the ring around the ship, as on a computer, and the bottom bar steps aside while you do (the sights get their own Back, Hold fire and Fire buttons). Planning still uses the bar, which holds your ships, Set move and Execute.
 
 ## Layout
 

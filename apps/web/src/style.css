@@ -563,7 +563,7 @@ html.compact.landscape .bar-buttons.grid { grid-template-columns: repeat(3, 1fr)
 .bar-specials .chip { min-height: 36px; }
 
 /* gunsight: on phones the bar has Fire / Hold / Weapons, so the card only shows the readout */
-html.compact #gunsight .gs-actions { display: none; }
+html.compact:not(.ring-ui) #gunsight .gs-actions { display: none; }
 #gunsight .gs-best.weak { background: #5a2a33; color: #ffb3b3; }
 #gunsight .gs-fire.weak { background: #3a2226; color: #ffb3b3; }
 
@@ -591,3 +591,11 @@ html.compact.plan-sel .label.sel { display: none !important; }
 html.compact #gunsight { padding: 8px 10px; }
 html.compact #gunsight .gs-pct { font-size: 28px; }
 .bar-status .p1c { color: var(--p1); } .bar-status .p2c { color: var(--p2); }
+
+/* ---------- phones, ring menu on: actions / attacks / drops come from the ring, so the bottom bar steps aside ---------- */
+html:not(.compact) #gm-ring-row { display: none; }
+html.compact.ring-ui #panel > .bar, html.compact.ring-ui #panel > .detail { display: none; }
+/* a coach tip still shows where the bar was; with no tip the panel is gone */
+html.compact.ring-ui #panel:not(:has(> #coach:not([hidden]))) { display: none; }
+html.compact.ring-ui #gunsight .gs-actions kbd { display: none; }
+html.compact.ring-ui #gunsight .gs-actions .opt.mini, html.compact.ring-ui #gunsight .gs-fire { min-height: 44px; }

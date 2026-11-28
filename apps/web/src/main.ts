@@ -87,6 +87,7 @@ gameMenu.id = 'gamemenu';
 gameMenu.hidden = true;
 gameMenu.innerHTML = `<div class="gm-row"><span>Animation speed</span><span id="gm-speed"></span></div>
   <label class="gm-row"><span>Auto actions<small>The game picks each ship's action for you</small></span><input type="checkbox" id="gm-auto"></label>
+  <label class="gm-row" id="gm-ring-row"><span>Ring menu<small>Actions and attacks in a ring around the ship, without the bottom bar</small></span><input type="checkbox" id="gm-ring"></label>
   <button class="opt" id="gm-main">Main menu</button>`;
 document.body.appendChild(gameMenu);
 gameMenu.querySelector('#gm-speed')!.appendChild(speedBtn);
@@ -97,6 +98,17 @@ autoBox.onchange = () => {
   try { localStorage.setItem('xw-auto-actions', autoActions ? '1' : '0'); } catch { /* storage unavailable */ }
   // Turned on while an action is being asked for: take it now.
   if (autoActions && stage === 'battle' && !busy && state?.pending?.kind === 'action') { gameMenu.hidden = true; render(); }
+};
+/** Phones: take actions, attacks and drops from the ring around the ship (as on a desktop) instead of the bottom bar. */
+let ringMenu = false;
+try { ringMenu = localStorage.getItem('xw-phone-controls') === 'ring'; } catch { /* storage unavailable */ }
+const ringBox = gameMenu.querySelector<HTMLInputElement>('#gm-ring')!;
+ringBox.checked = ringMenu;
+ringBox.onchange = () => {
+  ringMenu = ringBox.checked;
+  try { localStorage.setItem('xw-phone-controls', ringMenu ? 'ring' : 'bar'); } catch { /* storage unavailable */ }
+  // Switch the decision on screen over now.
+  if (stage === 'battle' && !busy && state?.pending && state.pending.kind !== 'planning') { gameMenu.hidden = true; render(); }
 };
 gameMenu.querySelector<HTMLButtonElement>('#gm-main')!.onclick = () => {
   const playing = stage !== 'setup' && state && state.phase !== 'over';
@@ -1497,6 +1509,7 @@ function render() {
 
 function renderDecision() {
   document.documentElement.classList.remove('plan-sel');
+  setRingUi(false);
   scene.clearGhost();
   scene.clearOverlay();
   scene.clearChips();
@@ -2103,6 +2116,18 @@ const deployMode: BoardMode = {
 // a camera that frames the uncovered part of the screen, and a log ticker.
 // ---------------------------------------------------------------------------
 let compact = false;
+/** Whether this decision is played from the phone's bottom bar (phones, unless the ring menu is on). */
+const barUi = () => compact && !ringMenu;
+/**
+ * Phones with the ring menu on: while an action, attack or drop is picked from the ring, the bottom bar is
+ * hidden (a coach tip still shows). Planning keeps the bar: it holds the ships, Set move and Execute.
+ */
+function setRingUi(on: boolean) {
+  const was = document.documentElement.classList.contains('ring-ui');
+  document.documentElement.classList.toggle('ring-ui', on);
+  if (on) panel.classList.remove('expanded');
+  if (on !== was) setTimeout(() => applyCamera(250), 0);
+}
 let userOverview = false;
 let lastCommit: { shipId: string; prev: number | undefined } | null = null;
 
@@ -2143,6 +2168,8 @@ screen.orientation?.addEventListener?.('change', resettle);
 /** Screen area covered by UI, so the camera can frame what is left. */
 function uiInsets() {
   const r = panel.getBoundingClientRect();
+  // The ring menu hides the bar (an empty rect): only the screen's own edge is covered.
+  if (!r.height) return { top: Math.max(ticker.getBoundingClientRect().bottom, 40) + (compact ? 34 : 6), bottom: 6, left: 0, right: 0 };
   // Below the top row (and the ticker when it shows), with room for the label floating over the farthest ship.
   const top = Math.max(ticker.getBoundingClientRect().bottom, 40) + (compact ? 34 : 6);
   return innerHeight >= innerWidth
@@ -2540,6 +2567,7 @@ const ACTION_HELP: Record<string, string> = {
 const RED_NOTE = '<br><span class="red">Red: it costs 1 stress. A stressed ship can\'t take actions or fly red maneuvers until a blue maneuver clears it.</span>';
 
 function renderAction(shipId: string, options: ActionChoice[], linked?: { from: ActionType; red: boolean }, coordinatedBy?: string) {
+  setRingUi(compact && ringMenu);
   const s = shipById(shipId);
   const by = coordinatedBy ? shipById(coordinatedBy).name : '';
   const linkNote = [linked ? `Linked after ${actionTypeName(linked.from)}${linked.red ? ' (red: +1 stress)' : ''}` : '', by ? `Coordinated by ${by}` : ''].filter(Boolean).join(' · ');
@@ -2638,8 +2666,8 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
         onClick: () => choose(o),
         onHover: (on) => { void scene.setTurret(s.id, on ? o.to : s.turretArc, 150, true); },
       }));
-      if (!compact) items.push({ angle: onScreen(s.turretArc), icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: () => { void scene.setTurret(s.id, s.turretArc, 0, true); back(); } });
-      scene.showRadial(s.pose, items, { key: 'rotate', caption: compact ? `Turret faces ${s.turretArc}: tap a new facing` : `Turret faces ${s.turretArc}: pick a new facing · Esc to go back` });
+      if (!barUi()) items.push({ angle: onScreen(s.turretArc), icon: ICONS.back, label: 'Back', title: 'Back to the action menu (Esc)', cls: 'quiet', onClick: () => { void scene.setTurret(s.id, s.turretArc, 0, true); back(); } });
+      scene.showRadial(s.pose, items, { key: 'rotate', caption: barUi() ? `Turret faces ${s.turretArc}: tap a new facing` : compact ? `Turret faces ${s.turretArc}: tap a new facing, or Back` : `Turret faces ${s.turretArc}: pick a new facing · Esc to go back` });
       return;
     }
     if (only) {
@@ -2694,7 +2722,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     scene.setRings({ [s.id]: GREEN, ...Object.fromEntries(shownLocks().map((l) => [l.targetId, ACTION_COLOR[l.type]])) });
     scene.setMarkers(shownSpots().map((o) => ({ x: o.to.x, y: o.to.y, color: ACTION_COLOR[o.type], active: cand === o })));
     // Phones use the bar, except for the turret: its facings stay a ring around the ship, each where it points.
-    if (compact && only !== 'rotateArc') scene.clearChips(); else radial();
+    if (barUi() && only !== 'rotateArc') scene.clearChips(); else radial();
     const repositioning = cand && (cand.type === 'barrelRoll' || cand.type === 'boost');
     scene.showArcs(repositioning ? [] : [s.id], only === 'rotateArc' ? 'turret' : 'all');
     showOddsFrom(s, cand && (cand.type === 'barrelRoll' || cand.type === 'boost') ? cand.to : s.pose, true);
@@ -2705,7 +2733,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
       scene.showLine(s.pose, shipById(cand.targetId).pose, ACTION_COLOR[cand.type], actionText(cand));
     } else scene.clearOverlay();
     const who = `<b>${shortName(s)}</b>`;
-    if (compact) {
+    if (barUi()) {
       const what = only === 'barrelRoll' ? 'roll where?' : only === 'boost' ? 'boost where?' : only === 'lock' ? 'lock which enemy?' : only === 'jam' ? 'jam which enemy?'
         : only === 'coordinate' ? 'coordinate which friend?' : only === 'rotateArc' ? 'tap a facing around the ship' : `${linkNote ? `${linkNote} · ` : ''}pick an action`;
       setBar({ status: cand && only ? `${who}: ${actionText(cand)} <span class="hint">· tap again to confirm</span>` : `${who}: ${what}`, buttons: barTiles(), grid: true, cols: only === 'barrelRoll' ? 3 : undefined });
@@ -2759,7 +2787,7 @@ function renderAction(shipId: string, options: ActionChoice[], linked?: { from: 
     ? `<h2>Linked action: ${s.name}</h2><p class="hint">${linkNote}. Take it from the ring, or skip.</p>${critList(s)}`
     : by ? `<h2>Coordinated: ${s.name}</h2><p class="hint">${by} lets ${s.name} take an action now, outside its own turn. ${ring.join('; ')}.</p>${critList(s)}`
     : `<h2>Action: ${s.name}</h2><p class="hint">${ring.join('; ')}. Or pick a line below.</p>${critList(s)}`;
-  if (compact) {
+  if (barUi()) {
     // Phones: the bar has the buttons; this sheet says what each action does.
     const kinds = [...new Set(options.map((o) => o.type))].filter((t): t is ActionType => t !== 'none' && t !== 'repair' && !!ACTION_HELP[t]);
     detail.innerHTML = `<h2>${linked ? 'Linked action' : by ? 'Coordinated' : 'Action'}: ${s.name}</h2>
@@ -2854,6 +2882,7 @@ function showOddsFrom(s: ShipState, pose: Pose = s.pose, preview = false) {
  * lands and (for bombs) its range-1 blast.
  */
 function renderSystem(shipId: string, options: DropChoice[]) {
+  setRingUi(compact && ringMenu);
   const s = shipById(shipId);
   const drops = options.filter((o): o is Extract<DropChoice, { type: 'drop' }> => o.type === 'drop');
   const choose = (c: DropChoice) => { scene.previewDevice(null); send({ type: 'drop', playerId: me, choice: c }); };
@@ -2871,7 +2900,7 @@ function renderSystem(shipId: string, options: DropChoice[]) {
     onHover: (on) => preview(on ? o : null),
   }));
   items.push({ icon: ICONS.skip, label: 'Skip', title: 'Drop nothing', help: 'Keep your bombs and mines for later.', cls: 'quiet', onClick: () => choose({ type: 'none' }) });
-  if (compact) scene.clearChips();
+  if (barUi()) scene.clearChips();
   else scene.showRadial(s.pose, items, { key: 'system', caption: 'System phase: drop a device behind you? (hover to preview)' });
   mode = { click() {}, key(e) { if (e.key === 'Escape') choose({ type: 'none' }); } };
   setBar({
@@ -2943,6 +2972,7 @@ function relBearing(from: Pose, to: Pose) {
  * compare the odds, and fire. Esc / Back returns to the table and the ring.
  */
 function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
+  setRingUi(compact && ringMenu);
   const s = shipById(shipId);
   const weaponIds = ['primary', ...s.upgrades.filter((u) => UPGRADES[u.id].weapon).map((u) => u.id)];
   const turretPrimary = SHIP_TYPES[s.typeId].primaries.some((p) => p.arc === 'turret');
@@ -3039,7 +3069,7 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
     } else {
       setGunsight(null);
       if (aimed) { aimed = null; scene.restoreView(); }
-      const items: RadialItem[] = compact ? [] : weaponIds.map((w) => {
+      const items: RadialItem[] = barUi() ? [] : weaponIds.map((w) => {
         const u = s.upgrades.find((x) => x.id === w);
         const ok = targetsFor(w).length > 0;
         return {
@@ -3051,10 +3081,10 @@ function renderAttack(shipId: string, targets: Target[], bonusBy?: string) {
         };
       });
       items.push({ icon: ICONS.holdFire, label: 'Hold', title: 'Hold fire', help: 'Don\'t attack this round. Your tokens stay for defending.', cls: 'danger', onClick: () => fire(null) });
-      if (compact) scene.clearChips(); // phones: the weapons are tiles in the bar
+      if (barUi()) scene.clearChips(); // phones: the weapons are tiles in the bar
       else scene.showRadial(s.pose, items, { key: 'menu', caption: 'Pick a weapon' });
     }
-    if (compact) {
+    if (barUi()) {
       const pct = (p: number) => `${Math.round(p * 100)}%`;
       if (weapon && c) {
         // Aiming: one row. A long shot makes Hold the obvious button; Weapons only shows when there is a choice.
