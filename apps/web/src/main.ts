@@ -5,6 +5,7 @@ import {
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, quickSetup, type BattleSetup } from './setup';
+import { ask } from './dialog';
 import { campaignBriefing, markDone, nextMission, officerName, openBriefing, openCampaign, openStart, recordCampaign } from './campaign';
 import { handoff, hideHandoff } from './handoff';
 import { hostGame, joinGame, newCode, newSeatToken, normalizeCode, saveGuest, savedGuest, saveHost, savedHost, type Link, type Msg, type SavedHost } from './online';
@@ -110,9 +111,10 @@ ringBox.onchange = () => {
   // Switch the decision on screen over now.
   if (stage === 'battle' && !busy && state?.pending && state.pending.kind !== 'planning') { gameMenu.hidden = true; render(); }
 };
-gameMenu.querySelector<HTMLButtonElement>('#gm-main')!.onclick = () => {
+gameMenu.querySelector<HTMLButtonElement>('#gm-main')!.onclick = async () => {
   const playing = stage !== 'setup' && state && state.phase !== 'over';
-  if (playing && !confirm(mission ? 'Leave this mission?' : 'Leave this battle?')) return;
+  gameMenu.hidden = true;
+  if (playing && !await ask(mission ? 'Leave this mission?' : 'Leave this battle?', 'Leave', campaignMission ? 'A campaign mission you leave is not recorded: you can fly it again from the board.' : '')) return;
   gameMenu.hidden = true;
   showStart();
 };
@@ -398,7 +400,7 @@ function renderDeployment() {
     <div class="row"><button class="opt mini" id="dp-auto">Auto-arrange</button><button class="opt mini" id="dp-back">Back to squad</button></div>
     <button class="go" id="dp-go">${goLabel}</button>`;
   document.getElementById('dp-auto')!.onclick = autoArrange;
-  document.getElementById('dp-back')!.onclick = () => { if (!online || confirm('Leave this online game?')) newGame(lastSetup ?? undefined); };
+  document.getElementById('dp-back')!.onclick = async () => { if (!online || await ask('Leave this online game?', 'Leave')) newGame(lastSetup ?? undefined); };
   document.getElementById('dp-go')!.onclick = beginBattle;
   setBar({ status: carrying ? `Placing <b>${shipById(carrying).name}</b>` : `${who}Deploy: drag your ships, then ${handsOver ? 'hand over' : 'begin'}`, buttons: [
     { label: 'Auto', onClick: autoArrange },

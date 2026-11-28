@@ -7,6 +7,7 @@ import {
   recordMission, talentOptions, withRoster, officerLost, MAX_INITIATIVE, POD_LIFE,
   type CampaignMission, type CampaignProgress, type MissionDef, type PilotReport, type RosterPilot,
 } from '@xw/engine';
+import { ask } from './dialog';
 
 const PROGRESS_KEY = 'xw-campaign';
 /** Training progress, the officer's name, and the campaign after graduation (absent until then). */
@@ -162,8 +163,8 @@ function openTraining(go: CampaignNav, replay = false) {
     <ol class="mission-list">${TRAINING.map(row).join('')}</ol>
     ${replay ? '' : '<div class="row"><button class="opt mini" id="cp-skip">Skip training and graduate</button></div>'}`);
   root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); replay ? openCampaign(go) : go.back(); };
-  root.querySelector<HTMLButtonElement>('#cp-skip')?.addEventListener('click', () => {
-    if (!confirm('Skip the training missions and graduate now?')) return;
+  root.querySelector<HTMLButtonElement>('#cp-skip')?.addEventListener('click', async () => {
+    if (!await ask('Skip the training missions and graduate now?', 'Skip training', 'You can still replay any lesson later from the mission board.')) return;
     saveProgress({ ...loadProgress(), skipped: true });
     close();
     openCampaign(go);
@@ -377,8 +378,8 @@ function openEnding(p: Progress, go: CampaignNav) {
       <div class="finale-buttons"><button class="opt" id="cp-back">Back</button><button class="go" id="cp-new">New campaign</button></div>
     </div>`);
   root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); go.back(); };
-  root.querySelector<HTMLButtonElement>('#cp-new')!.onclick = () => {
-    if (!confirm('Start a new campaign? Your officer keeps their training; the operations start over.')) return;
+  root.querySelector<HTMLButtonElement>('#cp-new')!.onclick = async () => {
+    if (!await ask('Start a new campaign?', 'New campaign', 'Your officer keeps their training; the squadron and the operations start over.')) return;
     saveProgress({ ...loadProgress(), campaign: newCampaign(p.officer) });
     close();
     openCampaign(go);
@@ -400,8 +401,8 @@ function openOfficerLost(p: Progress, go: CampaignNav) {
       <div class="finale-buttons"><button class="opt" id="cp-back">Back</button><button class="go" id="cp-new">New campaign</button></div>
     </div>`);
   root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); go.back(); };
-  root.querySelector<HTMLButtonElement>('#cp-new')!.onclick = () => {
-    if (!confirm('Start a new campaign? Your officer keeps their training; the squadron and the operations start over.')) return;
+  root.querySelector<HTMLButtonElement>('#cp-new')!.onclick = async () => {
+    if (!await ask('Start a new campaign?', 'New campaign', 'Your officer keeps their training; the squadron and the operations start over.')) return;
     saveProgress({ ...loadProgress(), campaign: newCampaign(p.officer) });
     close();
     openCampaign(go);

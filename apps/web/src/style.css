@@ -627,3 +627,8 @@ html.compact.ring-ui #gunsight .gs-actions .opt.mini, html.compact.ring-ui #guns
 .pod-label.urgent { color: #fff; background: #8a1620e6; border-color: #ff5a5a; }
 .mh-pods { margin-top: 6px; font-size: 12px; color: #ffb3b3; }
 .mh-pods .urgent { color: #ff5a5a; font-weight: 700; }
+.ask-screen { z-index: 40; }
+.ask-card { width: min(420px, 100%); text-align: center; }
+.ask-card h2 { margin: 0 0 10px; font-size: 18px; }
+.ask-card .hint { margin: 0 0 14px; }
+.ask-card .opt { text-align: center; margin: 0; }
