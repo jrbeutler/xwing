@@ -196,7 +196,6 @@ Earned per mission, by pilots who come home:
 | Survived the mission (still on the board at the end) | 2 |
 | Mission won (every survivor) | +1 |
 | Each enemy destroyed (final blow) | +1 |
-| Each pilot rescued (the medic's pilot) | +1 |
 | Officer, for leading | +1 |
 
 - **Retreat**: a ship that flies off its own table edge leaves the battle safely and earns survival and win XP
@@ -218,18 +217,21 @@ Earned per mission, by pilots who come home:
   ace's kill count.
 
 ### Ejection, the medic ship and rescue
-- **Every battle** (campaign missions; skirmish to be decided) gives the player's side a **medic ship**. It
-  does not take a seat in the squad.
+- **Every campaign mission** gives the player's side a **medic ship** (not skirmish or quick battle, and the
+  Syndicate has none). It does not take a seat in the squad and **doesn't count as one of the player's ships**:
+  if every attack ship is destroyed or has retreated, the battle is lost even with the medic still flying, and
+  `destroy`-style objectives and the round-limit score ignore it.
 - **The medic**: a new hull in the freighter class. No weapons; very high shields and hull, Reinforce, slow
-  with a limited dial. To start, a recoloured Wayfarer or Bulwark model. Flown by a roster pilot of the
-  freighter class (who earns XP for rescues) or a fixed crew, to be decided. Its hull and shields don't count
-  in the round-limit score.
+  with a limited dial. To start, a recoloured Wayfarer or Bulwark model. **Flown by a droid** that never
+  changes: not on the roster, earns no XP, can't be lost (if the medic is destroyed, the droid is salvaged and
+  a new medic comes next mission). Its hull and shields don't count in the round-limit score.
 - **Ejection**: when a ship is destroyed, its pilot ejects: an **escape pod** is placed where the ship was, a
   flashing beacon with a life-support countdown of **3 rounds** (the round it is destroyed counts as round 0).
   Pods are board objects: they don't block movement or line of sight and can't be shot.
 - **Recover**: the medic ends a move with a pod at range 0-1 and takes the **Recover** action (its action for
   the round). The pilot is aboard and safe. A medic that retreats off its edge takes its passengers home.
-- If the medic is destroyed, its passengers and its own pilot eject as pods where it was.
+- If the medic is destroyed, its passengers eject as pods where it was (with no medic left, those pods run
+  out or are captured).
 - **Pods that run out** of life support: the pilot is lost.
 - **Recovery phase**: if the player wins with pods still out, the game plays on without enemies: the medic
   flies to the pods (the player flies it, with a fast-forward option) and each one it reaches before its
@@ -281,6 +283,4 @@ Earned per mission, by pilots who come home:
 
 ## Open questions (for later steps)
 
-- Does skirmish (and the AI's side) get a medic ship too, or only the player's side in campaign missions?
-- Who flies the medic: a roster pilot (freighter class, earns XP, can be lost) or a fixed crew?
 - Fleet layer: which capital-ship rules first (hull zones, command dials, navigation) and what scale the table is.
