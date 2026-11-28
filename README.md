@@ -15,6 +15,7 @@ npm run typecheck
 npm run build:artifact -w @xw/web   # single-file build for claude.ai artifacts (apps/web/dist/artifact.html)
 node apps/web/scripts/bake-freighter.mjs path/to/Freighter.fbx   # re-bake the freighter model (source FBX is not in the repo)
 node apps/web/scripts/bake-glb.mjs path/to/glb.glb apps/web/src/assets/bomber/bomber.bin --length 42 --cell 0.2 --uv 0.03 --normal 2   # re-bake the bomber (source GLB is not in the repo)
+node apps/web/scripts/bake-palette-fbx.mjs path/to/Battle-SpaceShip-pack   # bake the capital-ship model library (apps/web/src/assets/library; the source FBX files are not in the repo)
 node apps/web/scripts/bake-obj.mjs path/to/Intergalactic_Spaceship.obj apps/web/src/assets/javelin/javelin.bin --size 32 --rot-y 90   # re-bake the Javelin (source OBJ is not in the repo)
 ```
 

@@ -25,6 +25,9 @@ import javelinUrl from './assets/javelin/javelin.bin?url'; // packed by scripts/
 import bomberUrl from './assets/bomber/bomber.bin?url'; // packed by scripts/pack-models.mjs
 const bomberMaps = import.meta.glob('./assets/bomber/*.jpg', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
 import freighterUrl from './assets/freighter/freighter.bin?url'; // packed by scripts/pack-models.mjs
+/** The model library (scripts/bake-palette-fbx.mjs): capital-ship models not yet tied to a ship type, by id. */
+const libraryUrls = Object.fromEntries(Object.entries(import.meta.glob('./assets/library/*.bin', { eager: true, query: '?url', import: 'default' }) as Record<string, string>)
+  .map(([path, url]) => [/([^/]+)\.bin$/.exec(path)![1], url]));
 
 /** Freighter display length (procedural-model units; ships are drawn at MODEL_SCALE = 1.3×, so 78 ≈ 101 mm). */
 const FREIGHTER_LENGTH = 78;
@@ -370,6 +373,40 @@ async function loadWayfarer(renderer: THREE.WebGLRenderer) {
     build(_skin, color) { const m = paint(color); return paintClone(outer, () => m); },
     engines: [-1, 1].map((sd) => ({ x: box.min.x + 0.8, y: 0, z: sd * box.max.z * 0.4, r: 3 })),
   };
+}
+
+/** Ids of the models in the library (e.g. 'destroyer-3', 'cruiser-4'). */
+export const LIBRARY_MODELS = Object.keys(libraryUrls).sort();
+
+/**
+ * A library model as a ship template, `length` units long (the procedural-model scale: a small fighter is
+ * about 38, a medium ship 58). Baked in four palette groups: the hull is silver, the trim takes the team
+ * colour, and the dark panels and black vents stay dark. Flat-shaded, as the models were made.
+ */
+export async function libraryTemplate(id: string, length: number): Promise<ShipTemplate> {
+  const url = libraryUrls[id];
+  if (!url) throw new Error(`no library model ${id}`);
+  const parts = parsePacked(await bytes(url));
+  const dark = new THREE.MeshStandardMaterial({ color: 0x3b414c, metalness: 0.5, roughness: 0.55, flatShading: true });
+  const black = new THREE.MeshStandardMaterial({ color: 0x0e1014, metalness: 0.3, roughness: 0.7, flatShading: true });
+  const paint = perColor((color) => ({
+    hull: teamPaint(color, { metalness: 0.6, roughness: 0.42, flatShading: true }),
+    accent: new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.85), metalness: 0.45, roughness: 0.45, flatShading: true }),
+  }));
+  const pick = (color: number, group: string) => (group === 'accent' ? paint(color).accent : group === 'dark' ? dark : group === 'black' ? black : paint(color).hull);
+  const outer = packedGroup(parts, (p) => pick(0xffffff, p.name));
+  outer.scale.setScalar(length / 100); // baked 100 units long
+  castShadows(outer);
+  const box = new THREE.Box3().setFromObject(outer);
+  return {
+    build(_skin, color) { return paintClone(outer, (m) => pick(color, m.name)); },
+    engines: [{ x: box.min.x + length * 0.02, y: 0, z: 0, r: length * 0.05 }],
+  };
+}
+
+/** Use a library model for a ship type (e.g. a new hull before it has a model of its own). */
+export async function useLibraryModel(typeId: string, id: string, length: number) {
+  templates[typeId] = await libraryTemplate(id, length);
 }
 
 /** Load every imported model; each one that fails just leaves its procedural stand-in. */
