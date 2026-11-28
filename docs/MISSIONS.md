@@ -1,15 +1,21 @@
 # Missions, training and campaign: plan
 
 Status: the mission framework, the eight training missions and a first campaign arc (mission boards, flags; no
-roster yet) are built; the roster, experience, permadeath and fleet battles are not. Decisions so far:
+roster yet) are built; the roster, experience, ejection and rescue, the longer campaign and fleet battles are
+not (planned below in **Roster, experience and rescue**). Decisions so far:
 - **Fighters in fleet battles** are abstract squadron tokens to start (the fleet layer is later).
-- **Permadeath**: pilots and ships lost in a mission are gone.
+- **Losses**: a destroyed ship is gone. Its pilot ejects; the squadron's medic ship has to pick them up before
+  their life support runs out, or they are lost (or captured, which opens a rescue mission).
+- **Campaign length**: at least 10 operations, in three acts.
 - **Single player** first; the design keeps co-op possible (two players sharing one roster against the AI).
 - **Training an officer**: the player names an officer at enrolment and flies as them in every mission (their
   ship carries the name). Training is flight school under Commander Ress; graduation makes them a lieutenant.
 - **Mission boards**: after training, each operation offers 2-4 missions and the player flies one. The others go
   away, and a campaign mission is flown once: win or lose, no retry. Results set flags that shape later boards.
-- **Roster later**: campaign missions use fixed forces, like training; the persistent squadron comes next.
+- **Roster next**: campaign missions still use fixed forces, like training; the persistent squadron is the next
+  step. The player picks who flies each mission, and spends experience in a hangar between missions.
+- **The officer has no plot armour**: they eject and need rescuing like anyone else. Captured, they are rescued
+  by the rest of the squadron; only a failed rescue ends the campaign.
 
 ## Layers
 
@@ -115,10 +121,10 @@ A **skip training** option starts experienced players with everything.
 - Mission progress: done, failed, available; story flags set by outcomes.
 - Later: capital ships and their persistent damage, resources, the strategic map.
 
-**Permadeath**: a pilot whose ship is destroyed is dead, and the ship with its upgrades is lost. To keep a
-bad mission from ending a campaign, generic replacement pilots can always be recruited (low initiative, no
-talents), and experience and named pilots are what you stand to lose. A mission loss is not a campaign loss:
-it closes some branches and opens worse ones.
+**Losses**: a destroyed ship and its upgrades are gone; its pilot ejects and has to be recovered by the medic
+ship (see **Roster, experience and rescue**). To keep a bad mission from ending a campaign, replacement pilots
+join when the roster runs short, and experience is what you stand to lose. A mission loss is not a campaign
+loss: it closes some branches and opens worse ones.
 
 **Mission graph**: missions are nodes with prerequisites (missions done, flags set); outcomes set flags and
 unlock nodes. A mostly linear spine with optional side missions. In the fleet era, fleet battles set the
@@ -165,18 +171,116 @@ one game (the host's browser runs it); campaign state would live with the host, 
   with the outcome text and the way back to the board, and the end of the campaign with its history. Progress
   stays in localStorage (`xw-campaign`); old training progress carries over.
 
+## Roster, experience and rescue (plan)
+
+The campaign's squadron persists: pilots fly mission after mission, get better, and can be lost. The
+campaign grows to at least 10 operations so there is room to advance and something to lose.
+
+### Roster
+- Each roster pilot is an individual: name, class (fighter to start), initiative, talents, banked XP, kills,
+  missions flown, status (`ready`, `injured`, `captured`, `lost`). The officer is one of them, starting at
+  initiative 2 (an academy graduate); new wingmen start at 1.
+- Before each mission the player **picks who flies** in the mission's seats. Injured pilots can't fly that
+  mission.
+- **Replacements** join when the roster is short of the seats a mission needs, at initiative 1 in Act I, 2 in
+  Act II and 3 in Act III, with generated names.
+- A ship lost in battle is replaced by a standard hull with no upgrades.
+- Engine: squad entries can carry a roster pilot's own initiative and talents instead of a pilot card's, so
+  `effectiveInitiative`, `talentSlotCount` and `signatureTalents` read them from the entry.
+
+### Experience
+Earned per mission, by pilots who come home:
+
+| Source | XP |
+|---|---|
+| Survived the mission (still on the board at the end) | 2 |
+| Mission won (every survivor) | +1 |
+| Each enemy destroyed (final blow) | +1 |
+| Each pilot rescued (the medic's pilot) | +1 |
+| Officer, for leading | +1 |
+
+- **Retreat**: a ship that flies off its own table edge leaves the battle safely and earns survival and win XP
+  prorated by the fraction of the mission it flew (rounds flown / rounds the battle lasted), plus full credit
+  for its kills. It doesn't count as destroyed.
+- A pilot who was shot down and rescued earns no survival or win XP, only kills.
+
+**Spending** in the hangar between missions; XP is banked until spent:
+
+| Purchase | Cost |
+|---|---|
+| +1 initiative (up to 6) | 2 × the new initiative (1→2: 4, 2→3: 6, 3→4: 8, 4→5: 10, 5→6: 12) |
+| A new talent (needs a free slot) | 4 |
+
+- **Slots come from initiative**, as in skirmish: one talent slot at 3-4, two at 5+. Talents come from the
+  pilot's class pool.
+- Pacing at about 4 XP a mission: a pilot who survives every mission is at initiative 2 after mission 2,
+  3 with a talent by mission 4, 4 by mission 7, and 5 with two talents by mission 10. Initiative 6 takes an
+  ace's kill count.
+
+### Ejection, the medic ship and rescue
+- **Every battle** (campaign missions; skirmish to be decided) gives the player's side a **medic ship**. It
+  does not take a seat in the squad.
+- **The medic**: a new hull in the freighter class. No weapons; very high shields and hull, Reinforce, slow
+  with a limited dial. To start, a recoloured Wayfarer or Bulwark model. Flown by a roster pilot of the
+  freighter class (who earns XP for rescues) or a fixed crew, to be decided. Its hull and shields don't count
+  in the round-limit score.
+- **Ejection**: when a ship is destroyed, its pilot ejects: an **escape pod** is placed where the ship was, a
+  flashing beacon with a life-support countdown of **3 rounds** (the round it is destroyed counts as round 0).
+  Pods are board objects: they don't block movement or line of sight and can't be shot.
+- **Recover**: the medic ends a move with a pod at range 0-1 and takes the **Recover** action (its action for
+  the round). The pilot is aboard and safe. A medic that retreats off its edge takes its passengers home.
+- If the medic is destroyed, its passengers and its own pilot eject as pods where it was.
+- **Pods that run out** of life support: the pilot is lost.
+- **Recovery phase**: if the player wins with pods still out, the game plays on without enemies: the medic
+  flies to the pods (the player flies it, with a fast-forward option) and each one it reaches before its
+  countdown ends is saved.
+- **If the player loses**, or the round limit ends the mission, every pod still out is **captured**.
+- **Captured pilots** add a **rescue mission** to a later board (a jailbreak, a prisoner transport to
+  intercept). Win it and they come back (injured); lose it, or skip it when it's offered, and they're lost.
+- **Injured**: a rescued pilot sits out the next mission.
+- **The officer** follows the same rules. If the officer is captured, the next board is only their rescue,
+  flown by the rest of the squadron; a failed rescue ends the campaign. If the officer's pod runs out, the
+  campaign ends.
+- **AI**: the Syndicate hunts the medic and screens pods from it; the player's side (move hints, auto-flown
+  wingmen) steers the medic to pods.
+- **Later**: enemy pilots eject too; the medic picks them up as prisoners (intel, prisoner exchanges).
+
+### The longer campaign
+| Act | Operations | Story |
+|---|---|---|
+| I: Outer Reach | 1-4 | The current arc; its Showdown ends Act I, not the campaign |
+| II: Taking the fight to them | 5-7 | Raids into Syndicate space, escorts, an informant subplot set by Act I's flags |
+| III: Endgame | 8-10+ | The Syndicate ace and their base; the finale set by everything before |
+
+- **Mission templates** (strike, escort, intercept, defend, rescue, recon, duel) build missions from
+  parameters (table, enemy force, objective variant) so Acts II and III don't need every mission hand-made;
+  briefings stay hand-written and a few set pieces stay custom. Rescue missions for captured pilots use the
+  rescue template.
+- **Rising threat**: enemy forces scale with the operation number and the squadron's total initiative (more
+  ships, aces, upgrades), so a veteran squadron still gets a fight.
+- Tests play the whole campaign with the AI on both sides to tune the life-support countdown, the medic's
+  stats and the XP rates: a typical run should lose a few pilots and finish with some veterans.
+
+### Build steps
+1. **Roster and experience**: roster state, pilot picking, XP and the hangar, retreat off the table with
+   prorated XP, the debrief (XP, who came home), on the current four operations.
+2. **Ejection and rescue**: escape pods, the medic ship, Recover, the recovery phase, captured pilots and
+   rescue missions, the officer's capture.
+3. **Rising threat and mission templates.**
+4. **Acts II and III**: operations 5-10.
+
 ## Build order
 
 1. **Mission framework in the squadron engine**: the format, objectives, triggers, rulesets, briefing, HUD,
    debriefing, coach tips; training missions 1-4.
 2. **Training missions 5-8** and the AI profiles they need (drones, runner, escort).
-3. **Campaign layer**: state, save and load, roster with experience and permadeath, the mission graph, the
-   campaign screens; a first short arc of 5-6 missions after training.
+3. **Campaign layer**: state, save and load, the mission graph, the campaign screens, a first arc (built);
+   then the roster, experience, rescue and the longer campaign (steps above).
 4. **Fleet engine** with squadron tokens, its client view, and fleet training missions.
 5. **Linking layers**: fleet ↔ fighter outcomes, the strategic map.
 
 ## Open questions (for later steps)
 
-- Experience: what it buys (initiative, talent slots, talents) and how fast.
-- Can a destroyed pilot eject (a chance to survive, injured) or is every loss final?
+- Does skirmish (and the AI's side) get a medic ship too, or only the player's side in campaign missions?
+- Who flies the medic: a roster pilot (freighter class, earns XP, can be lost) or a fixed crew?
 - Fleet layer: which capital-ship rules first (hull zones, command dials, navigation) and what scale the table is.
