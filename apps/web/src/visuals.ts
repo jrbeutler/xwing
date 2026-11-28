@@ -281,11 +281,11 @@ export function buildAsteroid(poly: { x: number; z: number }[], seed: number): T
   const placed: { x: number; z: number; r: number }[] = [];
   /** Put a rock of about `want` radius somewhere free inside the footprint (shrinking it to fit). */
   const place = (want: number, min: number, detail: number, lift: number) => {
-    for (let t = 0; t < 40; t++) {
+    for (let t = 0; t < 60; t++) {
       const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0);
       if (!insidePoly(poly, x, z)) continue;
-      let r = Math.min(want, edgeDist(poly, x, z) * 0.9);
-      for (const o of placed) r = Math.min(r, Math.hypot(o.x - x, o.z - z) - o.r * 0.95);
+      let r = Math.min(want, edgeDist(poly, x, z) * 0.95);
+      for (const o of placed) r = Math.min(r, Math.hypot(o.x - x, o.z - z) - o.r * 0.8); // rocks may nestle into each other a little
       if (r < min) continue;
       placed.push({ x, z, r });
       const m = rock(r, seed * 13.7 + placed.length * 3.1, detail);
@@ -296,12 +296,12 @@ export function buildAsteroid(poly: { x: number; z: number }[], seed: number): T
     }
   };
   // The big ones first (they need the room), then the middling, then a scatter of gravel.
-  const big = avgR > 60 ? 3 : 2;
-  for (let i = 0; i < big; i++) place(avgR * (0.36 - i * 0.05), avgR * 0.15, 3, 6);
-  const mid = Math.round(THREE.MathUtils.clamp(avgR / 7, 5, 12));
-  for (let i = 0; i < mid; i++) place(avgR * (0.11 + rnd() * 0.08), 4, 2, 10);
-  const gravel = Math.round(THREE.MathUtils.clamp(avgR / 3, 12, 30));
-  for (let i = 0; i < gravel; i++) place(1.5 + rnd() * 3, 1.2, 1, 14);
+  const big = avgR > 60 ? 4 : 3;
+  for (let i = 0; i < big; i++) place(avgR * (0.44 - i * 0.04), avgR * 0.18, 3, 6);
+  const mid = Math.round(THREE.MathUtils.clamp(avgR / 4, 8, 18));
+  for (let i = 0; i < mid; i++) place(avgR * (0.14 + rnd() * 0.1), 4, 2, 10);
+  const gravel = Math.round(THREE.MathUtils.clamp(avgR / 2, 20, 45));
+  for (let i = 0; i < gravel; i++) place(2 + rnd() * 3.5, 1.5, 1, 14);
   // faint hazard outline of the true footprint
   g.add(footprint(poly, 0xd08a4a));
   return g;
