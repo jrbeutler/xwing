@@ -415,7 +415,8 @@ let modelsLoaded!: () => void;
 export const shipModelsReady = new Promise<void>((r) => { modelsLoaded = r; });
 
 export async function loadShipModels(renderer: THREE.WebGLRenderer): Promise<void> {
-  const results = await Promise.allSettled([loadFighter(renderer), loadFreighter(), loadInterceptor(), loadBomber(renderer), loadJavelin(), loadWayfarer(renderer)]);
+  const results = await Promise.allSettled([loadFighter(renderer), loadFreighter(), loadInterceptor(), loadBomber(renderer), loadJavelin(), loadWayfarer(renderer),
+    useLibraryModel('medic', 'destroyer-5', 64)]); // the campaign's medic ship: the ring amidships is its recovery bay
   for (const r of results) if (r.status === 'rejected') console.warn('ship model failed to load; using built-in model', r.reason);
   modelsLoaded();
 }

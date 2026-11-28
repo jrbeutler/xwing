@@ -1,8 +1,9 @@
 # Missions, training and campaign: plan
 
-Status: the mission framework, the eight training missions, a first campaign arc (mission boards, flags) and
-the squadron roster with experience, the hangar and retreats are built; ejection and rescue, the longer campaign
-and fleet battles are not (planned below in **Roster, experience and rescue**). Decisions so far:
+Status: the mission framework, the eight training missions, a first campaign arc (mission boards, flags), the
+squadron roster with experience, the hangar and retreats, and ejection with the medic ship and rescue missions are
+built; rising threat, mission templates, the longer campaign and fleet battles are not (planned below in
+**Roster, experience and rescue**). Decisions so far:
 - **Fighters in fleet battles** are abstract squadron tokens to start (the fleet layer is later).
 - **Losses**: a destroyed ship is gone. Its pilot ejects; the squadron's medic ship has to pick them up before
   their life support runs out, or they are lost (or captured, which opens a rescue mission).
@@ -273,11 +274,38 @@ Earned per mission, by pilots who come home:
 - In a mission, flying off the table is a retreat: the ship is out of play (still `destroyed`, so the rest of
   the rules need no change) and `fled` holds the round. In skirmish it is still a lost ship. A mission is lost
   when every player ship is destroyed or gone.
-- Until step 2's escape pods, a wingman shot down survives injured and sits out the next mission; a downed
-  officer keeps flying.
+- (Until step 2, a wingman shot down survived injured; step 2 replaced that with escape pods.)
 - Client: the board's squadron line and the hangar; a "who flies?" screen before each briefing (the officer
   always flies; replacements are announced); the debrief lists each pilot's fate, kills and XP; the planning
   card warns when a chosen move leaves the table; the campaign's end lists the squadron.
+
+### As built (step 2)
+- Engine: `rescue.ts`. The `medic` hull (campaign only, `campaignOnly` keeps it out of the squad builder and the
+  AI's squads) is flown by the `medic-droid` pilot: no guns, 10 hull, 6 shields, agility 1, Recover, Reinforce
+  and Evade, a slow dial with 1-turns and a red 3 K-turn. `missionAsFlown` adds it (tag `medic`) to every
+  campaign mission in a gap on the home edge; `missionGame` then turns `mission.rescue` on.
+- A roster ship destroyed (not retreated) drops a `Pod` in `state.pods` (event `pod`, `ejected`). Life support:
+  `POD_LIFE` = 3 rounds after the round it ejected; `expirePods` in the End phase loses it after that.
+  `recoverablePods`: the medic's own side's pods at range 0-1 of its base. A destroyed medic drops its
+  passengers back out, their clock restarted.
+- `mission.ts`: the medic never counts (`fighting` = the player's ships less the medic) for the loss check or
+  the survive, reach and course objectives. `endMission(win)` with pods out and a medic flying starts the
+  recovery phase (`holdForRecovery`: the enemy's ships are `withdrawn`, event `recovery`, the round limit stops
+  applying) and the mission ends as a win once no pods are out. `endMission(loss)` captures the pods still out.
+- `missionReport` outcomes: home, retreated, rescued (picked up: injured, sits out one mission; the officer
+  flies on), lost, captured (`capturedAt`). `missionBoard` puts a generated `rescueMission(n)` ("Prison Break":
+  destroy the barge's guards, 2-4 by campaign stage) first on the next board; a captured officer leaves only
+  that mission, flown by the wingmen in the officer's ship. `recordMission`: a won rescue frees them (injured),
+  anything else loses them. `campaignOver` once the officer is lost.
+- AI: the medic goes for the most urgent pod it can reach in time (else the nearest), cares less about enemy
+  arcs while pods are out, avoids red moves that would leave it unable to Recover, and otherwise follows just
+  behind its fighters; Recover comes first among its actions. In AI-vs-AI games the medic picks up roughly a
+  quarter to a third of the pods: most ejections happen 300-550 mm away, near the limit of three medic moves.
+- Client: the medic flies the library's `destroyer-5`; pods are blinking beacons with the medic's pickup range
+  and a countdown label; banners and log lines for ejected, recovered, lost and captured pods and for the
+  recovery phase; the objectives panel lists pods waiting; Recover in the action ring and the phone bar; the
+  debrief says what became of each pilot; the crew screen explains the medic; a captured officer's rescue is
+  crewed without them; an ending for a lost officer.
 
 ### Build steps
 1. **Roster and experience**: roster state, pilot picking, XP and the hangar, retreat off the table with

@@ -47,6 +47,17 @@ export const SHIP_TYPES: Record<string, ShipType> = {
     dial: parseDial('0X:r 1TL:r 1BL:b 1S:b 1BR:b 1TR:r 2TL:w 2BL:w 2S:b 2BR:w 2TR:w 3BL:w 3S:w 3BR:w 4S:w 1RS:r 2SL:r 2SR:r'),
     slots: ['cannon', 'missile', 'turret', 'crew', 'gunner', 'sensor', 'modification', 'modification'],
   },
+  // The squadron's medic ship (campaign missions only, flown by a droid): no guns, heavy shields and hull, slow.
+  // It picks up pilots who ejected (Recover) and braces against fire (Reinforce). It doesn't count as one of the
+  // squadron's ships: when the last fighter is gone, the mission is lost.
+  medic: {
+    id: 'medic', name: 'Medevac Tender', size: 'medium', class: 'freighter', cost: 0, campaignOnly: true,
+    primaries: [], agility: 1, hull: 10, shields: 6,
+    actions: [{ type: 'recover' }, { type: 'reinforce' }, { type: 'evade' }],
+    // Slow, but it can turn tight and come about (a red K-turn) to reach a pod behind it.
+    dial: parseDial('1TL:w 1BL:b 1S:b 1BR:b 1TR:w 2TL:w 2BL:b 2S:b 2BR:b 2TR:w 3BL:w 3S:b 3BR:w 4S:w 3K:r'),
+    slots: [],
+  },
   // Bomber class. Stats, actions and dial follow the X-Wing 2nd edition BTL-A4 Y-wing: tough (6 hull,
   // 2 shields) but slow to turn, with a red barrel roll and Reload (recover an ordnance or bomb charge,
   // and hold fire that round).
@@ -166,6 +177,7 @@ export const PILOTS: Record<string, PilotDef> = {
     },
   },
   'scout-two': { id: 'scout-two', name: 'Scout Two', specialty: 'freighter', ship: 'wayfarer', initiative: 2, cost: 2, unique: false },
+  'medic-droid': { id: 'medic-droid', name: 'MD-4 Medic Droid', specialty: 'freighter', ship: 'medic', initiative: 1, cost: 0, unique: false, campaignOnly: true },
 };
 
 /**

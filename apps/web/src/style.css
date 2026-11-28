@@ -623,3 +623,7 @@ html.compact.ring-ui #gunsight .gs-actions kbd { display: none; }
 html.compact.ring-ui #gunsight .gs-actions .opt.mini, html.compact.ring-ui #gunsight .gs-fire { min-height: 44px; }
 .pilot-actions button, .squadron-line button { width: auto; flex: none; }
 .warn-text { color: #ffcf6b; }
+.pod-label { font: 600 11px system-ui, sans-serif; color: #ffd6d6; background: #2a0d12d9; border: 1px solid #ff5a5a88; border-radius: 6px; padding: 2px 6px; white-space: nowrap; pointer-events: none; }
+.pod-label.urgent { color: #fff; background: #8a1620e6; border-color: #ff5a5a; }
+.mh-pods { margin-top: 6px; font-size: 12px; color: #ffb3b3; }
+.mh-pods .urgent { color: #ff5a5a; font-weight: 700; }

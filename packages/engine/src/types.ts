@@ -5,7 +5,7 @@ import type { DamageCardId } from './damage';
 export type PlayerId = string;
 /** Firing arcs by facing: primaries use front/rear; a turret's arc can face any of the four. */
 export type ArcName = 'front' | 'rear' | 'left' | 'right';
-export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam' | 'calculate' | 'reinforce' | 'reload' | 'coordinate';
+export type ActionType = 'focus' | 'evade' | 'lock' | 'barrelRoll' | 'boost' | 'repair' | 'rotateArc' | 'jam' | 'calculate' | 'reinforce' | 'reload' | 'coordinate' | 'recover';
 
 /**
  * An action on a ship's action bar. `linked`: after performing it, the ship may perform this second action
@@ -194,6 +194,8 @@ export interface ShipType {
   dial: Maneuver[];
   /** Upgrade slots. Talent slots are not here: they belong to the pilot. */
   slots: Exclude<SlotType, 'talent'>[];
+  /** Only in campaign missions (the medic ship): never offered in the squad builder. */
+  campaignOnly?: boolean;
 }
 
 export interface PilotDef {
@@ -212,6 +214,8 @@ export interface PilotDef {
   unique: boolean;
   /** Named pilots' own ability, flown on any hull. Its id in play (logs, charges) is the pilot's id. */
   ability?: AbilityDef;
+  /** Only in campaign missions (the medic's droid): never offered in the squad builder. */
+  campaignOnly?: boolean;
 }
 
 /** A pilot ability: effects like an upgrade's, with its own charges. */
@@ -263,6 +267,8 @@ export interface ShipState {
   rosterId?: string;
   /** In a mission: the round this ship flew off the table (a retreat; it is also out of play, `destroyed`). */
   fled?: number;
+  /** Withdrew when the player won (the recovery phase): out of play, not destroyed by anyone. */
+  withdrawn?: boolean;
   destroyed: boolean;
   /** Destroyed ships linger until their initiative step ends (simultaneous fire). */
   removed: boolean;
@@ -303,7 +309,9 @@ export type ActionChoice =
   /** Recover 1 charge on a missile, torpedo or device upgrade; the ship is disarmed for the round. */
   | { type: 'reload'; upgrade: string }
   /** A friendly ship at range 0-2 (not stressed) immediately performs an action. */
-  | { type: 'coordinate'; targetId: string };
+  | { type: 'coordinate'; targetId: string }
+  /** The medic ship takes an escape pod at range 0-1 aboard (campaign missions). */
+  | { type: 'recover'; podId: string };
 
 export interface TargetInfo {
   targetId: string;
@@ -388,6 +396,10 @@ export type GameEvent =
   /** A ship's upgrade showed it another ship's dial (the view of that ship's player keeps the dial). */
   | { type: 'dialPeeked'; shipId: string; targetId: string; upgrade: string }
   | { type: 'destroyed'; shipId: string }
+  /** An escape pod: ejected (a ship destroyed), recovered by the medic, lost (life support ran out), captured (the mission was lost). */
+  | { type: 'pod'; what: 'ejected' | 'recovered' | 'lost' | 'captured'; pod: Pod; by?: string }
+  /** A won mission's recovery phase begins: the enemy's remaining ships withdraw while the medic picks up pods. */
+  | { type: 'recovery'; withdrawn: string[] }
   | { type: 'gameOver'; winner: PlayerId | 'draw'; mission?: 'win' | 'loss' }
   /** A mission objective moved on: progress (e.g. 3 of 5 markers), done, or failed. */
   | { type: 'objective'; id: string; status: ObjectiveStatus; progress: number; of: number }
@@ -422,6 +434,29 @@ export interface GameState {
   winner: PlayerId | 'draw' | null;
   /** A mission game: its rules, objectives and progress (absent in a skirmish). */
   mission?: MissionState;
+  /** Escape pods (campaign missions with a medic ship). */
+  pods?: Pod[];
+}
+
+/**
+ * An escape pod: where a roster pilot ejected when their ship was destroyed. Its life support lasts
+ * POD_LIFE rounds after the round it ejected; the medic ship has to take it aboard (Recover) before then.
+ */
+export interface Pod {
+  id: string;
+  /** The ship the pilot ejected from, and the pilot. */
+  shipId: string;
+  name: string;
+  rosterId?: string;
+  owner: PlayerId;
+  x: number;
+  y: number;
+  /** The round it ejected (re-ejected, if the medic carrying it was destroyed). */
+  round: number;
+  /** Out on the table, aboard the medic, lost (life support ran out), or captured (the mission was lost). */
+  status: 'out' | 'aboard' | 'lost' | 'captured';
+  /** The medic carrying it. */
+  carrierId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +534,10 @@ export interface MissionState {
   result: 'win' | 'loss' | null;
   /** How far into the log the mission has read (missionScan). */
   scanned: number;
+  /** Escape pods are on: the player's side has a medic ship (campaign missions). */
+  rescue?: boolean;
+  /** Won, and in the recovery phase: the enemy has withdrawn, the medic picks up the pods still out. */
+  recovery?: boolean;
 }
 
 export type Command =

@@ -5,6 +5,7 @@ import { PILOTS, SHIP_TYPES, UPGRADES } from './content';
 import type { SquadEntry } from './game';
 import { hullOf, talentSlotCount } from './squad';
 import { OFFICER_TAG } from './training';
+import { isMedic } from './rescue';
 import type { GameState } from './types';
 
 export interface RosterPilot {
@@ -22,6 +23,8 @@ export interface RosterPilot {
   status: 'active' | 'lost' | 'captured';
   /** Injured: can fly again from this mission (an index into the campaign's history). */
   injuredUntil?: number;
+  /** Captured in this mission (history index): the next board offers a rescue, their only chance. */
+  capturedAt?: number;
   /** The mission (history index) they joined before. */
   joined: number;
 }
@@ -79,7 +82,7 @@ export function defaultCrew(roster: RosterPilot[], missionIndex: number, seats: 
 /** The call-sign pilot card for a hull: roster pilots fly it with their own initiative and talents. */
 function genericPilotFor(hull: string): string {
   const cls = SHIP_TYPES[hull].class;
-  const all = Object.values(PILOTS).filter((p) => !p.unique && p.specialty === cls);
+  const all = Object.values(PILOTS).filter((p) => !p.unique && !p.campaignOnly && p.specialty === cls);
   return (all.find((p) => p.ship === hull) ?? all[0]).id;
 }
 
@@ -92,13 +95,15 @@ export const isSeat = (e: SquadEntry) => !PILOTS[e.pilotId].unique && SHIP_TYPES
  */
 export function crewShips(player: SquadEntry[], seats: number[], crew: RosterPilot[]): SquadEntry[] {
   const out = [...player];
-  const officerSeat = seats.find((i) => player[i].tags?.includes(OFFICER_TAG));
   const officer = crew.find((p) => p.officer);
+  // The officer's ship carries the officer; if they can't fly (captured), a wingman takes it.
+  const officerSeat = officer ? seats.find((i) => player[i].tags?.includes(OFFICER_TAG)) : undefined;
   const others = crew.filter((p) => p !== officer);
   const fill = (i: number, p: RosterPilot | undefined) => {
     if (!p) return;
     const e = player[i];
-    out[i] = { ...e, pilotId: genericPilotFor(hullOf(e)), shipType: hullOf(e), name: p.name, initiative: p.initiative, talents: [...p.talents], rosterId: p.id };
+    const tags = p.officer ? e.tags : e.tags?.filter((t) => t !== OFFICER_TAG);
+    out[i] = { ...e, pilotId: genericPilotFor(hullOf(e)), shipType: hullOf(e), name: p.name, initiative: p.initiative, talents: [...p.talents], rosterId: p.id, ...(tags ? { tags } : {}) };
   };
   if (officerSeat !== undefined) fill(officerSeat, officer);
   let k = 0;
@@ -130,13 +135,25 @@ export function killCredits(s: GameState): Map<string, number> {
 export interface PilotReport {
   pilotId: string;
   name: string;
-  /** Home: on the table at the end. Retreated: flew off the table. Down: shot down. */
-  outcome: 'home' | 'retreated' | 'down';
+  /**
+   * Home: on the table at the end. Retreated: flew off the table. Shot down and then: rescued (the medic picked
+   * up their pod, or a mission without pods), lost (life support ran out), captured (the mission was lost).
+   */
+  outcome: 'home' | 'retreated' | 'rescued' | 'lost' | 'captured';
   /** Rounds flown, of the rounds the battle lasted. */
   rounds: number;
   of: number;
   kills: number;
   xp: number;
+}
+
+/** What became of a roster ship's pilot once the mission is over. */
+function fate(s: GameState, x: GameState['ships'][number]): PilotReport['outcome'] {
+  if (x.fled) return 'retreated';
+  if (!x.destroyed) return 'home';
+  const pod = (s.pods ?? []).find((p) => p.shipId === x.id);
+  if (!pod) return s.mission?.rescue ? 'lost' : 'rescued';
+  return pod.status === 'aboard' ? 'rescued' : pod.status === 'lost' ? 'lost' : 'captured';
 }
 
 /**
@@ -148,8 +165,8 @@ export function missionReport(s: GameState): PilotReport[] {
   const won = s.mission?.result === 'win';
   const kills = killCredits(s);
   const of = Math.max(1, s.round);
-  return s.ships.filter((x) => x.rosterId).map((x) => {
-    const outcome = x.fled ? 'retreated' : x.destroyed ? 'down' : 'home';
+  return s.ships.filter((x) => x.rosterId && !isMedic(x)).map((x) => {
+    const outcome = fate(s, x);
     const rounds = x.fled ?? of;
     const base = XP.survived + (won ? XP.won : 0) + (x.tags?.includes(OFFICER_TAG) ? XP.officer : 0);
     const k = kills.get(x.id) ?? 0;
@@ -159,16 +176,18 @@ export function missionReport(s: GameState): PilotReport[] {
 }
 
 /**
- * The roster after a mission: XP and kills banked, missions counted. Until escape pods and the medic ship
- * arrive (the next build step), a pilot shot down survives injured and sits out the next mission; the officer
- * always flies.
+ * The roster after a mission: XP and kills banked, missions counted. A rescued pilot is injured and sits out
+ * the next mission (the officer flies anyway); a lost pilot is gone; a captured one waits for a rescue.
  */
 export function applyReport(roster: RosterPilot[], report: PilotReport[], missionIndex: number): RosterPilot[] {
   return roster.map((p) => {
     const r = report.find((x) => x.pilotId === p.id);
     if (!r) return p;
-    const injured = r.outcome === 'down' && !p.officer;
-    return { ...p, xp: p.xp + r.xp, kills: p.kills + r.kills, missions: p.missions + 1, ...(injured ? { injuredUntil: missionIndex + 2 } : {}) };
+    const banked = { ...p, xp: p.xp + r.xp, kills: p.kills + r.kills, missions: p.missions + 1 };
+    if (r.outcome === 'rescued' && !p.officer) return { ...banked, injuredUntil: missionIndex + 2 };
+    if (r.outcome === 'lost') return { ...banked, status: 'lost' as const };
+    if (r.outcome === 'captured') return { ...banked, status: 'captured' as const, capturedAt: missionIndex };
+    return banked;
   });
 }
 

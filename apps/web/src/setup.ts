@@ -82,7 +82,7 @@ function statLine(s: SquadShip) {
 
 const ACTION_NAMES: Record<ActionType, string> = {
   focus: 'Focus', evade: 'Evade', lock: 'Lock', barrelRoll: 'Barrel Roll', boost: 'Boost', repair: 'Repair',
-  rotateArc: 'Rotate', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload', coordinate: 'Coordinate',
+  rotateArc: 'Rotate', jam: 'Jam', calculate: 'Calculate', reinforce: 'Reinforce', reload: 'Reload', coordinate: 'Coordinate', recover: 'Recover',
 };
 /** The hull's action bar: red actions in red, linked actions as "Focus → Rotate". */
 function actionLine(s: SquadShip) {
@@ -225,7 +225,7 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
   const hullPicker = (side: Side, s: SquadShip, i: number) => {
     const p = PILOTS[s.pilotId];
     const opt = (id: string) => `<option value="${id}" ${id === hullOf(s) ? 'selected' : ''}>${esc(SHIP_TYPES[id].name)} (${SHIP_TYPES[id].cost})</option>`;
-    const hulls = Object.values(SHIP_TYPES);
+    const hulls = Object.values(SHIP_TYPES).filter((t) => !t.campaignOnly);
     const own = hulls.filter((t) => t.class === p.specialty).map((t) => opt(t.id)).join('');
     const other = hulls.filter((t) => t.class !== p.specialty).map((t) => opt(t.id)).join('');
     return `<select class="hull-pick" data-hull="${side}:${i}" aria-label="Ship for ${esc(p.name)}">
@@ -289,8 +289,8 @@ export function openSetup(onDeploy: (s: BattleSetup) => void, keep?: BattleSetup
   const pilotPicker = (side: Side, room: number) => {
     const taken = uniquesIn(squad(side));
     const groups = CLASSES.map((c) => {
-      const hulls = Object.values(SHIP_TYPES).filter((t) => t.class === c);
-      const pilots = Object.values(PILOTS).filter((p) => p.specialty === c).sort((a, b) => b.initiative - a.initiative || a.name.localeCompare(b.name));
+      const hulls = Object.values(SHIP_TYPES).filter((t) => t.class === c && !t.campaignOnly);
+      const pilots = Object.values(PILOTS).filter((p) => p.specialty === c && !p.campaignOnly).sort((a, b) => b.initiative - a.initiative || a.name.localeCompare(b.name));
       if (!pilots.length) return '';
       return `<div class="pick-group"><div class="thumbs">${hulls.map((t) => `<img class="thumb" alt="" title="${esc(t.name)}" src="${shipPreview().thumbnail(t.id)}">`).join('')}</div>
         <h3>${CLASS_LABEL[c]} pilots <span class="hint">fly ${hulls.map((t) => `${esc(t.name)} (${t.cost})`).join(', ')}</span></h3>

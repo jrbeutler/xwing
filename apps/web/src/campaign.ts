@@ -4,7 +4,7 @@
 import {
   OPERATIONS, SHIP_TYPES, TALENT_COST, TRAINING, UPGRADES, campaignOver, canFly, canLearnTalent, canPromote, currentOperation,
   findCampaignMission, freeTalentSlots, learnTalent, missionAsFlown, missionBoard, newCampaign, prepareCrew, promote, promoteCost,
-  recordMission, talentOptions, withRoster, MAX_INITIATIVE,
+  recordMission, talentOptions, withRoster, officerLost, MAX_INITIATIVE, POD_LIFE,
   type CampaignMission, type CampaignProgress, type MissionDef, type PilotReport, type RosterPilot,
 } from '@xw/engine';
 
@@ -291,7 +291,8 @@ function openHangar(go: CampaignNav) {
   const { root, close } = overlay('campaign', `
     <div class="setup-head"><h1>Hangar</h1><button class="opt mini" id="cp-back">Back to the board</button></div>
     <p class="hint">Pilots earn experience for coming home: 2 XP, +1 for a win, +1 per kill (the officer +1 for leading). A retreat off the table earns a share for the rounds flown.
-      Spend it on initiative (twice the new value) or on talents (${TALENT_COST} XP; one slot at initiative 3, a second at 5).</p>
+      Spend it on initiative (twice the new value) or on talents (${TALENT_COST} XP; one slot at initiative 3, a second at 5).
+      Pilots shot down eject; picked up by the medic, they sit out one mission to recover.</p>
     <ul class="pilot-list">${active.map(row).join('')}</ul>
     ${gone.length ? `<h3>Fallen and missing</h3><ul class="pilot-list">${gone.map(row).join('')}</ul>` : ''}`);
   const save = (roster: RosterPilot[]) => { saveProgress({ ...loadProgress(), campaign: { ...c, roster } }); close(); openHangar(go); };
@@ -311,13 +312,15 @@ function openCrew(m: CampaignMission, go: CampaignNav) {
   const { progress, seats, crew } = prepareCrew(m, before.campaign!);
   saveProgress({ ...before, campaign: progress });
   const roster = progress.roster!, at = progress.history.length;
+  const officerFlies = roster.some((x) => x.officer && canFly(x, at));
   const joined = roster.slice(had);
   const picked = new Set(chosenCrew?.length === seats && chosenCrew.every((id) => roster.some((x) => x.id === id && canFly(x, at))) ? chosenCrew : crew);
   const { def } = missionAsFlown(m, progress, [...picked]);
   const seatShips = def.player.filter((e) => e.rosterId).map((e) => SHIP_TYPES[e.shipType ?? 'kestrel'].name);
   const { root, close } = overlay('campaign', `
     <div class="setup-head"><h1>${esc(m.title)}: who flies?</h1><button class="opt mini" id="cp-back">Back</button></div>
-    <p class="hint">${seats} ship${seats === 1 ? '' : 's'} to crew (${esc(seatShips.join(', '))}). You fly one of them; pick ${seats - 1} wingm${seats - 1 === 1 ? 'a' : 'e'}n. Pilots shot down are injured and sit out the next mission.</p>
+    <p class="hint">${seats} ship${seats === 1 ? '' : 's'} to crew (${esc(seatShips.join(', '))}). ${officerFlies ? `You fly one of them; pick ${seats - 1} wingm${seats - 1 === 1 ? 'a' : 'e'}n.` : `You are a prisoner: pick ${seats} pilots to come and get you.`}
+      Your medic ship flies with you. Pilots shot down eject: the medic has ${POD_LIFE} rounds to pick them up, or they are lost (captured, if the mission is lost).</p>
     ${joined.length ? `<p class="hint note">Replacements joined the squadron: ${joined.map((x) => esc(x.name)).join(', ')}.</p>` : ''}
     <ul class="pilot-list">${roster.filter((x) => x.status === 'active').map((x) => {
       const why = unfitReason(x, at), on = picked.has(x.id);
@@ -349,7 +352,8 @@ function openCrew(m: CampaignMission, go: CampaignNav) {
   root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); openCampaign(go); };
   ok.onclick = () => {
     const officer = roster.find((x) => x.officer)!.id;
-    chosenCrew = [officer, ...roster.filter((x) => picked.has(x.id) && x.id !== officer).map((x) => x.id)];
+    const wingmen = roster.filter((x) => picked.has(x.id) && x.id !== officer).map((x) => x.id);
+    chosenCrew = picked.has(officer) ? [officer, ...wingmen] : wingmen;
     close();
     go.fly(m);
   };
@@ -359,6 +363,7 @@ function openCrew(m: CampaignMission, go: CampaignNav) {
 /** Every operation flown: how the campaign ended, and a fresh start. */
 function openEnding(p: Progress, go: CampaignNav) {
   const c = p.campaign!;
+  if (officerLost(c)) return openOfficerLost(p, go);
   const won = c.flags.includes('victory');
   const { root, close } = overlay('campaign', `
     <div class="briefing-card">
@@ -366,6 +371,7 @@ function openEnding(p: Progress, go: CampaignNav) {
       <h1>${won ? 'The Outer Reach is safe' : 'The fight goes on'}</h1>
       <p>${esc(findCampaignMission(c.history.at(-1)!.mission)!.outcome[c.history.at(-1)!.result].text)}</p>
       <ol class="history">${c.history.map((h) => `<li><b>${esc(findCampaignMission(h.mission)!.title)}</b> ${resultMark(h.result)}</li>`).join('')}</ol>
+      ${withRoster(c).roster.some((x) => x.status === 'lost' || x.status === 'captured') ? `<p class="hint">Lost and missing: ${withRoster(c).roster.filter((x) => x.status === 'lost' || x.status === 'captured').map((x) => esc(x.name)).join(', ')}.</p>` : ''}
       <h3>The squadron</h3>
       <ul class="pilot-list">${withRoster(c).roster.filter((x) => x.missions > 0).map((x) => `<li class="pilot-row"><b>${x.officer ? '★ ' : ''}${esc(x.name)}</b>${pilotStats(x)}</li>`).join('')}</ul>
       <div class="finale-buttons"><button class="opt" id="cp-back">Back</button><button class="go" id="cp-new">New campaign</button></div>
@@ -373,6 +379,29 @@ function openEnding(p: Progress, go: CampaignNav) {
   root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); go.back(); };
   root.querySelector<HTMLButtonElement>('#cp-new')!.onclick = () => {
     if (!confirm('Start a new campaign? Your officer keeps their training; the operations start over.')) return;
+    saveProgress({ ...loadProgress(), campaign: newCampaign(p.officer) });
+    close();
+    openCampaign(go);
+  };
+  root.querySelector<HTMLButtonElement>('#cp-new')!.focus();
+}
+
+/** The officer was lost: the campaign ends with them. */
+function openOfficerLost(p: Progress, go: CampaignNav) {
+  const c = withRoster(p.campaign!);
+  const fallen = c.roster.filter((x) => x.status === 'lost' && !x.officer);
+  const { root, close } = overlay('campaign', `
+    <div class="briefing-card">
+      <div class="finale-kicker">Campaign over · ${c.history.filter((h) => h.result === 'win').length} of ${c.history.length} missions won</div>
+      <h1>Lieutenant ${esc(p.officer)} is lost</h1>
+      <p class="quote">"We searched as long as we could. The squadron flies on, but not under you."<span class="hint"> Command</span></p>
+      <ol class="history">${c.history.map((h) => `<li><b>${esc(findCampaignMission(h.mission)!.title)}</b> ${resultMark(h.result)}</li>`).join('')}</ol>
+      ${fallen.length ? `<p class="hint">Also lost: ${fallen.map((x) => esc(x.name)).join(', ')}.</p>` : ''}
+      <div class="finale-buttons"><button class="opt" id="cp-back">Back</button><button class="go" id="cp-new">New campaign</button></div>
+    </div>`);
+  root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); go.back(); };
+  root.querySelector<HTMLButtonElement>('#cp-new')!.onclick = () => {
+    if (!confirm('Start a new campaign? Your officer keeps their training; the squadron and the operations start over.')) return;
     saveProgress({ ...loadProgress(), campaign: newCampaign(p.officer) });
     close();
     openCampaign(go);
@@ -408,7 +437,7 @@ export function openBriefing(m: MissionDef, x: BriefingExtras, go: { begin(): vo
 /** A board mission as it will be flown, with its briefing extras. */
 export function campaignBriefing(m: CampaignMission): { def: MissionDef; extras: BriefingExtras } {
   const c = loadProgress().campaign ?? newCampaign(officerName());
-  const op = OPERATIONS.find((o) => o.missions.includes(m))!;
+  const op = currentOperation(c) ?? OPERATIONS.find((o) => o.missions.includes(m))!;
   const { def, notes } = missionAsFlown(m, c, chosenCrew);
   return { def, extras: { kicker: `Operation ${op.number} · ${op.title}`, notes, final: true } };
 }

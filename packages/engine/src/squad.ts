@@ -129,8 +129,8 @@ export function buildAiSquad(seed: number, budget = DEFAULT_BUDGET, taken: Set<s
       const room = budget - squadCost(q);
       // First pass: keep some points back for upgrades once the squad has a core of ships.
       const reserve = keepForUpgrades && q.ships.length >= 3 ? Math.min(room, budget * 0.15) : 0;
-      const options = Object.values(PILOTS).filter((p) => !(p.unique && used.has(p.id))).flatMap((p) =>
-        Object.values(SHIP_TYPES).filter((t) => t.class === p.specialty).map((t) => ({ pilotId: p.id, shipType: t.id, upgrades: [] as string[] })))
+      const options = Object.values(PILOTS).filter((p) => !p.campaignOnly && !(p.unique && used.has(p.id))).flatMap((p) =>
+        Object.values(SHIP_TYPES).filter((t) => t.class === p.specialty && !t.campaignOnly).map((t) => ({ pilotId: p.id, shipType: t.id, upgrades: [] as string[] })))
         .filter((s) => shipCost(s) <= room - reserve);
       if (!options.length || q.ships.length >= MAX_SHIPS) return;
       // Pick the pilot first, then a hull, so pilots with more hulls to choose from are not favoured.

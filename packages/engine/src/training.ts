@@ -2,6 +2,7 @@
 // switched on one step at a time. Missions are data; `missionGame` turns one into a game.
 import { generateObstacles, createGame, type SquadEntry } from './game';
 import { ALL_ACTIONS, FULL_RULES } from './rules';
+import { isMedic } from './rescue';
 import type { AiProfile, GameState, Marker, Objective, Obstacle, Ruleset, Trigger, Zone } from './types';
 
 /** A mission as written: briefing, rules, table, forces, objectives and coach tips. */
@@ -50,6 +51,8 @@ export function missionGame(def: MissionDef, seed: number, opts: { officer?: str
     mission: {
       id: def.id, player: 'p1', ruleset: def.ruleset, objectives: def.objectives, triggers: def.triggers ?? [],
       zones: def.zones ?? [], markers: def.markers ?? [], ai: { p2: def.enemyAi ?? 'standard' }, maxRounds: def.maxRounds,
+      // A medic ship on the player's side turns escape pods on (campaign missions).
+      ...(player.some(isMedic) ? { rescue: true } : {}),
     },
   });
 }

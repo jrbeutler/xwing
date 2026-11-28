@@ -47,7 +47,7 @@ describe('the squadron', () => {
     const { def } = missionAsFlown(mission('op4-assault'), newCampaign('X'));
     expect(def.player[0]).toMatchObject({ shipType: 'kestrel', upgrades: ['shield-booster'], rosterId: 'officer' });
     const javelin = missionAsFlown(mission('op1-listening-post'), newCampaign('X')).def.player;
-    expect(javelin.map((e) => [e.shipType, e.pilotId])).toEqual([['javelin', 'lance-four'], ['javelin', 'lance-four']]);
+    expect(javelin.filter((e) => e.rosterId).map((e) => [e.shipType, e.pilotId])).toEqual([['javelin', 'lance-four'], ['javelin', 'lance-four']]);
   });
 
   it('ships added by earlier results: call-sign fighters are seats, named pilots and other classes stay allies', () => {
@@ -65,7 +65,7 @@ describe('the squadron', () => {
     const c = newCampaign('X');
     const pick = ['officer', c.roster![3].id];
     const { def } = missionAsFlown(mission('op1-raider-hunt'), c, pick);
-    expect(def.player.map((e) => e.rosterId)).toEqual(pick);
+    expect(def.player.filter((e) => e.rosterId).map((e) => e.rosterId)).toEqual(pick);
   });
 
   it('replacements join when too few pilots are fit to fly, better trained in later acts', () => {
@@ -81,6 +81,7 @@ describe('the squadron', () => {
 
 /** A finished mission, staged: the battle lasted `rounds`, and each roster ship came home, retreated or was shot down. */
 function staged(result: 'win' | 'loss', rounds: number, fates: ('home' | number | 'down')[]): GameState {
+  // 'down': shot down and picked up by the medic.
   const { def } = missionAsFlown(mission('op1-supply-run'), newCampaign('X'));
   const g = missionGame(def, 1);
   g.round = rounds;
@@ -90,7 +91,10 @@ function staged(result: 'win' | 'loss', rounds: number, fates: ('home' | number 
   const crew = g.ships.filter((s) => s.rosterId).sort((a, b) => Number(b.rosterId === 'officer') - Number(a.rosterId === 'officer'));
   crew.forEach((s, i) => {
     const f = fates[i];
-    if (f === 'down') s.destroyed = true;
+    if (f === 'down') {
+      s.destroyed = true;
+      (g.pods ??= []).push({ id: `pod-${i}`, shipId: s.id, name: s.name, rosterId: s.rosterId, owner: s.owner, x: 0, y: 0, round: 1, status: 'aboard' });
+    }
     else if (typeof f === 'number') { s.destroyed = true; s.fled = f; }
   });
   return g;
@@ -106,7 +110,7 @@ describe('experience', () => {
     const r = missionReport(g);
     expect(r.find((x) => x.pilotId === 'officer')).toMatchObject({ outcome: 'home', xp: 4, kills: 0 });
     expect(r.find((x) => x.pilotId === wing.rosterId)).toMatchObject({ outcome: 'home', xp: 4, kills: 1 });
-    expect(r.find((x) => x.outcome === 'down')).toMatchObject({ xp: 0, kills: 0 });
+    expect(r.find((x) => x.outcome === 'rescued')).toMatchObject({ xp: 0, kills: 0 });
   });
 
   it('a retreat earns the survival share for the rounds flown', () => {
@@ -116,14 +120,19 @@ describe('experience', () => {
     expect(r.filter((x) => x.pilotId !== 'officer').map((x) => [x.outcome, x.rounds, x.xp]).sort()).toEqual([['home', 10, 2], ['retreated', 5, 1]]);
   });
 
-  it('banking it: XP, kills and missions counted; the shot down sit out the next mission, the officer never does', () => {
-    const roster = [pilot({ id: 'officer', officer: true }), pilot({ id: 'a' }), pilot({ id: 'b' })];
+  it('banking it: XP, kills and missions counted; the rescued sit out the next mission (the officer never does), the lost are gone, the captured wait', () => {
+    const roster = [pilot({ id: 'officer', officer: true }), pilot({ id: 'a' }), pilot({ id: 'b' }), pilot({ id: 'c' }), pilot({ id: 'd' })];
     const out = applyReport(roster, [
-      { pilotId: 'officer', name: '', outcome: 'down', rounds: 3, of: 3, kills: 1, xp: 1 },
+      { pilotId: 'officer', name: '', outcome: 'rescued', rounds: 3, of: 3, kills: 1, xp: 1 },
       { pilotId: 'a', name: '', outcome: 'home', rounds: 3, of: 3, kills: 2, xp: 5 },
-      { pilotId: 'b', name: '', outcome: 'down', rounds: 3, of: 3, kills: 0, xp: 0 },
+      { pilotId: 'b', name: '', outcome: 'rescued', rounds: 3, of: 3, kills: 0, xp: 0 },
+      { pilotId: 'c', name: '', outcome: 'lost', rounds: 3, of: 3, kills: 0, xp: 0 },
+      { pilotId: 'd', name: '', outcome: 'captured', rounds: 3, of: 3, kills: 0, xp: 0 },
     ], 1);
-    expect(out.map((p) => [p.xp, p.kills, p.missions, p.injuredUntil])).toEqual([[1, 1, 1, undefined], [5, 2, 1, undefined], [0, 0, 1, 3]]);
+    expect(out.map((p) => [p.xp, p.kills, p.missions, p.injuredUntil, p.status])).toEqual([
+      [1, 1, 1, undefined, 'active'], [5, 2, 1, undefined, 'active'], [0, 0, 1, 3, 'active'], [0, 0, 1, undefined, 'lost'], [0, 0, 1, undefined, 'captured'],
+    ]);
+    expect(out[4].capturedAt).toBe(1);
   });
 
   it('recordMission banks the report into the roster', () => {

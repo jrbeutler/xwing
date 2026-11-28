@@ -6,6 +6,7 @@ import { actionBar, easedManeuver, effectsOf, gainToken, recoverRecurringCharges
 import { actionAllowed, discardCard, effectiveManeuver, hasCard, newDamageDeck, repairableCards } from './damage';
 import { nextFloat } from './rng';
 import { allUpgrades, effectiveInitiative, hullOf } from './squad';
+import { expirePods, recoverablePods, recoverPod, shipDown } from './rescue';
 import { missionRoundEnd, missionScan, startMission, type MissionSetup } from './mission';
 import { isSpecialManeuver, rulesOf } from './rules';
 import type {
@@ -215,6 +216,7 @@ export function actionOptions(s: GameState, sh: ShipState, ionized = false, coor
     if (a.type === 'reinforce') for (const side of ['front', 'rear'] as const) if (sh.reinforce !== side) opts.push({ type: 'reinforce', side });
     if (a.type === 'reload') for (const u of reloadable(sh)) opts.push({ type: 'reload', upgrade: u.id });
     if (a.type === 'coordinate' && !coordinated) for (const t of coordinateTargets(s, sh)) opts.push({ type: 'coordinate', targetId: t.id });
+    if (a.type === 'recover') for (const p of recoverablePods(s, sh)) opts.push({ type: 'recover', podId: p.id });
     if (a.type === 'lock' && !isIonized(sh)) {
       for (const t of activeShips(s)) {
         if (t.owner === sh.owner || sh.lock === t.id) continue;
@@ -431,6 +433,7 @@ function destroy(s: GameState, sh: ShipState) {
   sh.lock = null;
   for (const o of s.ships) if (o.lock === sh.id) o.lock = null;
   s.log.push({ type: 'destroyed', shipId: sh.id });
+  shipDown(s, sh); // a campaign pilot ejects
 }
 
 function initiativeOrder(s: GameState, ascending: boolean): string[] {
@@ -701,6 +704,7 @@ function performAction(s: GameState, sh: ShipState, a: ActionChoice, red: boolea
   if (a.type === 'focus' || a.type === 'evade' || a.type === 'calculate') gainToken(s, sh, a.type);
   if (a.type === 'reinforce') gainToken(s, sh, 'reinforce', a.side);
   if (a.type === 'jam') jam(s, sh, s.ships.find((x) => x.id === a.targetId)!);
+  if (a.type === 'recover') recoverPod(s, sh, a.podId);
   if (a.type === 'repair') {
     discardCard(s, sh, a.card);
     s.log.push({ type: 'damageCard', shipId: sh.id, card: a.card, what: 'repaired' });
@@ -776,6 +780,7 @@ function endPhase(s: GameState) {
   }
   s.engagementInitiative = null;
   if (s.mission) {
+    expirePods(s); // escape pods whose life support ran out
     // A mission ends on its objectives (or its last round), not on the last player standing.
     if (!missionRoundEnd(s)) startRound(s);
     return;

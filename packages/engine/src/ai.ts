@@ -1,6 +1,7 @@
 // Baseline AI: one-ply lookahead. Scores each candidate maneuver by the position it produces against
 // where the enemies will likely be (it predicts each enemy's maneuver by scoring it from that enemy's seat).
 // Fast, beatable, good enough to test rules; later AIs can plug into the same `decide` contract.
+import { isMedic, podsOut, POD_LIFE } from './rescue';
 import { Pose, fwd } from './geometry';
 import { BOARD_SIZE, Maneuver, maneuverFinalPose, maneuverPath } from './maneuvers';
 import { attackOdds, clipToArc, legalTargets, maxRangeBand, measureArc, RANGE_RULES, rangeBand, shipPolygon, shipSize, shipType } from './combat';
@@ -107,6 +108,7 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   if (edge < 80) score -= (80 - edge) * 0.5;
   // Don't end where every move the ship could pick next round runs off the table: it would have to flee.
   if (edge < 200 && cornered(pose, size, legalDial(s, sh).map((i) => maneuverFor(sh, i)))) score -= 300;
+  if (isMedic(sh)) return score + medicScore(s, sh, m, pose, poly, predictions) + jitter() * 6;
   const role = roleOf(sh);
   const turret = hasTurretPrimary(sh);
   let nearest = Infinity;
@@ -138,6 +140,51 @@ export function scoreManeuver(s: GameState, sh: ShipState, dialIndex: number, ji
   if (m.difficulty === 'blue' && sh.stress > 0) score += 10;
   score += objectivePull(s, sh, m, pose);
   return score + jitter() * 6;
+}
+
+/**
+ * The medic ship has no guns: it flies to the nearest escape pod (ending within Recover range is best), stays out
+ * of enemy arcs, and with no pods out hangs back behind its fighters, clear of range 2 of any enemy.
+ */
+const MEDIC = { perMm: 0.8, inReach: 200, threat: 0.8, braveWithPods: 0.4, close: 25, hangBack: 0.1, behind: 60, perRound: 140 };
+function medicScore(s: GameState, sh: ShipState, m: Maneuver, pose: Pose, poly: ReturnType<typeof basePolygon>, predictions?: Map<string, Prediction[]>): number {
+  let v = 0;
+  const { THREAT } = tables();
+  let nearest = Infinity;
+  for (const e of activeShips(s).filter((x) => x.owner !== sh.owner)) {
+    for (const { pose: ep, w } of predictions?.get(e.id) ?? straightAhead(e)) {
+      v -= w * MEDIC.threat * arcScore(ep, shipSize(e), poly, THREAT, hasTurretPrimary(e));
+      nearest = Math.min(nearest, polygonDistance(poly, basePolygon(ep, shipSize(e))).d);
+    }
+  }
+  const pods = podsOut(s, sh.owner);
+  // With pilots in the water the medic leans on its shields: enemy arcs matter less than getting there.
+  if (pods.length) v *= MEDIC.braveWithPods;
+  if (pods.length) {
+    // The most urgent pod it can still reach in time (about MEDIC.perRound mm a round), else the nearest.
+    const far = (p: (typeof pods)[number]) => Math.max(0, Math.hypot(p.x - sh.pose.x, p.y - sh.pose.y) - RANGE_RULES.edges[0]);
+    const left = (p: (typeof pods)[number]) => p.round + POD_LIFE - s.round + 1;
+    const reachable = pods.filter((p) => far(p) / MEDIC.perRound <= left(p));
+    const target = reachable.length
+      ? [...reachable].sort((a, b) => left(a) - left(b) || far(a) - far(b))[0]
+      : [...pods].sort((a, b) => far(a) - far(b))[0];
+    const d = polygonDistance(poly, [{ x: target.x, y: target.y }]).d;
+    // In reach, but only worth it if it can still act: a red maneuver (or staying stressed) leaves no Recover.
+    const canAct = m.difficulty !== 'red' && (sh.stress === 0 || m.difficulty === 'blue');
+    v += d <= RANGE_RULES.edges[0] ? (canAct ? MEDIC.inReach : MEDIC.inReach / 4) : -d * MEDIC.perMm;
+    return v;
+  }
+  if (nearest < RANGE_RULES.edges[1]) v -= MEDIC.close;
+  // Hang back: a little behind the middle of its fighters (towards its own edge).
+  const friends = activeShips(s).filter((x) => x.owner === sh.owner && x.id !== sh.id && !isMedic(x));
+  if (friends.length) {
+    const cx = friends.reduce((a, f) => a + f.pose.x, 0) / friends.length, cy = friends.reduce((a, f) => a + f.pose.y, 0) / friends.length;
+    const enemies = activeShips(s).filter((x) => x.owner !== sh.owner);
+    const ey = enemies.length ? enemies.reduce((a, e) => a + e.pose.y, 0) / enemies.length : cy;
+    const back = cy + Math.sign(cy - ey || -1) * MEDIC.behind;
+    v -= Math.hypot(pose.x - cx, pose.y - back) * MEDIC.hangBack;
+  }
+  return v;
 }
 
 /** Spacing (mm) of the base positions the AI checks along a maneuver for obstacles: well under any base or obstacle size. */
@@ -391,7 +438,7 @@ function bestDrop(s: GameState, sh: ShipState, options: DropChoice[]): DropChoic
 const OBJECTIVE_PULL = { perMm: 0.3, marker: 60, zone: 60, hunt: 0.08 };
 function objectivePull(s: GameState, sh: ShipState, m: Maneuver, pose: Pose): number {
   const mission = s.mission;
-  if (!mission || sh.owner !== mission.player) return 0;
+  if (!mission || sh.owner !== mission.player || isMedic(sh)) return 0;
   let v = 0;
   for (const o of mission.objectives) {
     if (o.status !== 'open' || (o.tag && !sh.tags?.includes(o.tag))) continue;
@@ -554,7 +601,7 @@ export function decide(s: GameState, playerId: PlayerId): Command | null {
       return tokens ? tokens * 2 + t.evade + (shootable.has(t.id) ? 3 : 0) + actionBonus(sh, 'jam') : 0;
     };
     const jam = [...d.options].sort((a, b) => jamWorth(b) - jamWorth(a)).find((o) => jamWorth(o) > 0);
-    const choice = urgent ?? blunted ?? jam
+    const choice = pick('recover') ?? urgent ?? blunted ?? jam
       ?? (hasShot ? undefined : repair(['damagedSensorArray', 'woundedPilot', 'looseStabilizer', 'weaponsFailure', 'blindedPilot']) ?? turretTurn(s, sh, d.options))
       ?? coordinateChoice(s, sh, d.options) ?? bestToken(s, sh, d.options) ?? pick('focus');
     return { type: 'action', playerId, choice: choice ?? { type: 'none' } };

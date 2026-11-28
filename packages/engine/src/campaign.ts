@@ -7,6 +7,7 @@ import { FULL_RULES } from './rules';
 import {
   applyReport, crewShips, defaultCrew, isSeat, startingRoster, withReplacements, type PilotReport, type RosterPilot,
 } from './roster';
+import { MEDIC_TAG } from './rescue';
 import { OFFICER_TAG, type MissionDef } from './training';
 import type { Zone } from './types';
 
@@ -351,18 +352,69 @@ export const withRoster = (p: CampaignProgress): CampaignProgress & { roster: Ro
 /** The operation being fought: one per mission flown, undefined once the campaign is over. */
 export const currentOperation = (p: CampaignProgress): Operation | undefined => OPERATIONS[p.history.length];
 
-export const campaignOver = (p: CampaignProgress) => p.history.length >= OPERATIONS.length;
+/** The officer is lost (life support ran out, or a failed rescue): the campaign ends there. */
+export const officerLost = (p: CampaignProgress) => !!p.roster?.some((x) => x.officer && x.status === 'lost');
+
+export const campaignOver = (p: CampaignProgress) => p.history.length >= OPERATIONS.length || officerLost(p);
+
+/** Pilots captured in the last mission: the board now offers their rescue, once. */
+export const awaitingRescue = (p: CampaignProgress) =>
+  (p.roster ?? []).filter((x) => x.status === 'captured' && x.capturedAt === p.history.length - 1);
+
+/**
+ * The rescue mission offered after pilots were captured (at history index `n`): break them out of a
+ * Syndicate prison barge by clearing its guards. The guard grows as the campaign goes on.
+ */
+export function rescueMission(n: number): CampaignMission {
+  const guards = Math.min(4, 2 + Math.floor(n / 3));
+  const enemy = [wasp(300, 'Guard 1'), javelin(457, 'Guard 2'), wasp(614, 'Guard 3'), javelin(170, 'Guard 4')].slice(0, guards);
+  return {
+    ...base(n + 1), id: `rescue-${n}`, title: 'Prison Break', teaches: 'Rescue', difficulty: 2,
+    summary: 'The Syndicate holds your captured pilots on a prison barge. Clear its guards and bring them home.',
+    stakes: 'Your captured pilots. Fly any other mission and they are gone for good.',
+    intro: '{officer}, we found them: a prison barge, lightly guarded, moving tonight. We get one try.',
+    briefing: ['Destroy the barge\'s guards. With its escort gone the barge surrenders, and the prisoners come home with your medic.'],
+    obstacles: rocks(5101 + n * 17, 3),
+    player: [lead(300), wing(457, 'Wingmate'), wing(614, 'Second wing')],
+    enemy,
+    objectives: [{ id: 'guards', label: 'Destroy the barge\'s guards', kind: 'destroy' }],
+    maxRounds: 10,
+    outcome: {
+      win: { flags: [], text: 'The guards are down and the barge struck its colours. Your pilots are home, a little worse for wear.' },
+      loss: { flags: [], text: 'The barge got away with its prisoners. We will not see them again.' },
+    },
+  };
+}
 
 /** Whether a mission's flags let it on the board. */
 export const available = (m: CampaignMission, flags: string[]) =>
   (m.needs ?? []).every((f) => flags.includes(f)) && (!m.needsAny || m.needsAny.some((f) => flags.includes(f)));
 
-/** The current operation's board: the missions the campaign so far makes available. */
+/**
+ * The current operation's board: the missions the campaign so far makes available, with a rescue first when
+ * pilots were just captured. A captured officer leaves the squadron one mission: their rescue.
+ */
 export function missionBoard(p: CampaignProgress): CampaignMission[] {
-  return currentOperation(p)?.missions.filter((m) => available(m, p.flags)) ?? [];
+  const op = currentOperation(p);
+  if (!op || officerLost(p)) return [];
+  const board = op.missions.filter((m) => available(m, p.flags));
+  const captured = awaitingRescue(p);
+  if (!captured.length) return board;
+  const rescue = rescueMission(p.history.length);
+  return captured.some((x) => x.officer) ? [rescue] : [rescue, ...board];
 }
 
-export const findCampaignMission = (id: string) => OPERATIONS.flatMap((o) => o.missions).find((m) => m.id === id);
+export const findCampaignMission = (id: string): CampaignMission | undefined => {
+  const r = /^rescue-(\d+)$/.exec(id);
+  return r ? rescueMission(Number(r[1])) : OPERATIONS.flatMap((o) => o.missions).find((m) => m.id === id);
+};
+
+/** The squadron's medic ship: on the home edge, in a gap between the fighters. */
+function withMedic(player: SquadEntry[]): SquadEntry[] {
+  const free = (x: number) => player.every((e) => Math.abs(e.pose.x - x) >= 75 || Math.abs(e.pose.y - 60) >= 75);
+  const x = [457, 140, 774, 300, 614, 60, 854].find(free) ?? 60;
+  return [...player, { pilotId: 'medic-droid', shipType: 'medic', pose: at(x, 50, N), name: 'Medevac', tags: [MEDIC_TAG] }];
+}
 
 /** How many ships of a board mission the squadron flies (its seats), as earlier results shape it. */
 export const seatCount = (m: CampaignMission, p: CampaignProgress) => applyExtras(m, p.flags).seats.length;
@@ -388,7 +440,9 @@ export function missionAsFlown(m: CampaignMission, p: CampaignProgress, crew?: s
   const r = withRoster(p);
   const ids = crew ?? defaultCrew(r.roster, r.history.length, seats.length);
   const pilots = ids.map((id) => r.roster.find((x) => x.id === id)).filter((x): x is RosterPilot => !!x);
-  return { def: { ...m, player: crewShips(player, seats, pilots), enemy }, notes };
+  const held = m.id.startsWith('rescue-') ? awaitingRescue(r) : [];
+  if (held.length) notes.unshift(`Held aboard the barge: ${held.map((x) => x.name).join(', ')}.`);
+  return { def: { ...m, player: withMedic(crewShips(player, seats, pilots)), enemy }, notes };
 }
 
 /**
@@ -397,12 +451,17 @@ export function missionAsFlown(m: CampaignMission, p: CampaignProgress, crew?: s
  */
 export function recordMission(p: CampaignProgress, missionId: string, result: 'win' | 'loss', report: PilotReport[] = []): CampaignProgress {
   const op = currentOperation(p);
-  const m = op?.missions.find((x) => x.id === missionId);
-  if (!op || !m || !available(m, p.flags)) return p;
-  const r = withRoster(p);
+  const m = missionBoard(p).find((x) => x.id === missionId);
+  if (!op || !m) return p;
+  const r = withRoster(p), at = r.history.length;
+  // Pilots captured last mission: a won rescue brings them home (injured); anything else, and they are lost.
+  const freed = missionId.startsWith('rescue-') && result === 'win';
+  const roster = applyReport(r.roster, report, at).map((x) => (x.status === 'captured' && x.capturedAt === at - 1
+    ? (freed ? { ...x, status: 'active' as const, capturedAt: undefined, ...(x.officer ? {} : { injuredUntil: at + 2 }) } : { ...x, status: 'lost' as const })
+    : x));
   return {
     ...r,
-    roster: applyReport(r.roster, report, r.history.length),
+    roster,
     flags: [...new Set([...p.flags, ...m.outcome[result].flags])],
     history: [...p.history, { op: op.id, mission: m.id, result }],
   };
