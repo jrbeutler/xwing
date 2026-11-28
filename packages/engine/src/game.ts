@@ -31,6 +31,8 @@ export interface GameSetup {
   maxRounds?: number;
   /** Play as a mission: its rules, objectives, zones and markers (docs/MISSIONS.md). */
   mission?: MissionSetup;
+  /** Escape pods already on the table (a mission's): the mission player's, each with its rounds of life support. */
+  pods?: { x: number; y: number; name: string; life: number }[];
 }
 
 const clone = <T>(x: T): T => structuredClone(x);
@@ -71,6 +73,10 @@ export function createGame(setup: GameSetup): GameState {
         stress: 0, focus: 0, evade: 0, calculate: 0, reinforce: null, disarmed: false, lock: null, jam: 0, ion: 0, turretArc: 'front', crits: [], dial: null, destroyed: false, removed: false,
       });
     });
+  }
+  if (setup.pods?.length && state.mission) {
+    state.pods = setup.pods.map((p, i) => ({ id: `pod-${i + 1}`, shipId: '', name: p.name, owner: state.mission!.player, x: p.x, y: p.y, round: 0, life: p.life, status: 'out' as const }));
+    for (const o of state.mission.objectives) if (o.kind === 'recover') o.of = state.pods.length;
   }
   startRound(state);
   missionScan(state); // messages for round 1

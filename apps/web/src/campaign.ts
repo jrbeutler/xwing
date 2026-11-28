@@ -71,7 +71,7 @@ function campaignStatus(p: Progress) {
     return op ? `Lieutenant ${esc(p.officer)} · Operation ${op.number} of ${OPERATIONS.length}: ${esc(op.title)}` : 'Campaign complete. See how it ended, or start again.';
   }
   if (p.officer) return trainingDone(p) ? `Cadet ${esc(p.officer)} · training complete: take command` : `Cadet ${esc(p.officer)} · training: ${p.done.length} of ${TRAINING.length} missions done`;
-  return 'Train as a new officer in eight short missions, then lead a squadron where every choice counts.';
+  return 'Train as a new officer in nine short missions, then lead a squadron where every choice counts.';
 }
 
 /** The start menu: the campaign or a skirmish (the squad builder). */
@@ -159,7 +159,7 @@ function openTraining(go: CampaignNav, replay = false) {
   const { root, close } = overlay('campaign', `
     <div class="setup-head"><h1>Flight School</h1><button class="opt mini" id="cp-back">Back</button></div>
     <p class="hint">${replay ? 'Fly any lesson again. Replays don\'t change the campaign.'
-      : `Cadet ${esc(p.officer)}: each mission teaches one new rule. Win it to unlock the next, and graduate after the eighth. Already know how to play? Skip ahead.`}</p>
+      : `Cadet ${esc(p.officer)}: each mission teaches one new rule. Win it to unlock the next, and graduate after the last. Already know how to play? Skip ahead.`}</p>
     <ol class="mission-list">${TRAINING.map(row).join('')}</ol>
     ${replay ? '' : '<div class="row"><button class="opt mini" id="cp-skip">Skip training and graduate</button></div>'}`);
   root.querySelector<HTMLButtonElement>('#cp-back')!.onclick = () => { close(); replay ? openCampaign(go) : go.back(); };

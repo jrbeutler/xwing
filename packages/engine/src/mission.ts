@@ -85,7 +85,9 @@ function checkResult(s: GameState) {
   // The recovery phase: already won; it ends (as a win) once no pods are left out for the medic.
   if (m.recovery) return endMission(s, 'win');
   if (m.objectives.some((o) => o.status === 'failed')) return endMission(s, 'loss');
-  if (!s.ships.some((x) => fighting(m, x) && !x.destroyed)) return endMission(s, 'loss');
+  // Lost with the last fighting ship; a mission flown by the medic alone (training), with the medic.
+  const fighters = s.ships.filter((x) => fighting(m, x));
+  if (fighters.length ? fighters.every((x) => x.destroyed) : s.ships.some((x) => mine(m, x) && isMedic(x) && x.destroyed)) return endMission(s, 'loss');
   if (m.objectives.every((o) => o.kind === 'protect' || o.status === 'done')) endMission(s, 'win');
 }
 
@@ -128,6 +130,17 @@ function afterDestroyed(s: GameState, sh: ShipState) {
   }
 }
 
+/** An escape pod was picked up (recover objectives move on) or lost or captured (they fail). */
+function afterPod(s: GameState, what: string) {
+  const m = s.mission!;
+  for (const o of m.objectives) {
+    if (o.kind !== 'recover' || o.status !== 'open') continue;
+    if (what === 'lost' || what === 'captured') { setProgress(s, o, o.progress, 'failed'); continue; }
+    const aboard = (s.pods ?? []).filter((p) => p.status === 'aboard').length;
+    setProgress(s, o, aboard, aboard >= o.of ? 'done' : 'open');
+  }
+}
+
 /** Read the events logged since the last scan and move the mission on (objectives, messages, the result). */
 export function missionScan(s: GameState) {
   const m = s.mission;
@@ -150,6 +163,8 @@ export function missionScan(s: GameState) {
       if (e.shieldDamage + e.hullDamage > 0) firstFor(e.attackerId, 'hit');
     }
     if (e.type === 'action' && e.action.type === 'lock') firstFor(e.shipId, 'lock');
+    if (e.type === 'action' && e.action.type === 'recover') firstFor(e.shipId, 'recover');
+    if (e.type === 'pod') afterPod(s, e.what);
     if (e.type === 'moved') { const sh = ship(e.shipId); if (sh && fighting(m, sh)) afterMove(s, sh, [...e.path, e.final]); }
     if (e.type === 'action' && (e.action.type === 'barrelRoll' || e.action.type === 'boost')) {
       const sh = ship(e.shipId);

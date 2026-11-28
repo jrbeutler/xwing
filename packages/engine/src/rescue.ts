@@ -17,7 +17,7 @@ export const isMedic = (sh: Pick<ShipState, 'tags'>) => !!sh.tags?.includes(MEDI
 export const podsOut = (s: GameState, owner?: PlayerId) => (s.pods ?? []).filter((p) => p.status === 'out' && (!owner || p.owner === owner));
 
 /** Rounds of life support a pod has left, this one included (1 = it is lost at the end of this round). */
-export const podRoundsLeft = (s: Pick<GameState, 'round'>, p: Pod) => p.round + POD_LIFE - s.round + 1;
+export const podRoundsLeft = (s: Pick<GameState, 'round'>, p: Pod) => p.round + (p.life ?? POD_LIFE) - s.round + 1;
 
 /** The player's medic, if it is still on the table. */
 export const activeMedic = (s: GameState, owner: PlayerId) => s.ships.find((x) => x.owner === owner && isMedic(x) && !x.destroyed);

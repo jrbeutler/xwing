@@ -11,7 +11,7 @@ import {
 } from '../src/campaign';
 import { activeMedic, capturePods, expirePods, isMedic, podRoundsLeft, podsOut, POD_LIFE, recoverPod, shipDown } from '../src/rescue';
 import { missionReport, type RosterPilot } from '../src/roster';
-import { missionGame } from '../src/training';
+import { missionGame, TRAINING } from '../src/training';
 import type { Command, GameState, ShipState } from '../src/types';
 
 const game = (id = 'op1-raider-hunt', seed = 7) => missionGame(missionAsFlown(findCampaignMission(id)!, newCampaign('Rhea')).def, seed);
@@ -227,5 +227,38 @@ describe('captured pilots and rescue missions', () => {
     g.pods![0].status = 'lost';
     capturePods(g);
     expect(g.pods![0].status).toBe('lost');
+  });
+});
+
+describe('the medic lesson (training 9)', () => {
+  const lesson = () => missionGame(TRAINING.find((m) => m.id === 'training-9')!, 3, { officer: 'Rhea' });
+
+  it('starts with three pods on the table, each with its own life support, and the cadet flying the medic', () => {
+    const g = lesson();
+    expect(g.mission!.rescue).toBe(true);
+    expect(g.pods!.map((p) => [p.status, podRoundsLeft(g, p)])).toEqual([['out', 3], ['out', 7], ['out', 10]]);
+    expect(medic(g)).toMatchObject({ name: 'Rhea', tags: ['medic', 'officer'] });
+    expect(g.mission!.objectives[0]).toMatchObject({ kind: 'recover', progress: 0, of: 3 });
+  });
+
+  it('each pickup moves the objective on; all three win it', () => {
+    let g = lesson();
+    for (const p of g.pods!) { recoverPod(g, medic(g), p.id); g.log.push({ type: 'pod', what: 'recovered', pod: { ...p } }); }
+    g = apply(g, aiDecide({ ...viewFor(g, 'p1'), rng: g.rng }, 'p1')! as Command); // any command: the mission scans the log
+    expect(g.mission!.objectives[0]).toMatchObject({ status: 'done', progress: 3 });
+    expect(g.mission!.result).toBe('win');
+  });
+
+  it('a pod running out fails it; with no fighters, only losing the medic loses the mission otherwise', () => {
+    const g = lesson();
+    g.round = 3;
+    expirePods(g);
+    expect(missionRoundEnd(g)).toBe(true);
+    expect(g.mission!.result).toBe('loss');
+    const h = lesson();
+    expect(missionRoundEnd(h)).toBe(false); // no fighters is not a loss by itself
+    down(h, medic(h));
+    expect(missionRoundEnd(h)).toBe(true);
+    expect(h.mission!.result).toBe('loss');
   });
 });

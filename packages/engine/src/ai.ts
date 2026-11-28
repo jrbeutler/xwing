@@ -151,7 +151,7 @@ function medicScore(s: GameState, sh: ShipState, m: Maneuver, pose: Pose, poly: 
   let v = 0;
   const { THREAT } = tables();
   let nearest = Infinity;
-  for (const e of activeShips(s).filter((x) => x.owner !== sh.owner)) {
+  for (const e of activeShips(s).filter((x) => x.owner !== sh.owner && s.mission?.ai[x.owner] !== 'drone')) { // drones never shoot
     for (const { pose: ep, w } of predictions?.get(e.id) ?? straightAhead(e)) {
       v -= w * MEDIC.threat * arcScore(ep, shipSize(e), poly, THREAT, hasTurretPrimary(e));
       nearest = Math.min(nearest, polygonDistance(poly, basePolygon(ep, shipSize(e))).d);

@@ -453,6 +453,8 @@ export interface Pod {
   y: number;
   /** The round it ejected (re-ejected, if the medic carrying it was destroyed). */
   round: number;
+  /** Rounds of life support after that round, if not POD_LIFE (pods a mission starts with). */
+  life?: number;
   /** Out on the table, aboard the medic, lost (life support ran out), or captured (the mission was lost). */
   status: 'out' | 'aboard' | 'lost' | 'captured';
   /** The medic carrying it. */
@@ -501,6 +503,8 @@ export type Objective = { id: string; label: string } & (
   | { kind: 'reach'; zone: string; tag?: string; count?: number }
   | { kind: 'course'; markers: string[]; tag?: string }
   | { kind: 'protect'; tag: string }
+  /** Pick up every escape pod on the table with the medic ship (fails if one is lost). */
+  | { kind: 'recover'; tag?: string }
 );
 export type ObjectiveStatus = 'open' | 'done' | 'failed';
 export type ObjectiveState = Objective & { status: ObjectiveStatus; progress: number; of: number };
@@ -510,7 +514,7 @@ export type ObjectiveState = Objective & { status: ObjectiveStatus; progress: nu
  * time something happens to one of the player's ships, show a message (coach tips).
  */
 export interface Trigger {
-  on: { roundStart: number } | { objectiveDone: string } | { shipDestroyed: string } | { first: 'stress' | 'damageCard' | 'obstacleHit' | 'attack' | 'hit' | 'lock' };
+  on: { roundStart: number } | { objectiveDone: string } | { shipDestroyed: string } | { first: 'stress' | 'damageCard' | 'obstacleHit' | 'attack' | 'hit' | 'lock' | 'recover' };
   message: { title: string; text: string };
 }
 

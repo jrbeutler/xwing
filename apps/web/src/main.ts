@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, resolveMovement, killCredits, podRoundsLeft, type Pod, missionReport, type PilotReport, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, resolveMovement, TRAINING, killCredits, podRoundsLeft, type Pod, missionReport, type PilotReport, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, quickSetup, type BattleSetup } from './setup';
@@ -289,6 +289,12 @@ function renderMissionHud() {
     if (o.status === 'open') next ??= o.markers[o.progress];
   }
   scene.setMissionMarks(m.markers, m.zones, next, done);
+}
+
+/** The first pilot shot down in the campaign: once, a word on what the medic has to do (and where to practise it). */
+function firstEjectionTip() {
+  try { if (localStorage.getItem('xw-tip-eject')) return; localStorage.setItem('xw-tip-eject', '1'); } catch { /* storage unavailable: tip every time */ }
+  showCoach('Pilot down', 'Fly your medic so a move ends with the escape pod inside its red ring, then take Recover. The label counts down their life support. Flight school\'s Search and Rescue lesson practises this.');
 }
 
 /** The mission panel's line about escape pods waiting for the medic. */
@@ -1173,6 +1179,7 @@ async function animate(e: GameEvent) {
       drawPods();
       const name = `<span class="who">${esc(e.pod.name)}</span>`;
       if (e.what === 'ejected') {
+        if (campaignMission) firstEjectionTip();
         showBanner(`${name}<b>EJECTED</b><span class="detail">The medic has ${podRoundsLeft({ round: podRound }, e.pod) - 1} more rounds to pick them up</span>`, 'incoming');
         await scene.podFlash(e.pod.x, e.pod.y, 0xff5a5a);
       } else if (e.what === 'recovered') {
@@ -1654,7 +1661,7 @@ function resultTitle() {
 function nextLabel(won: boolean) {
   if (campaignMission) return 'Mission board';
   if (won && mission && nextMission(mission)) return 'Next mission';
-  return won && mission?.id === 'training-8' ? 'Graduate' : 'Campaign';
+  return won && mission?.id === TRAINING.at(-1)!.id ? 'Graduate' : 'Campaign';
 }
 
 /** After a mission: the next one's briefing if it was won and there is one, else the campaign. */
