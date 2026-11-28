@@ -19,6 +19,8 @@ import type {
 export interface SquadEntry {
   pilotId: string; shipType?: string; pose: Pose; upgrades?: string[];
   name?: string; hull?: number; shields?: number; tags?: string[];
+  /** A campaign roster pilot flying this ship: their own initiative and talents, and their roster id. */
+  initiative?: number; talents?: string[]; rosterId?: string;
 }
 export interface GameSetup {
   seed: number;
@@ -61,6 +63,7 @@ export function createGame(setup: GameSetup): GameState {
       state.ships.push({
         id: `${p.id}-${i}`, pilotId: pilot.id, name: e.name ?? (n > 1 ? `${pilot.name} #${n}` : pilot.name), typeId: t.id, owner: p.id,
         ...(e.tags?.length ? { tags: [...e.tags] } : {}),
+        ...(e.rosterId ? { rosterId: e.rosterId } : {}),
         initiative: effectiveInitiative(e), pose: e.pose, hull, shields, maxHull: hull, maxShields: shields,
         upgrades: ups.map((u) => ({ id: u.id, charges: (u.charges ?? 0) + (u.device ? payload : 0) })),
         ability: pilot.ability ? { id: pilot.id, charges: pilot.ability.charges ?? 0 } : null,
@@ -585,7 +588,10 @@ function continueActivation(s: GameState) {
     if (mv.partial && mv.bumped.length) { sh.stress += BUMP_STRESS; s.log.push({ type: 'stress', shipId: sh.id, delta: BUMP_STRESS }); }
 
     if (mv.fled) {
-      s.log.push({ type: 'info', text: `${sh.name} fled the battlefield.` });
+      // In a mission, flying off the table is a retreat: the ship leaves the battle (out of play like a
+      // destroyed one) but the campaign counts it as home, not lost.
+      if (s.mission) sh.fled = s.round;
+      s.log.push({ type: 'info', text: s.mission ? `${sh.name} retreated from the battle.` : `${sh.name} fled the battlefield.` });
       destroy(s, sh);
       s.queueIndex++;
       continue;

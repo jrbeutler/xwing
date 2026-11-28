@@ -13,3 +13,4 @@ export * from './rules';
 export * from './mission';
 export * from './training';
 export * from './campaign';
+export * from './roster';

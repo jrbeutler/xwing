@@ -1,7 +1,7 @@
 import {
   BASE_SIZE, DAMAGE_CARDS, DEPLOY_DEPTH, SHIP_TYPES, UPGRADES, aiDecide, apply, attackDiceFor, attackOdds, autoDeploy, isIonized, isPrimary, canDeployAt, createGame, generateObstacles, OBSTACLE_RULES,
   legalTargets, maneuverFor, ionManeuverFor, legalDial, validateSquad, type Squad, maneuverFinalPose, maneuverLabel, maneuverPath,
-  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
+  viewFor, effectSource, actionBar, suggestManeuvers, missionGame, rulesOf, resolveMovement, killCredits, missionReport, type PilotReport, type CampaignMission, type MissionDef, type ObjectiveState, type Suggestion, type ActionChoice, type ActionType, type DropChoice, type Pose, type TargetInfo, type ShotLook, type Bearing, type Command, type GameEvent, type GameState, type ShipState,
 } from '@xw/engine';
 import { BattleScene, SHOT_TIMING, toV3, type AttackAngle } from './scene';
 import { openSetup, quickSetup, type BattleSetup } from './setup';
@@ -1580,22 +1580,7 @@ finale.hidden = true;
 document.body.appendChild(finale);
 
 /** Kills per ship: the last ship to hit a ship (shot or bomb) gets the credit when it is destroyed. */
-function killsBy(): Map<string, number> {
-  const lastHit = new Map<string, string>(), dropper = new Map<string, string>(), kills = new Map<string, number>();
-  for (const e of state.log) {
-    if (e.type === 'attack' && e.hullDamage + e.shieldDamage + (e.ion ?? 0) > 0) lastHit.set(e.defenderId, e.attackerId);
-    if (e.type === 'deviceDropped') dropper.set(e.device.id, e.shipId);
-    if (e.type === 'deviceDetonated') {
-      const by = dropper.get(e.device.id);
-      if (by) for (const h of e.ships) if (h.shipId !== by && h.hullDamage + h.shieldDamage > 0) lastHit.set(h.shipId, by);
-    }
-    if (e.type === 'destroyed') {
-      const by = lastHit.get(e.shipId);
-      if (by && shipById(by).owner !== shipById(e.shipId).owner) kills.set(by, (kills.get(by) ?? 0) + 1);
-    }
-  }
-  return kills;
-}
+const killsBy = () => killCredits(state);
 
 /** Victory/Defeat against the AI; with two players, who won. */
 function resultTitle() {
@@ -1622,7 +1607,8 @@ function afterMission() {
 /** The end of a mission: complete or failed, how each objective went, and where to go next. */
 function showDebrief(first: boolean) {
   const m = mission!, won = state.mission?.result === 'win', cm = campaignMission;
-  if (first && cm) recordCampaign(cm.id, won ? 'win' : 'loss');
+  const report = cm ? missionReport(state) : [];
+  if (first && cm) recordCampaign(cm.id, won ? 'win' : 'loss', report);
   else if (won && first) markDone(m.id);
   const next = won && !cm ? nextMission(m) : undefined;
   const title = won ? 'Mission complete' : 'Mission failed';
@@ -1642,6 +1628,7 @@ function showDebrief(first: boolean) {
       <h1 id="finale-title" aria-label="${title}">${letters}</h1>
       <p class="finale-why">${why}</p>
       <ul class="objective-list" style="text-align:left">${objs.map((o) => `<li class="${o.status}">${o.status === 'done' ? '✓' : o.status === 'failed' ? '✗' : '·'} ${o.label}</li>`).join('')}</ul>
+      ${report.length ? pilotReportHtml(report) : ''}
       <div class="finale-buttons"><button class="opt" id="fn-board">View table</button>${cm ? '' : '<button class="opt" id="fn-retry">Retry</button>'}
         <button class="go" id="fn-next">${nextLabel(won)}</button></div>
     </div>`;
@@ -1653,6 +1640,17 @@ function showDebrief(first: boolean) {
   finale.querySelector<HTMLButtonElement>('#fn-board')!.onclick = () => { finale.classList.remove('show'); finale.hidden = true; };
   finale.querySelector<HTMLButtonElement>('#fn-next')!.focus();
   if (won && first) scene.celebrate(P1);
+}
+
+const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/** The debrief's squadron lines: how each pilot's mission went, and the experience they earned. */
+function pilotReportHtml(report: PilotReport[]) {
+  const fate = (r: PilotReport) => r.outcome === 'home' ? 'came home'
+    : r.outcome === 'retreated' ? `retreated in round ${r.rounds} of ${r.of}`
+    : r.pilotId === 'officer' ? 'shot down, picked up' : 'shot down: injured, sits out the next mission';
+  return `<ul class="pilot-report">${report.map((r) => `<li class="${r.outcome}"><b>${esc(r.name)}</b> <span class="hint">${fate(r)}${r.kills ? ` · ${r.kills} kill${r.kills === 1 ? '' : 's'}` : ''}</span> <b class="xp">+${r.xp} XP</b></li>`).join('')}</ul>
+    ${report.some((r) => r.xp > 0) ? '<p class="hint">Spend experience in the hangar, from the mission board.</p>' : ''}`;
 }
 
 function showFinale(first = false) {
@@ -2432,7 +2430,7 @@ function renderPlanning() {
       ${critList(s)}
       ${isIonized(s) ? '' : hintLine(s)}
       <div class="planned">${isIonized(s) ? `<span class="ion">⚡ Ionized: drifts 1 ${DRIFT_LABEL[driftOf(s, plan[s.id])]} (blue), Focus only</span>`
-        : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
+        : plan[s.id] !== undefined ? maneuverName(s, plan[s.id]) + leavesTable(s, plan[s.id]) : '<span class="hint">No maneuver set</span>'}</div>`;
     card.onclick = (e) => { if (!(e.target as HTMLElement).closest('details, button')) selectShip(s.id); };
     card.querySelector<HTMLButtonElement>('[data-use-hint]')?.addEventListener('click', () => useSuggestion(s.id));
     if (s.id === selected) {
@@ -2451,6 +2449,12 @@ function renderPlanning() {
   go.onclick = executePlan;
   detail.appendChild(go);
   refreshBoard();
+}
+
+/** A warning when a planned move ends off the table: a retreat in a mission, a lost ship in a skirmish. */
+function leavesTable(s: ShipState, i: number) {
+  if (!resolveMovement(state, s, maneuverOf(s, i)).fled) return '';
+  return mission ? ' <span class="warn-text">· leaves the table: retreats from the battle</span>' : ' <span class="warn-text">· leaves the table: the ship is lost</span>';
 }
 
 /** The classic dial grid, kept as a collapsed fallback. */

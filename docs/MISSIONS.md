@@ -1,8 +1,8 @@
 # Missions, training and campaign: plan
 
-Status: the mission framework, the eight training missions and a first campaign arc (mission boards, flags; no
-roster yet) are built; the roster, experience, ejection and rescue, the longer campaign and fleet battles are
-not (planned below in **Roster, experience and rescue**). Decisions so far:
+Status: the mission framework, the eight training missions, a first campaign arc (mission boards, flags) and
+the squadron roster with experience, the hangar and retreats are built; ejection and rescue, the longer campaign
+and fleet battles are not (planned below in **Roster, experience and rescue**). Decisions so far:
 - **Fighters in fleet battles** are abstract squadron tokens to start (the fleet layer is later).
 - **Losses**: a destroyed ship is gone. Its pilot ejects; the squadron's medic ship has to pick them up before
   their life support runs out, or they are lost (or captured, which opens a rescue mission).
@@ -12,8 +12,8 @@ not (planned below in **Roster, experience and rescue**). Decisions so far:
   ship carries the name). Training is flight school under Commander Ress; graduation makes them a lieutenant.
 - **Mission boards**: after training, each operation offers 2-4 missions and the player flies one. The others go
   away, and a campaign mission is flown once: win or lose, no retry. Results set flags that shape later boards.
-- **Roster next**: campaign missions still use fixed forces, like training; the persistent squadron is the next
-  step. The player picks who flies each mission, and spends experience in a hangar between missions.
+- **Roster**: the squadron persists between campaign missions. The player picks who flies each mission, and
+  spends experience in a hangar between missions.
 - **The officer has no plot armour**: they eject and need rescuing like anyone else. Captured, they are rescued
   by the rest of the squadron; only a failed rescue ends the campaign.
 
@@ -198,7 +198,7 @@ Earned per mission, by pilots who come home:
 | Each enemy destroyed (final blow) | +1 |
 | Officer, for leading | +1 |
 
-- **Retreat**: a ship that flies off its own table edge leaves the battle safely and earns survival and win XP
+- **Retreat**: a ship that flies off the table (any edge) leaves the battle safely and earns survival and win XP
   prorated by the fraction of the mission it flew (rounds flown / rounds the battle lasted), plus full credit
   for its kills. It doesn't count as destroyed.
 - A pilot who was shot down and rescued earns no survival or win XP, only kills.
@@ -262,6 +262,22 @@ Earned per mission, by pilots who come home:
   ships, aces, upgrades), so a veteran squadron still gets a fight.
 - Tests play the whole campaign with the AI on both sides to tune the life-support countdown, the medic's
   stats and the XP rates: a typical run should lose a few pilots and finish with some veterans.
+
+### As built (step 1)
+- Engine: `roster.ts`. `CampaignProgress` carries `roster` and `recruited` (`withRoster` gives old saves the
+  starting squadron). `prepareCrew` adds replacements and picks a default crew; `missionAsFlown(m, p, crew)` puts
+  roster pilots in the seats (`crewShips`: the seat keeps its hull and upgrades, the pilot brings name,
+  initiative and talents, flying the hull's call-sign card); `missionReport` reads a finished game (kills via
+  `killCredits`, retreats via `ShipState.fled`); `recordMission(p, id, result, report)` banks it; the hangar
+  is `promote` and `learnTalent`. Squad entries and squad ships take `initiative` and `talents` overrides.
+- In a mission, flying off the table is a retreat: the ship is out of play (still `destroyed`, so the rest of
+  the rules need no change) and `fled` holds the round. In skirmish it is still a lost ship. A mission is lost
+  when every player ship is destroyed or gone.
+- Until step 2's escape pods, a wingman shot down survives injured and sits out the next mission; a downed
+  officer keeps flying.
+- Client: the board's squadron line and the hangar; a "who flies?" screen before each briefing (the officer
+  always flies; replacements are announced); the debrief lists each pilot's fate, kills and XP; the planning
+  card warns when a chosen move leaves the table; the campaign's end lists the squadron.
 
 ### Build steps
 1. **Roster and experience**: roster state, pilot picking, XP and the hangar, retreat off the table with

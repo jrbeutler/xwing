@@ -9,7 +9,13 @@ import type { SlotType } from './types';
 
 /** A pilot in a hull. `shipType` defaults to the pilot's usual hull; `upgrades` are the bought ones only
  * (a pilot's signature talents come with the pilot and are not listed). */
-export interface SquadShip { pilotId: string; shipType?: string; upgrades: string[] }
+export interface SquadShip {
+  pilotId: string; shipType?: string; upgrades: string[];
+  /** A campaign roster pilot's own initiative and talents, in place of the pilot card's. */
+  initiative?: number; talents?: string[];
+}
+/** What the pilot-and-hull rules read from a ship: the pilot, the hull, and a roster pilot's own numbers. */
+type PilotHull = Pick<SquadShip, 'pilotId' | 'shipType' | 'initiative' | 'talents'>;
 export interface Squad { ships: SquadShip[] }
 
 export const DEFAULT_BUDGET = 100;
@@ -22,21 +28,21 @@ export const isOffClass = (s: Pick<SquadShip, 'pilotId' | 'shipType'>) => SHIP_T
 /** The penalty for flying outside your specialty. */
 export const OFF_CLASS_INITIATIVE = 1;
 /** Initiative in this hull: one lower outside the pilot's specialty. */
-export const effectiveInitiative = (s: Pick<SquadShip, 'pilotId' | 'shipType'>) =>
-  Math.max(1, PILOTS[s.pilotId].initiative - (isOffClass(s) ? OFF_CLASS_INITIATIVE : 0));
+export const effectiveInitiative = (s: PilotHull) =>
+  Math.max(1, (s.initiative ?? PILOTS[s.pilotId].initiative) - (isOffClass(s) ? OFF_CLASS_INITIATIVE : 0));
 /** Talent slots a pilot of this initiative has: none below 3, one at 3-4, two at 5+. */
 export const talentSlotCount = (initiative: number) => (initiative >= 5 ? 2 : initiative >= 3 ? 1 : 0);
 
 /** The pilot's signature talents that fit in this hull (off-class pilots can lose a slot, and the talent in it). */
-export function signatureTalents(s: Pick<SquadShip, 'pilotId' | 'shipType'>): string[] {
-  return (PILOTS[s.pilotId].talents ?? []).slice(0, talentSlotCount(effectiveInitiative(s)));
+export function signatureTalents(s: PilotHull): string[] {
+  return (s.talents ?? PILOTS[s.pilotId].talents ?? []).slice(0, talentSlotCount(effectiveInitiative(s)));
 }
 
 /** Every upgrade the ship flies with: signature talents first, then the bought ones. */
 export const allUpgrades = (s: SquadShip) => [...signatureTalents(s), ...s.upgrades];
 
 /** All slots of this pilot in this hull: the pilot's talent slots, then the hull's. */
-export function shipSlots(s: Pick<SquadShip, 'pilotId' | 'shipType'>): SlotType[] {
+export function shipSlots(s: PilotHull): SlotType[] {
   const talents: SlotType[] = Array(talentSlotCount(effectiveInitiative(s))).fill('talent');
   return [...talents, ...SHIP_TYPES[hullOf(s)].slots];
 }

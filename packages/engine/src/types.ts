@@ -259,6 +259,10 @@ export interface ShipState {
   dialSeenBy?: PlayerId[];
   /** Mission tags (e.g. 'freighter', 'drone') that objectives and triggers refer to. */
   tags?: string[];
+  /** The campaign roster pilot flying this ship. */
+  rosterId?: string;
+  /** In a mission: the round this ship flew off the table (a retreat; it is also out of play, `destroyed`). */
+  fled?: number;
   destroyed: boolean;
   /** Destroyed ships linger until their initiative step ends (simultaneous fire). */
   removed: boolean;

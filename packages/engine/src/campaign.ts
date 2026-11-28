@@ -4,6 +4,9 @@
 // operations and the few pure functions the client needs (the board, recording a result, a mission as flown).
 import { generateObstacles, type SquadEntry } from './game';
 import { FULL_RULES } from './rules';
+import {
+  applyReport, crewShips, defaultCrew, isSeat, startingRoster, withReplacements, type PilotReport, type RosterPilot,
+} from './roster';
 import { OFFICER_TAG, type MissionDef } from './training';
 import type { Zone } from './types';
 
@@ -35,8 +38,12 @@ export interface Operation {
 }
 
 export interface CampaignRecord { op: string; mission: string; result: 'win' | 'loss' }
-/** Where a campaign stands: the officer, the flags results have set, and the missions flown (one per operation). */
-export interface CampaignProgress { officer: string; flags: string[]; history: CampaignRecord[] }
+/**
+ * Where a campaign stands: the officer, the flags results have set, the missions flown (one per operation), and
+ * the squadron (`roster`, with `recruited` counting every pilot who has joined; absent in saves from before the
+ * roster, and filled in by `withRoster`).
+ */
+export interface CampaignProgress { officer: string; flags: string[]; history: CampaignRecord[]; roster?: RosterPilot[]; recruited?: number }
 
 const N = Math.PI / 2, S = -Math.PI / 2;
 const at = (x: number, y: number, h: number) => ({ x, y, h });
@@ -316,20 +323,30 @@ export const OPERATIONS: Operation[] = [
 ];
 
 /** Earlier results' extras: ships added to either side, or the opposition's last ships left out. */
-function applyExtras(m: CampaignMission, flags: string[]): { player: SquadEntry[]; enemy: SquadEntry[]; notes: string[] } {
+function applyExtras(m: CampaignMission, flags: string[]): { player: SquadEntry[]; enemy: SquadEntry[]; notes: string[]; seats: number[] } {
   let player = [...m.player], enemy = [...m.enemy];
+  // The mission's own player ships are the squadron's seats; ships added by earlier results are seats too if
+  // they are call-sign fighters, and allies (named pilots, other classes) otherwise.
+  const seats = player.map((_, i) => i);
   const notes: string[] = [];
   for (const x of m.extras ?? []) {
     if (!x.any.some((f) => flags.includes(f))) continue;
     notes.push(x.note);
-    if (x.player) player = [...player, ...x.player];
+    if (x.player) {
+      x.player.forEach((e, i) => { if (isSeat(e)) seats.push(player.length + i); });
+      player = [...player, ...x.player];
+    }
     if (x.fewerEnemies) enemy = enemy.slice(0, Math.max(1, enemy.length - x.fewerEnemies));
     if (x.enemy) enemy = [...enemy, ...x.enemy];
   }
-  return { player, enemy, notes };
+  return { player, enemy, notes, seats };
 }
 
-export const newCampaign = (officer: string): CampaignProgress => ({ officer, flags: [], history: [] });
+export const newCampaign = (officer: string): CampaignProgress => ({ officer, flags: [], history: [], ...startingRoster(officer) });
+
+/** The progress with a squadron: saves from before the roster get the starting one. */
+export const withRoster = (p: CampaignProgress): CampaignProgress & { roster: RosterPilot[]; recruited: number } =>
+  p.roster ? { ...p, roster: p.roster, recruited: p.recruited ?? p.roster.length } : { ...p, ...startingRoster(p.officer) };
 
 /** The operation being fought: one per mission flown, undefined once the campaign is over. */
 export const currentOperation = (p: CampaignProgress): Operation | undefined => OPERATIONS[p.history.length];
@@ -347,19 +364,45 @@ export function missionBoard(p: CampaignProgress): CampaignMission[] {
 
 export const findCampaignMission = (id: string) => OPERATIONS.flatMap((o) => o.missions).find((m) => m.id === id);
 
-/** A board mission as it will be flown: earlier results add (or remove) ships. `notes` says what changed. */
-export function missionAsFlown(m: CampaignMission, p: CampaignProgress): { def: MissionDef; notes: string[] } {
-  const { player, enemy, notes } = applyExtras(m, p.flags);
-  return { def: { ...m, player, enemy }, notes };
+/** How many ships of a board mission the squadron flies (its seats), as earlier results shape it. */
+export const seatCount = (m: CampaignMission, p: CampaignProgress) => applyExtras(m, p.flags).seats.length;
+
+/**
+ * Get the squadron ready for a board mission: replacements join if too few pilots are fit to fly its seats.
+ * Returns the progress to save, and who flies by default.
+ */
+export function prepareCrew(m: CampaignMission, p: CampaignProgress): { progress: CampaignProgress; seats: number; crew: string[] } {
+  const r = withRoster(p);
+  const seats = seatCount(m, r), at = r.history.length;
+  const { roster, recruited } = withReplacements(r.roster, r.recruited, at, seats);
+  return { progress: { ...r, roster, recruited }, seats, crew: defaultCrew(roster, at, seats) };
 }
 
-/** Record a flown mission: its flags are set, and the campaign moves on to the next operation. */
-export function recordMission(p: CampaignProgress, missionId: string, result: 'win' | 'loss'): CampaignProgress {
+/**
+ * A board mission as it will be flown: earlier results add (or remove) ships, and roster pilots fly the seats
+ * (`crew`, roster ids, the officer first; by default the officer and the best wingmen fit to fly). `notes` says
+ * what changed.
+ */
+export function missionAsFlown(m: CampaignMission, p: CampaignProgress, crew?: string[]): { def: MissionDef; notes: string[] } {
+  const { player, enemy, notes, seats } = applyExtras(m, p.flags);
+  const r = withRoster(p);
+  const ids = crew ?? defaultCrew(r.roster, r.history.length, seats.length);
+  const pilots = ids.map((id) => r.roster.find((x) => x.id === id)).filter((x): x is RosterPilot => !!x);
+  return { def: { ...m, player: crewShips(player, seats, pilots), enemy }, notes };
+}
+
+/**
+ * Record a flown mission: its flags are set, the pilots who flew it bank their experience (`report`, from
+ * `missionReport`), and the campaign moves on to the next operation.
+ */
+export function recordMission(p: CampaignProgress, missionId: string, result: 'win' | 'loss', report: PilotReport[] = []): CampaignProgress {
   const op = currentOperation(p);
   const m = op?.missions.find((x) => x.id === missionId);
   if (!op || !m || !available(m, p.flags)) return p;
+  const r = withRoster(p);
   return {
-    ...p,
+    ...r,
+    roster: applyReport(r.roster, report, r.history.length),
     flags: [...new Set([...p.flags, ...m.outcome[result].flags])],
     history: [...p.history, { op: op.id, mission: m.id, result }],
   };
